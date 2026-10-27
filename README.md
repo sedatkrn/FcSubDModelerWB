@@ -9,8 +9,8 @@ You model a low-poly control cage with polygon tools (extrude, bevel, knife, loo
 Catmull-Clark surface live. Everything has exact numeric input, so it stays a CAD tool: after every operation a
 small panel in the viewport shows its values — type a number, press Enter, and the operation is redone with it.
 
-> **Status:** early version (0.1). It works and is fun to use, but expect rough edges. Feedback and bug reports
-> are very welcome.
+> **Status:** early version (0.2.0, see the [changelog](CHANGELOG.md)). It works and is fun to use, but expect
+> rough edges. Feedback and bug reports are very welcome.
 
 ## Is the result a mesh or a B-rep?
 
@@ -136,6 +136,7 @@ bottom bar switches it (the modeler reopens with the same model). The setting is
 - Edge slide, more selection tools (face strips, grow / shrink)
 - Export / import of the raw cage with creases (OBJ / USD) for Blender round-trips
 - Odd segment counts for all-quad edge-bevel corners
+- From face: curved faces that are not four-sided, flat faces with several holes
 
 ## License
 
