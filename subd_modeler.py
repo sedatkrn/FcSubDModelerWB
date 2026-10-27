@@ -1985,7 +1985,7 @@ HELP = ("1 / 2 / 3: point / edge / polygon mode\n"
         "Edge mode E: extrude open edges  |  extrude: wheel = segments, X / Y / Z = axis\n"
         "O: object / edit mode  |  D: duplicate object\n"
         "T: move gizmo  |  G: free move (mouse)  |  Tab / S: SubPatch\n"
-        "A: select all  |  Del: delete\n"
+        "A: select all  |  Del: delete  |  P: make polygon\n"
         "Ctrl+C / X / V: copy / cut / paste polygons\n"
         "Ctrl+Z: undo  |  F: save to document\n"
         "Ctrl + gizmo / T: stepped (mm, degrees)\n"
@@ -4134,6 +4134,93 @@ class SubDSession:
             v["Max Length"] = float(auto_max_len([e for f in faces for e in f.Edges], segs))
         return cage_from_faces(faces, segs, v["Max Length"], v["Exact Edge"] > 0)
 
+    # --- Make polygon (LightWave Make Polygon / Blender F): secimden yeni yuz ---
+    # Nokta modu: secili noktalar (aralarindaki kenarlarin sirasi, yoksa duzlemlerinde aciya gore). Kenar modu:
+    # kapali halka -> tek cokgen; iki ayri kenar / acik zincir -> uclari birlestiren dortgen / cokgen (capraz
+    # olmayan esleme). Yon komsu yuzlerle ayni (ortak kenari ters sirada gecer), komsu yoksa kameraya bakar.
+
+    def make_polygon(self):
+        if self.drag or self.grab or self.mode not in ("point", "edge"):
+            if self.mode == "face":
+                self.info = T("Make polygon: select points or edges")
+                self.refresh()
+            return
+        res = self._polygon_from_selection()
+        if isinstance(res, str):
+            self.info = res
+            self.refresh()
+            return
+        cage = self.cage
+        ef = cage.edge_faces()
+        keys = {frozenset(f) for f in cage.F}
+        if frozenset(res) in keys:
+            self.info = T("Make polygon: this polygon already exists")
+            self.refresh()
+            return
+        edges = [_edge(res[i], res[(i + 1) % len(res)]) for i in range(len(res))]
+        if any(len(ef.get(e, ())) >= 2 for e in edges):
+            self.info = T("Make polygon: an edge already has two polygons")
+            self.refresh()
+            return
+        # yon: komsu yuz ortak kenari a -> b geciyorsa yeni yuz b -> a gecmeli
+        vote = 0
+        for i, e in enumerate(edges):
+            a, b = res[i], res[(i + 1) % len(res)]
+            for fi in ef.get(e, ()):
+                f = cage.F[fi]
+                same = any(f[k] == a and f[(k + 1) % len(f)] == b for k in range(len(f)))
+                vote += -1 if same else 1
+        if vote == 0:                                      # komsu yok: kameraya baksin
+            P = cage.V[res]
+            n = np.cross(P - P.mean(0), np.roll(P - P.mean(0), -1, 0)).sum(0)
+            vote = 1 if n.dot(-self.view_dir()) >= 0 else -1
+        if vote < 0:
+            res = res[::-1]
+        self.drop_tool()
+        self.push()
+        cage.F.append(list(res))
+        self.last_op = None
+        self.info = T("Make polygon: %d sides") % len(res)
+        self.refresh()
+
+    def _polygon_from_selection(self):
+        """Secimden sirali nokta listesi ya da hata metni."""
+        cage = self.cage
+        err = T("Make polygon: select 3 or more points, a closed edge loop, or two edges")
+        if self.mode == "edge":
+            chains = cage.edge_chains(self.sel_e) if self.sel_e else None
+            if not chains:
+                return err
+            if len(chains) == 1:
+                verts = chains[0][0]
+            elif len(chains) == 2 and not chains[0][1] and not chains[1][1]:
+                A, B = chains[0][0], chains[1][0]           # iki acik zincir: capraz olmayan baglanti
+                V = cage.V
+                fwd = np.linalg.norm(V[A[-1]] - V[B[-1]]) + np.linalg.norm(V[B[0]] - V[A[0]])
+                rev = np.linalg.norm(V[A[-1]] - V[B[0]]) + np.linalg.norm(V[B[-1]] - V[A[0]])
+                verts = A + (B[::-1] if fwd <= rev else B)
+            else:
+                return err
+        else:
+            verts = sorted(self.sel_v)
+            if len(verts) < 3:
+                return err
+            # aralarindaki kenarlar tek zincir olusturuyorsa o sira; yoksa ortak duzlemde aciya gore
+            inner = {e for e in cage.edges() if e <= self.sel_v}
+            chains = cage.edge_chains(inner) if inner else None
+            if chains and len(chains) == 1 and len(chains[0][0]) == len(verts):
+                verts = chains[0][0]
+            else:
+                P = cage.V[verts]
+                c = P.mean(0)
+                _, _, vt = np.linalg.svd(P - c)
+                u, w = vt[0], vt[1]
+                ang = np.arctan2((P - c) @ w, (P - c) @ u)
+                verts = [verts[i] for i in np.argsort(ang)]
+        if len(verts) < 3 or len(set(verts)) != len(verts):
+            return err
+        return list(verts)
+
     # --- Hole: secili yuzlerin (1, 2, 4...) ortasina daire delik; panel: Radius, Segments, Support ---
     HOLE = ("Radius", "Segments", "Support")
 
@@ -4720,6 +4807,8 @@ class SubDSession:
             self.loop_select()
         elif k == "j":
             self.toggle_tool("line")
+        elif k == "p":                                     # LightWave Make Polygon
+            self.make_polygon()
         elif k == "x":
             self.toggle_ghost()
         elif k == "b":
@@ -4802,7 +4891,7 @@ _KEYS = {
     QtCore.Qt.Key_1: "1", QtCore.Qt.Key_2: "2", QtCore.Qt.Key_3: "3", QtCore.Qt.Key_Y: "y", QtCore.Qt.Key_R: "r",
     QtCore.Qt.Key_C: "c", QtCore.Qt.Key_B: "b", QtCore.Qt.Key_I: "i",
     QtCore.Qt.Key_H: "h", QtCore.Qt.Key_N: "n", QtCore.Qt.Key_L: "l", QtCore.Qt.Key_X: "x",
-    QtCore.Qt.Key_J: "j", QtCore.Qt.Key_D: "d", QtCore.Qt.Key_O: "o", QtCore.Qt.Key_V: "v",
+    QtCore.Qt.Key_J: "j", QtCore.Qt.Key_D: "d", QtCore.Qt.Key_O: "o", QtCore.Qt.Key_V: "v", QtCore.Qt.Key_P: "p",
 }
 # Ctrl+Z geri al, Ctrl+G nokta modu, Ctrl+H cokgen modu (LightWave), Ctrl+C / X / V cokgen kopyala / kes / yapistir
 _CTRL_KEYS = ("z", "g", "h", "c", "x", "v")
@@ -5186,6 +5275,7 @@ class _Overlay(object):
         head("Create")
         btn("Box", "", s.add_box)
         btn("From face", "", s.from_face)              # FreeCAD'de secili Part / PartDesign yuzeyinden
+        btn("Make polygon", "P", s.make_polygon, sel=True, mode="edit")
         head("Object")
         btn("Duplicate", "D", s.object_duplicate, sel=True, mode="object")
         head("Select")

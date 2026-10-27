@@ -77,6 +77,13 @@ TR = {
     # --- object mode ---
     "Object": "Nesne",
     "Duplicate": "Çoğalt",
+    "Make polygon": "Poligon ör",
+    "Make polygon: select points or edges": "Poligon ör: nokta ya da kenar seçin",
+    "Make polygon: this polygon already exists": "Poligon ör: bu poligon zaten var",
+    "Make polygon: an edge already has two polygons": "Poligon ör: bir kenarın zaten iki poligonu var",
+    "Make polygon: %d sides": "Poligon ör: %d kenarlı",
+    "Make polygon: select 3 or more points, a closed edge loop, or two edges":
+        "Poligon ör: 3 ya da daha fazla nokta, kapalı bir kenar halkası ya da iki kenar seçin",
     "From face": "Yüzeyden",
     "Arc Segments": "Yay segmenti",
     "Max Length": "En uzun",
@@ -205,7 +212,7 @@ TR = {
     "Edge mode E: extrude open edges  |  extrude: wheel = segments, X / Y / Z = axis\n"
     "O: object / edit mode  |  D: duplicate object\n"
         "T: move gizmo  |  G: free move (mouse)  |  Tab / S: SubPatch\n"
-    "A: select all  |  Del: delete\n"
+    "A: select all  |  Del: delete  |  P: make polygon\n"
     "Ctrl+C / X / V: copy / cut / paste polygons\n"
     "Ctrl+Z: undo  |  F: save to document\n"
     "Ctrl + gizmo / T: stepped (mm, degrees)\n"
@@ -224,7 +231,7 @@ TR = {
         "Kenar modunda E: açık kenarları extrude  |  extrude'da tekerlek = segment, X / Y / Z = eksen\n"
         "O: nesne / düzenleme modu  |  D: nesneyi çoğalt\n"
         "T: taşıma gizmosu  |  G: serbest taşı (fare)  |  Tab / S: SubPatch\n"
-        "A: tümünü seç  |  Del: sil\n"
+        "A: tümünü seç  |  Del: sil  |  P: poligon ör\n"
         "Ctrl+C / X / V: çokgen kopyala / kes / yapıştır\n"
         "Ctrl+Z: geri al  |  F: belgeye kaydet\n"
         "Ctrl + gizmo / T: adımlı (mm, derece)\n"

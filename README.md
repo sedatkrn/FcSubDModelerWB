@@ -48,6 +48,8 @@ Catmull-Clark limit surface is on the roadmap.
   quad grids, flat faces with one or two boundaries become fans / quad strips, neighbouring faces are welded along
   their shared edges, sharp joins and corners stay creased. With *Exact Edge* the cage is solved so the SubD
   surface passes through all sample points (about 0.08 mm on a 4 mm thick filleted box)
+- **Make polygon** (P, LightWave Make Polygon / Blender F): a polygon from 3 or more selected points, a closed
+  edge loop (fills a hole), or two edges / an open chain (bridges their ends); faces its neighbours
 - **Snap** (bottom bar): free moves (G, the gizmo's centre cube) snap the point nearest to the cursor to the
   vertices and edges of visible Part / PartDesign shapes
 - **Hole**: a round hole in the middle of the selected faces (one, two, four... in one flat patch); the patch is
@@ -114,6 +116,7 @@ document; save the document as usual (Ctrl+S).
 | T / R / H | move / rotate / stretch-size gizmo | G | free move with the mouse |
 | Y | X symmetry | X | ghost mode |
 | Del | delete faces | Ctrl+Z | undo |
+| P | make polygon from selected points / edges | | |
 | Ctrl+C / Ctrl+X | copy / cut polygons | Ctrl+V | paste in place (object mode: as a new SubD object) |
 | F | save to the document | N | Options panel |
 | Ctrl (while dragging) | mm / degree steps | Shift (while dragging) | fine control |
