@@ -1498,8 +1498,19 @@ class SubDSession:
         else:
             self.enter_object_mode()
 
+    def add_box(self):
+        """Box dugmesi: her zaman YENI bir SubD nesnesi (Edit modunda once mevcut kafes kaydedilir; eskiden
+        Edit modunda mevcut kafesin yerine kutu konuyordu ve model kayboluyordu)."""
+        if self.drag or self.grab:
+            return
+        if self.mode != "object":
+            self.enter_object_mode()
+        self.object_new_box()
+
     def object_new_box(self):
-        """Object modunda: olcu panelindeki boyutta yeni bir SubD kutusu ekle ve sec."""
+        """Object modunda: olcu panelindeki boyutta yeni bir SubD kutusu ekle ve hemen kafesine gir. (Object
+        modunda yalniz puruzsuz yuzey gorunur; tek kutu kafesinin yuzeyi kuremsi oldugundan 'kutu istedim, kure
+        geldi' gibi gorunuyordu.)"""
         doc = App.ActiveDocument
         doc.openTransaction("SubD box")
         o = doc.addObject("Mesh::FeaturePython", "SubD")
@@ -1509,8 +1520,8 @@ class SubDSession:
         cage_to_obj(Cage.cube([b.value() for b in self.box_size]), o)
         o.recompute()
         doc.commitTransaction()
-        self.set_object_selection([o])
-        self.refresh()
+        self.edit_mode = "face"
+        self.edit_object(o)
 
     def object_duplicate(self):
         """Secili nesnelerin kopyalari (ayni yerde); kopyalar secili olur, gizmoyla tasinabilir."""
@@ -3677,7 +3688,7 @@ class _Overlay(object):
 
         obj = lambda: s.mode == "object"
         head("Create")
-        btn("Box", "", lambda: s.object_new_box() if obj() else s.new_cube())
+        btn("Box", "", s.add_box)
         head("Object")
         btn("Duplicate", "D", s.object_duplicate, sel=True, mode="object")
         btn("Mirror X", "", s.object_mirror, sel=True, mode="object")
