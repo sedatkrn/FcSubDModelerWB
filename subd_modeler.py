@@ -85,6 +85,22 @@ def catmull_clark(V, faces, crease=None):
     nn = n[used][:, None]
     Vn[used] = (fsum[used] / nn + 2 * rsum[used] / m[used][:, None] + (nn - 3) * V[used]) / nn
 
+    # acik kenarlar: B-spline egrisi kurali (limitte nokta = (onceki + 4 kendisi + sonraki) / 6). Keskin
+    # kenarlardan ONCE: 3+ keskin kenarli acik kenar noktasi kose olarak yerinde kalsin (eskiden bu kural
+    # sonra geldigi icin acik kenardaki keskin koseler de yuvarlaniyordu).
+    bd = ecnt == 1
+    if bd.any():
+        bsum, bcnt = np.zeros((N, 3)), np.zeros(N)
+        np.add.at(bsum, ea[bd], V[eb[bd]])
+        np.add.at(bsum, eb[bd], V[ea[bd]])
+        np.add.at(bcnt, ea[bd], 1)
+        np.add.at(bcnt, eb[bd], 1)
+        bv = bcnt == 2
+        Vn[bv] = 0.75 * V[bv] + 0.125 * bsum[bv]
+        corner = bv & (n == 1)                         # tek yuzlu acik kenar noktasi (yama kosesi): yerinde kalir
+    else:                                              # (OpenSubdiv varsayilani "edge and corner"); keskin kenar
+        corner = np.zeros(N, bool)                     # kurallarindan SONRA uygulanir (yoksa egri kurali ezerdi)
+
     # keskin kenarlar (crease)
     child = {}
     if crease:
@@ -113,17 +129,7 @@ def catmull_clark(V, faces, crease=None):
         for e in np.nonzero(s > 1)[0]:
             child[_edge(int(ea[e]), N + int(e))] = s[e] - 1
             child[_edge(int(eb[e]), N + int(e))] = s[e] - 1
-
-    # acik kenarlar: B-spline egrisi kurali
-    bd = ecnt == 1
-    if bd.any():
-        bsum, bcnt = np.zeros((N, 3)), np.zeros(N)
-        np.add.at(bsum, ea[bd], V[eb[bd]])
-        np.add.at(bsum, eb[bd], V[ea[bd]])
-        np.add.at(bcnt, ea[bd], 1)
-        np.add.at(bcnt, eb[bd], 1)
-        bv = bcnt == 2
-        Vn[bv] = 0.75 * V[bv] + 0.125 * bsum[bv]
+    Vn[corner] = V[corner]
 
     V2 = np.concatenate([Vn, ep, fp])
     quads = np.stack([fv, N + einv, N + E + fidx, N + einv[prv]], 1)
@@ -1195,6 +1201,278 @@ def cage_from_obj(obj):
     return Cage(V, F, C)
 
 
+# ---------- Part / PartDesign yuzeylerinden kafes (From face) ----------
+# Secili B-rep yuzeyleri tek kafes olur. Her B-rep kenari bir kez orneklenir (duz kenar az, egri kenar aciya gore:
+# 90 derece basina arc_segs; max_len'den uzun parca yok) ve her yuzde AYNI noktalar kullanilir: ortak kenarlar
+# kaynaklanir. Dort kenarli yuz (duz ya da kavisli: silindir, B-spline...): yuzeyin UV parametresinde Coons
+# izgarasi; karsi kenarlar ayni sayida orneklenir (bu kosul bitisik yuzlere yayilir). Duz yuz: tek sinir -> iceri
+# halka + ortada cokgen, dis + ic sinir (or. kutu agzi) -> dortgen serit. Yuzlerin keskin birlesimi (or. agiz ile
+# duvar) ve acik sinirdaki keskin koseler crease ile keskin kalir, teget birlesim yumusak kalir. exact: kafes
+# tekrar tekrar duzeltilir ki SubD limit yuzeyi butun ornek noktalardan gecsin (sinir ve ic).
+
+def _edge_turn(e):
+    """Kenar boyunca teget donusu (radyan); duz kenarda ~0."""
+    a, b = e.FirstParameter, e.LastParameter
+    ts = [e.tangentAt(a + (b - a) * k / 16.0) for k in range(17)]
+    ang = 0.0
+    for t0, t1 in zip(ts, ts[1:]):
+        if t0.Length > 1e-12 and t1.Length > 1e-12:
+            ang += t0.getAngle(t1)
+    return ang
+
+
+def _edge_count(e, arc_segs, max_len):
+    turn = _edge_turn(e)
+    n = int(math.ceil(turn / (math.pi / 2) * arc_segs - 1e-9)) if turn > 1e-3 else 1
+    if max_len > 0:
+        n = max(n, int(math.ceil(e.Length / max_len - 1e-9)))
+    return max(n, 1)
+
+
+def _edge_points(e, n):
+    """Kenarin n parcali ornegi, PARAMETRE yonunde. Her yuzde ayni cagrilir: ortak kenarin noktalari ayni."""
+    return np.array([tuple(v) for v in e.discretize(Number=n + 1)], float)
+
+
+def _chain(edges, counts):
+    """Sirali kapali kenar zinciri: her kenarin ornegi ZINCIR yonunde ((n+1, 3) dizi, uclar dahil). Kenarin
+    parametre yonu zincirle ters olabilir (komsuluktan bulunur; Vertexes sirasina guvenilmez)."""
+    ends = [(np.array(tuple(e.valueAt(e.FirstParameter))), np.array(tuple(e.valueAt(e.LastParameter))))
+            for e in edges]
+    nxt = ends[1 % len(edges)]                             # ilk kenarin sonu ikinci kenara degmeli
+    fwd0 = min(np.linalg.norm(ends[0][1] - q) for q in nxt) <= min(np.linalg.norm(ends[0][0] - q) for q in nxt)
+    prev = ends[0][0] if fwd0 else ends[0][1]
+    out = []
+    for e, n, (p0, p1) in zip(edges, counts, ends):
+        q = _edge_points(e, n)
+        if np.linalg.norm(p1 - prev) < np.linalg.norm(p0 - prev):
+            q = q[::-1]
+        out.append(q)
+        prev = q[-1]
+    return out
+
+
+def auto_max_len(edges, arc_segs):
+    """Otomatik en uzun parca: egri kenarlardaki adimin 1.5 kati (duz kenarlar da benzer aralikla orneklenmeli,
+    yoksa noktalardan gecmeye zorlanan SubD uzun duz parcada dalgalanir); toplam ~400 parcayi asmasin. Egri kenar
+    yoksa 0 (duz kenar tek parca)."""
+    steps = [e.Length / _edge_count(e, arc_segs, 0) for e in edges if _edge_turn(e) > 1e-3]
+    if not steps:
+        return 0.0
+    return max(1.5 * min(steps), sum(e.Length for e in edges) / 400.0)
+
+
+def _face_normal(face, p):
+    u, v = face.Surface.parameter(App.Vector(*p))
+    return np.array(tuple(face.normalAt(u, v)))
+
+
+def _pair_order(eo, ei):
+    """Halka yuzun dis ve ic kenarlarini esle (ayni sayida): ic listenin donus + yonu, orta noktalara gore."""
+    mid = lambda e: np.array(tuple(e.valueAt((e.FirstParameter + e.LastParameter) / 2)))
+    mo, mi = [mid(e) for e in eo], [mid(e) for e in ei]
+    best = None
+    for rev in (False, True):
+        lst = list(range(len(ei)))[::-1] if rev else list(range(len(ei)))
+        for k in range(len(ei)):
+            order = lst[k:] + lst[:k]
+            d = sum(np.linalg.norm(mo[j] - mi[order[j]]) for j in range(len(eo)))
+            if best is None or d < best[0]:
+                best = (d, order)
+    return best[1]
+
+
+def _grid_patch(face, edges, counts):
+    """Dort kenarli yuz: kenar ornekleri arasinda UV'de Coons izgarasi, ic noktalar yuzeyin uzerinde. (V, F)"""
+    segs = _chain(edges, counts)
+    n0, n1 = len(segs[0]) - 1, len(segs[1]) - 1
+    if len(segs[2]) - 1 != n0 or len(segs[3]) - 1 != n1:
+        return None
+    B, R, Tp, L = segs[0], segs[1], segs[2][::-1], segs[3][::-1]   # alt, sag, ust (soldan saga), sol (alttan uste)
+    S = face.Surface
+    uv = lambda P: np.array([tuple(S.parameter(App.Vector(*p))) for p in P], float)
+    UB, UR, UT, UL = uv(B), uv(R), uv(Tp), uv(L)
+    for k, per in enumerate((S.UPeriod() if S.isUPeriodic() else 0, S.VPeriod() if S.isVPeriodic() else 0)):
+        if per:                                            # periyodik yuzey (silindir): dikisin ayni tarafina al
+            for A in (UB, UR, UT, UL):
+                A[:, k] = UB[0, k] + (A[:, k] - UB[0, k] + per / 2) % per - per / 2
+    idx = lambda i, j: j * (n0 + 1) + i
+    V = np.zeros(((n0 + 1) * (n1 + 1), 3))
+    for j in range(n1 + 1):
+        t = j / float(n1)
+        for i in range(n0 + 1):
+            s = i / float(n0)
+            if j == 0:
+                p = B[i]
+            elif j == n1:
+                p = Tp[i]
+            elif i == 0:
+                p = L[j]
+            elif i == n0:
+                p = R[j]
+            else:
+                w = ((1 - t) * UB[i] + t * UT[i] + (1 - s) * UL[j] + s * UR[j]
+                     - ((1 - s) * (1 - t) * UB[0] + s * (1 - t) * UB[-1] + (1 - s) * t * UT[0] + s * t * UT[-1]))
+                p = np.array(tuple(S.value(float(w[0]), float(w[1]))))
+            V[idx(i, j)] = p
+    F = [[idx(i, j), idx(i + 1, j), idx(i + 1, j + 1), idx(i, j + 1)] for j in range(n1) for i in range(n0)]
+    q = V[F[len(F) // 2]]                                  # yon: yuzun (disari) normaliyle ayni
+    if np.cross(q[1] - q[0], q[3] - q[0]).dot(_face_normal(face, q.mean(0))) < 0:
+        F = [f[::-1] for f in F]
+    return V, F
+
+
+def _planar_patch(face, wires):
+    """Duz yuz. wires: [(kenarlar, sayilar)], ilki dis sinir. Tek sinir: iceri halka + ortada cokgen; dis + ic
+    sinir: dortgen serit. (V, F)"""
+    c = np.array(tuple(face.CenterOfMass))
+    n = _face_normal(face, c)
+    loop = lambda ec: np.vstack([q[:-1] for q in _chain(*ec)])
+    ccw = lambda P: np.cross(P - c, np.roll(P - c, -1, 0)).sum(0).dot(n) > 0
+    Po = loop(wires[0])
+    if not ccw(Po):
+        Po = Po[::-1]
+    m = len(Po)
+    if len(wires) == 1:
+        R = c + 0.6 * (Po - c)
+        F = [[i, (i + 1) % m, m + (i + 1) % m, m + i] for i in range(m)] + [list(range(m, 2 * m))]
+        return np.vstack([Po, R]), F
+    Pi = loop(wires[1])
+    if len(Pi) != m:                                       # farkli yapida sinirlar: yay uzunluguna gore esit sayi
+        m = max(m, len(Pi))
+        Po, Pi = _resample(Po, m), _resample(Pi, m)
+    if not ccw(Pi):
+        Pi = Pi[::-1]
+    Pi = np.roll(Pi, -int(np.argmin(np.linalg.norm(Pi - Po[0], axis=1))), 0)
+    return np.vstack([Po, Pi]), [[i, (i + 1) % m, m + (i + 1) % m, m + i] for i in range(m)]
+
+
+def _resample(P, m):
+    """Kapali cokgeni yay uzunluguna gore m noktaya yeniden orneklendir."""
+    seg = np.linalg.norm(np.roll(P, -1, 0) - P, axis=1)
+    L = np.concatenate([[0], np.cumsum(seg)])
+    t = np.linspace(0, L[-1], m, endpoint=False)
+    return np.stack([np.interp(t, L, np.concatenate([P[:, d], P[:1, d]])) for d in range(3)], 1)
+
+
+def cage_from_faces(faces, arc_segs=4, max_len=0.0, exact=True):
+    """Secili yuzlerden (dunya koordinatinda) tek kafes ya da hata metni. max_len <= 0: auto_max_len."""
+    edges, ekeys = [], {}
+
+    def eid(e):
+        # ayni kenar geometriyle taninir (uclar + orta nokta): Part.getShape her yuzu ayri kopyalar, isSame tutmaz
+        r = lambda p: tuple(np.round(np.array(tuple(p)) / 1e-4).astype(np.int64))
+        k = (frozenset((r(e.valueAt(e.FirstParameter)), r(e.valueAt(e.LastParameter)))),
+             r(e.valueAt((e.FirstParameter + e.LastParameter) / 2)))
+        if k not in ekeys:
+            ekeys[k] = len(edges)
+            edges.append(e)
+        return ekeys[k]
+    info = []
+    for f in faces:
+        planar = f.isPlanar() if hasattr(f, "isPlanar") else f.Surface.TypeId == "Part::GeomPlane"
+        ws = [f.OuterWire] + [w for w in f.Wires if not w.isSame(f.OuterWire)]
+        wl = [[eid(e) for e in w.OrderedEdges] for w in ws]
+        if len(ws) == 1 and len(wl[0]) == 4:
+            kind = "grid"
+        elif planar and len(ws) <= 2:
+            kind = "planar"
+        elif planar:
+            return T("From face: faces with more than one hole are not supported yet")
+        else:
+            return T("From face: curved faces need exactly four edges")
+        info.append((f, kind, wl))
+    if max_len <= 0:
+        max_len = auto_max_len(edges, arc_segs)
+    # parca sayilari: dort kenarli yuzde karsi kenarlar, halka yuzde eslenen dis / ic kenarlar ayni sayida
+    parent = list(range(len(edges)))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+    for f, kind, wl in info:
+        if kind == "grid":
+            parent[find(wl[0][0])] = find(wl[0][2])
+            parent[find(wl[0][1])] = find(wl[0][3])
+        elif len(wl) == 2 and len(wl[0]) == len(wl[1]):
+            order = _pair_order([edges[i] for i in wl[0]], [edges[i] for i in wl[1]])
+            wl[1][:] = [wl[1][j] for j in order]
+            for a, b in zip(wl[0], wl[1]):
+                parent[find(a)] = find(b)
+    best = {}
+    for i, e in enumerate(edges):
+        best[find(i)] = max(best.get(find(i), 1), _edge_count(e, arc_segs, max_len))
+    cnt = [best[find(i)] for i in range(len(edges))]
+    # yamalar ve kaynak (ortak kenar noktalari ayni oldugundan konumla birlesir)
+    Vs, Fs, off = [], [], 0
+    for f, kind, wl in info:
+        res = (_grid_patch(f, [edges[i] for i in wl[0]], [cnt[i] for i in wl[0]]) if kind == "grid" else
+               _planar_patch(f, [([edges[i] for i in w], [cnt[i] for i in w]) for w in wl]))
+        if res is None:
+            return T("From face: this face could not be meshed")
+        Vs.append(res[0])
+        Fs += [[v + off for v in q] for q in res[1]]
+        off += len(res[0])
+    V = np.vstack(Vs)
+    tol = 1e-6 * max(np.ptp(V, 0).max(), 1.0)
+    key = lambda p: tuple(np.round(np.asarray(p, float) / tol).astype(np.int64))
+    index, uniq, remap = {}, [], []
+    for p in V:
+        k = key(p)
+        if k not in index:
+            index[k] = len(uniq)
+            uniq.append(p)
+        remap.append(index[k])
+    cage = Cage(np.array(uniq), [[remap[v] for v in q] for q in Fs])
+    # keskinlik: iki yuzun keskin birlesimi (normaller > 10 derece) ve acik sinirdaki keskin koseler
+    use = {}
+    for fi, (f, kind, wl) in enumerate(info):
+        for w in wl:
+            for i in w:
+                use.setdefault(i, []).append(fi)
+    C, sharp = {}, math.cos(math.radians(10))
+    for i, fl in use.items():
+        if len(fl) != 2:
+            continue
+        e = edges[i]
+        m = tuple(e.valueAt((e.FirstParameter + e.LastParameter) / 2))
+        if _face_normal(info[fl[0]][0], m).dot(_face_normal(info[fl[1]][0], m)) < sharp:
+            ids = [index.get(key(p)) for p in _edge_points(e, cnt[i])]
+            for a, b in zip(ids, ids[1:]):
+                if a is not None and b is not None and a != b:
+                    C[_edge(a, b)] = CREASE_HARD
+    ends = {}                                              # acik sinir noktasi -> oradan cikan teget yonleri
+    for i, fl in use.items():
+        if len(fl) == 1:
+            e = edges[i]
+            for prm, sgn in ((e.FirstParameter, 1.0), (e.LastParameter, -1.0)):
+                k = index.get(key(tuple(e.valueAt(prm))))
+                t = np.array(tuple(e.tangentAt(prm))) * sgn
+                if k is not None and np.linalg.norm(t) > 1e-12:
+                    ends.setdefault(k, []).append(t / np.linalg.norm(t))
+    ef = cage.edge_faces()
+    for k, ts in ends.items():
+        if len(ts) == 2 and ts[0].dot(ts[1]) > -sharp:     # yonler zit degil: kose (tek yuzlu kose zaten sabit)
+            at = [e for e in ef if k in e]
+            for e in at:
+                if len(ef[e]) == 1:
+                    C[e] = CREASE_HARD
+            inner = [e for e in at if len(ef[e]) == 2]
+            if inner:
+                C[inner[0]] = CREASE_HARD                  # 3 keskin kenar: kose noktasi yerinde kalir
+    cage.C = C
+    if exact:                                              # SubD limit yuzeyi ornek noktalardan gecsin
+        T0, P = cage.V.copy(), cage.V.copy()
+        lv = 4 if len(P) < 600 else 3
+        for _ in range(20):
+            Sx, _ = subdivide(P, cage.F, lv, cage.C)
+            P = P + (T0 - Sx[:len(P)])
+        cage.V = P
+    return cage
+
+
 def cage_key(obj):
     """Kafesin degisip degismedigini anlamak icin ozet (Placement haric)."""
     return (hash(tuple((p.x, p.y, p.z) for p in obj.CagePoints)), tuple(obj.CageFaces),
@@ -1733,6 +2011,8 @@ class SubDSession:
         self.sel_e = set()   # frozenset({a, b}) kenarlar
         self.sym = False     # X=0 duzlemine gore simetri
         self.ghost = False   # hayalet modu: arkadakiler gorunur / secilebilir
+        self.snap = False    # serbest tasimada Part / PartDesign kose ve kenarlarina yakalama
+        self._snapdata = None
         self.smooth = obj is not None
         self.levels = obj.Levels if obj is not None else 3
         self.undo = []
@@ -2593,6 +2873,18 @@ class SubDSession:
             err = self._hole(v)
             if err:
                 self.info = err
+        elif k == "fromface":
+            c = self._face_cage(a["faces"], v)
+            if isinstance(c, str):
+                self.info = c
+                return
+            c.V = self.w2l(c.V)
+            if a["append"]:
+                new = self.cage.append(c)
+            else:
+                self.cage, new = c, list(range(len(c.F)))
+            self.sel, self.sel_v, self.sel_e = set(new) if self.mode == "face" else set(), set(), set()
+            self.info = T("From face: %d polygons, %d points") % (len(c.F), len(c.V))
         elif k == "plane":
             n = np.array([v["Nx"], v["Ny"], v["Nz"]], float)
             if np.linalg.norm(n) > 1e-9:
@@ -2632,6 +2924,10 @@ class SubDSession:
                     self.drag is None
             if k == "mirror":
                 return T("Mirror ") + "XYZ"[a["axis"]], [mm("Center")], self.drag is None
+            if k == "fromface":
+                return T("From face"), [("Arc Segments", v["Arc Segments"], "", 0, r("Arc Segments")),
+                                        mm("Max Length"), ("Exact Edge", v["Exact Edge"], "", 0, r("Exact Edge"))], \
+                    self.drag is None
             if k == "hole":
                 return T("Hole"), [mm("Radius"), ("Segments", v["Segments"], "", 0, r("Segments")), mm("Support")], \
                     self.drag is None
@@ -3756,6 +4052,88 @@ class SubDSession:
         self.info = T("Bridge: %d polygons") % len(new)
         return None
 
+    # --- From face: FreeCAD'de secili Part / PartDesign yuzeylerinden / kenar halkasindan kafes (cage_from_faces) ---
+    # Object modunda yeni SubD nesnesi olur (dunya koordinati), kafeste duzenlerken ayni kafese eklenir. Panel:
+    # Arc Segments (90 derece basina), Max Length (mm, 0 = otomatik), Exact Edge (1: SubD kenari yuzey sinirindan
+    # tam gecer, 0: kafes noktalari sinirda).
+    FACE = ("Arc Segments", "Max Length", "Exact Edge")
+
+    def _selected_part_faces(self):
+        """FreeCAD secimindeki Part / PartDesign yuzeyleri, dunya koordinatinda (Body yerlesimi dahil). Secili
+        kenarlar kapali halka(lar) olusturuyorsa onlardan duz yuz yapilir (ic ice iki halka: halka yuz). Kopya
+        alinmaz: ortak kenarlar (isSame) taninsin. Hata metni dondurebilir."""
+        import Part
+        faces, edges = [], []
+        for so in Gui.Selection.getSelectionEx("", 0):
+            if is_subd(so.Object):
+                continue
+            for sub in so.SubElementNames:
+                try:
+                    sh = Part.getShape(so.Object, sub, needSubElement=True)
+                except Exception:
+                    continue
+                if not sh.isNull() and sh.ShapeType == "Face":
+                    faces.append(sh)
+                elif not sh.isNull() and sh.ShapeType == "Edge":
+                    edges.append(sh)
+        if edges:
+            groups = Part.sortEdges(edges)
+            wires = [Part.Wire(g) for g in groups]
+            if any(not w.isClosed() for w in wires):
+                return T("From face: the selected edges must form closed loops")
+            try:
+                f = Part.makeFace(wires, "Part::FaceMakerBullseye")
+                faces += list(f.Faces)
+            except Exception:
+                return T("From face: no flat face can be made from the selected edges")
+        return faces
+
+    def from_face(self):
+        if self.drag or self.grab:
+            return
+        faces = self._selected_part_faces()
+        if not faces or isinstance(faces, str):
+            self.info = faces or T("From face: select faces or a closed edge loop of a Part / PartDesign object")
+            self.refresh()
+            return
+        vals = {"Arc Segments": 4.0, "Max Length": 0.0, "Exact Edge": 1.0}
+        test = self._face_cage(faces, dict(vals))
+        if isinstance(test, str):
+            self.info = test
+            self.refresh()
+            return
+        if self.mode == "object":                          # yeni nesne (Paste as object gibi), hemen kafesine gir
+            doc = App.ActiveDocument
+            doc.openTransaction("SubD from face")
+            o = doc.addObject("Mesh::FeaturePython", "SubD")
+            SubDObject(o)
+            if App.GuiUp:
+                o.ViewObject.Proxy = 0
+            cage_to_obj(test, o)
+            o.Levels = self.levels
+            o.recompute()
+            doc.commitTransaction()
+            self.edit_mode = "face"
+            self.edit_object(o)
+            self.push()
+            op = self.new_op("fromface", vals, faces=faces, append=False)
+        else:
+            self.drop_tool()
+            self.push()
+            op = self.new_op("fromface", vals, faces=faces, append=True)
+        self._apply_op(op)
+        self.last_op, self.op = op, None
+        self.refresh()
+
+    def _face_cage(self, faces, v):
+        """Yuzeylerden (dunya) tek kafes ya da hata metni; degerleri sinirlar, otomatik Max Length'i yazar."""
+        segs = min(max(int(round(v["Arc Segments"])), 1), 32)
+        v["Arc Segments"] = float(segs)
+        v["Exact Edge"] = 1.0 if v["Exact Edge"] >= 0.5 else 0.0
+        if v["Max Length"] <= 0:                           # otomatik: panelde hesaplanan deger gorunsun
+            v["Max Length"] = float(auto_max_len([e for f in faces for e in f.Edges], segs))
+        return cage_from_faces(faces, segs, v["Max Length"], v["Exact Edge"] > 0)
+
     # --- Hole: secili yuzlerin (1, 2, 4...) ortasina daire delik; panel: Radius, Segments, Support ---
     HOLE = ("Radius", "Segments", "Support")
 
@@ -3821,8 +4199,69 @@ class SubDSession:
         p0 = self.ray_plane(self.mouse, c, n)
         if p0 is None and not lazy:
             return
-        self.grab = dict(state=self.move_state(verts), c=c, n=n, p0=p0, axis=axis, lazy=lazy)
+        self.grab = dict(state=self.move_state(verts), c=c, n=n, p0=p0, axis=axis, lazy=lazy,
+                         anchor=self._snap_prepare(verts))
         self.gizmo.place(None)
+
+    # --- Snap: serbest tasimada (G, gizmo merkez kupu) gorunur Part / PartDesign sekillerine yakalama ---
+    # Hedef: imlece 12 piksel icindeki kose noktasi, yoksa 10 piksel icindeki kenar noktasi. Secimin imlece en yakin
+    # noktasi (capa) hedefe tam oturur. Hedefler surukleme basinda toplanir (kamera surukleme boyunca sabit).
+
+    def toggle_snap(self):
+        self.snap = not self.snap
+        self.refresh()
+
+    def _snap_prepare(self, verts):
+        """Snap aciksa hedefleri topla ve capayi (secimin imlece en yakin noktasi, yerel) dondur; kapaliysa None."""
+        self._snapdata = None
+        if not self.snap or not len(verts):
+            return None
+        import Part
+        pts, A, B = [], [], []
+        for o in App.ActiveDocument.Objects:
+            if (is_subd(o) or "Samples" in o.PropertiesList or not hasattr(o, "Shape")
+                    or o.TypeId.startswith("App::")):              # Origin eksen / duzlemleri, gruplar
+                continue
+            try:
+                if not o.ViewObject.Visibility:
+                    continue
+                sh = Part.getShape(o)
+            except Exception:
+                continue
+            if sh.isNull():
+                continue
+            pts += [tuple(x.Point) for x in sh.Vertexes]
+            for e in sh.Edges:
+                q = [tuple(x) for x in e.discretize(Number=2 if _edge_turn(e) < 1e-3 else 33)]
+                A += q[:-1]
+                B += q[1:]
+        vv, W, H = _vv(self.view)
+        scr = lambda P: np.array([_to_screen(vv, W, H, App.Vector(*p)) for p in P], float).reshape(-1, 2)
+        P, A, B = (np.array(x, float).reshape(-1, 3) for x in (pts, A, B))
+        self._snapdata = dict(P=P, Ps=scr(P), A=A, B=B, As=scr(A), Bs=scr(B))
+        loc = self.cage.V[list(verts)]
+        S = scr(self.l2w(loc))
+        return loc[int(np.argmin(np.linalg.norm(S - np.array(self.mouse, float), axis=1)))].copy()
+
+    def _snap_target(self, pos):
+        """Imlec altindaki yakalama hedefi: (dunya noktasi, "vertex" / "edge") ya da None."""
+        d = getattr(self, "_snapdata", None)
+        if not d:
+            return None
+        p = np.array(pos, float)
+        if len(d["Ps"]):
+            dist = np.linalg.norm(d["Ps"] - p, axis=1)
+            i = int(np.argmin(dist))
+            if dist[i] < 12:
+                return d["P"][i], "vertex"
+        if len(d["As"]):
+            ab = d["Bs"] - d["As"]
+            t = np.clip(((p - d["As"]) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-9), 0, 1)
+            dist = np.linalg.norm(d["As"] + t[:, None] * ab - p, axis=1)
+            i = int(np.argmin(dist))
+            if dist[i] < 10:
+                return d["A"][i] + t[i] * (d["B"][i] - d["A"][i]), "edge"
+        return None
 
     def move_state(self, verts):
         """Tasinacak noktalar ve baslangic konumlari; simetride aynadaki esler ve duzlemdeki noktalar da."""
@@ -3893,9 +4332,13 @@ class SubDSession:
             vals["Distance"] = t
         else:
             d = np.array([_snap(x, step) for x in d])
+        hit = self._snap_target(self.mouse) if g["axis"] is None and g.get("anchor") is not None else None
+        if hit is not None:                                # capa noktasi hedefe tam otursun
+            d = self.w2l(hit[0]) - g["anchor"]
         dw = self.l2w_dir(d)                               # panelde ve gostergede dunya eksenleri
         if g["axis"] is None:
-            self.info = "Δ  X %.3f   Y %.3f   Z %.3f mm" % tuple(dw)
+            self.info = "Δ  X %.3f   Y %.3f   Z %.3f mm" % tuple(dw) + (
+                "   " + T("Snap: %s") % T(hit[1]) if hit is not None else "")
         vals.update(X=float(dw[0]), Y=float(dw[1]), Z=float(dw[2]))
         self.apply_move(g["state"], d)
 
@@ -3943,7 +4386,8 @@ class SubDSession:
         else:
             self.new_op("move", dict(X=0.0, Y=0.0, Z=0.0), verts=verts)
         self.drag = dict(key=key, state=self.move_state(verts), c0=c0, c=c, free_n=_view_dir(self.view, c0),
-                         acc=0.0, vec=App.Vector())
+                         acc=0.0, vec=App.Vector(),
+                         anchor=self._snap_prepare(verts) if kind == "free" else None)
         self.drag["ref"] = self.drag["ref0"] = self.drag_measure(pos)
 
     def drag_measure(self, pos):
@@ -4035,7 +4479,11 @@ class SubDSession:
             g["vec"] += (cur - g["ref"]) * (1.0 if kind == "free" else _gain())
             d = np.array([_snap(x, step) for x in g["vec"]])
         g["ref"] = cur
-        self.info = "Δ  X %.3f   Y %.3f   Z %.3f mm" % tuple(d)
+        hit = self._snap_target(self.mouse) if kind == "free" and g.get("anchor") is not None else None
+        if hit is not None:                                # capa noktasi hedefe tam otursun (dunya)
+            d = hit[0] - self.l2w(g["anchor"])
+        self.info = "Δ  X %.3f   Y %.3f   Z %.3f mm" % tuple(d) + (
+            "   " + T("Snap: %s") % T(hit[1]) if hit is not None else "")
         self.op["values"].update(X=float(d[0]), Y=float(d[1]), Z=float(d[2]))
         if self.mode == "object":
             self.objects_move(g, d)
@@ -4105,6 +4553,9 @@ class SubDSession:
             cb.setHandled()                                # secime ve gezinmeye gitmesin
             self.drag_begin(key, pos)
             return
+        if (self.mode == "object" and self.object_pick(pos) is None
+                and self.view.getObjectInfo((int(pos[0]), int(pos[1])))):
+            return     # SubD olmayan sekil (Part / PartDesign): FreeCAD kendisi secsin (yuzey -> From face)
         # bos alana basildi: birakinca tiklama, surukleyince kutu secimi (Shift ekler, Ctrl cikarir)
         cb.setHandled()
         mods = QtWidgets.QApplication.keyboardModifiers()
@@ -4734,6 +5185,7 @@ class _Overlay(object):
         btn("Close", "", lambda: _later(s.close))
         head("Create")
         btn("Box", "", s.add_box)
+        btn("From face", "", s.from_face)              # FreeCAD'de secili Part / PartDesign yuzeyinden
         head("Object")
         btn("Duplicate", "D", s.object_duplicate, sel=True, mode="object")
         head("Select")
@@ -4790,6 +5242,7 @@ class _Overlay(object):
         tog("Symmetry", "Y", s.toggle_sym, lambda: s.sym)
         tog("Subpatch", "Tab", s.toggle_smooth, lambda: s.smooth)
         tog("Ghost", "X", s.toggle_ghost, lambda: s.ghost)
+        tog("Snap", "", s.toggle_snap, lambda: s.snap)
         cc = QtWidgets.QLabel("Catmull-Clark")
         cc.setStyleSheet("padding-left: 10px;")
         row.addWidget(cc)

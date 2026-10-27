@@ -43,6 +43,13 @@ Catmull-Clark limit surface is on the roadmap.
 - Crease (sharp or semi-sharp edges) — makes the surface hit exact dimensions
 - Copy / cut / paste polygons (with their creases): paste in place into the same cage, into another SubD
   object, or as a new object (e.g. copy the neck of a bottle to start its cap)
+- **From face**: select faces or closed edge loops of a Part / PartDesign object (in object mode FreeCAD's own
+  selection works) and turn them into one cage: four-sided faces (flat or curved: cylinders, B-splines...) become
+  quad grids, flat faces with one or two boundaries become fans / quad strips, neighbouring faces are welded along
+  their shared edges, sharp joins and corners stay creased. With *Exact Edge* the cage is solved so the SubD
+  surface passes through all sample points (about 0.08 mm on a 4 mm thick filleted box)
+- **Snap** (bottom bar): free moves (G, the gizmo's centre cube) snap the point nearest to the cursor to the
+  vertices and edges of visible Part / PartDesign shapes
 - **Hole**: a round hole in the middle of the selected faces (one, two, four... in one flat patch); the patch is
   re-meshed around it automatically (quads where the counts match), with radius, segments and a support loop
 - **Bridge** (Blender Bridge Edge Loops): connects two open edge loops / chains, or two face regions (their

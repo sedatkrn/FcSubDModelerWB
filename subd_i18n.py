@@ -77,6 +77,25 @@ TR = {
     # --- object mode ---
     "Object": "Nesne",
     "Duplicate": "Çoğalt",
+    "From face": "Yüzeyden",
+    "Arc Segments": "Yay segmenti",
+    "Max Length": "En uzun",
+    "Exact Edge": "Tam kenar",
+    "From face: curved faces need exactly four edges": "Yüzeyden: kavisli yüzeylerin tam dört kenarı olmalı",
+    "From face: this face could not be meshed": "Yüzeyden: bu yüzeyden kafes yapılamadı",
+    "From face: the selected edges must form closed loops": "Yüzeyden: seçili kenarlar kapalı halka oluşturmalı",
+    "From face: no flat face can be made from the selected edges":
+        "Yüzeyden: seçili kenarlardan düz yüzey yapılamıyor",
+    "From face: select faces or a closed edge loop of a Part / PartDesign object":
+        "Yüzeyden: bir Part / PartDesign nesnesinin yüzeylerini ya da kapalı kenar halkasını seçin",
+    "From face: faces with more than one hole are not supported yet":
+        "Yüzeyden: birden fazla delikli yüzey henüz desteklenmiyor",
+    "From face: select a flat face of a Part / PartDesign object (in object mode)":
+        "Yüzeyden: bir Part / PartDesign nesnesinin düz yüzeyini seçin (nesne modunda)",
+    "From face: %d polygons, %d points": "Yüzeyden: %d çokgen, %d nokta",
+    "Snap: %s": "Yakala: %s",
+    "vertex": "köşe",
+    "edge": "kenar",
     "Hole": "Delik",
     "Radius": "Yarıçap",
     "Support": "Destek",
