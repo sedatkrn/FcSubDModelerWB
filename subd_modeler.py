@@ -9,7 +9,7 @@
 # Shortcuts (in the 3D view):
 #   1 / 2 / 3: point / edge / polygon mode     Ctrl+G / Ctrl+H: point / polygon mode (LightWave)
 #   Click: select   Shift+click: add/remove   Drag: box select   A: select all   L: select loop   X: ghost
-#   E: extrude   B: bevel / Smooth Shift (edge mode: edge bevel, wheel = segments)   I: inset
+#   E: extrude (edge mode: open edges; wheel = segments; panel X / Y / Z = axis lock, none = normal)   B: bevel / Smooth Shift (edge mode: edge bevel, wheel = segments)   I: inset
 #   K: loop cut + slide   J: LightWave knife (draw a line, live plane cut)   C: crease   Del: delete
 #   Knife (K / J) and Select loop stay on (yellow button) until K / J / the button / Esc / right click
 #   T / G: move   R: rotate gizmo   H: stretch / size gizmo   Y: X symmetry   Tab / S: SubPatch
@@ -175,8 +175,19 @@ class Cage:
         ln = np.linalg.norm(n)
         return n / ln if ln else n
 
-    def extrude(self, sel):
-        """Secili yuzleri bolge olarak extrude eder, tasinacak yeni noktalari dondurur."""
+    def _layers(self, verts, segs):
+        """verts noktalarinin segs kat kopyasi (hepsi ayni yerde): {nokta: [kendisi, kat 1, ..., kat segs]}."""
+        L = {v: [v] for v in verts}
+        for _ in range(segs):
+            n = len(self.V)
+            self.V = np.vstack([self.V, self.V[verts]])
+            for j, v in enumerate(verts):
+                L[v].append(n + j)
+        return L
+
+    def extrude(self, sel, segs=1, layers=None):
+        """Secili yuzleri bolge olarak extrude eder (yan duvarlar segs dilim), tasinacak en ust noktalari
+        dondurur (sirali noktalar sirasiyla). layers verilirse {taban noktasi: [taban, kat 1..segs]} doldurulur."""
         count = {}
         for fi in sel:
             f = self.F[fi]
@@ -184,8 +195,8 @@ class Cage:
                 e = _edge(f[i], f[(i + 1) % len(f)])
                 count[e] = count.get(e, 0) + 1
         verts = sorted({v for fi in sel for v in self.F[fi]})
-        new = {v: len(self.V) + k for k, v in enumerate(verts)}
-        self.V = np.vstack([self.V, self.V[verts]])
+        L = self._layers(verts, segs)
+        top = {v: L[v][-1] for v in verts}
         sides = []
         for fi in sel:
             f = self.F[fi]
@@ -193,15 +204,56 @@ class Cage:
                 a, b = f[i], f[(i + 1) % len(f)]
                 e = _edge(a, b)
                 if count[e] == 1:
-                    sides.append([a, b, new[b], new[a]])
+                    sides += [[L[a][k], L[b][k], L[b][k + 1], L[a][k + 1]] for k in range(segs)]
                 if e in self.C:                    # keskinlik yeni (tasinan) kenara gecer;
                     s = self.C[e]                  # sinirdakiler alt kenarda da kalir
-                    self.C[_edge(new[a], new[b])] = s
+                    self.C[_edge(top[a], top[b])] = s
                     if count[e] > 1:
                         del self.C[e]
-            self.F[fi] = [new[v] for v in f]
+            self.F[fi] = [top[v] for v in f]
         self.F += sides
-        return list(new.values())
+        if layers is not None:
+            layers.update(L)
+        return [top[v] for v in verts]
+
+    def extrude_edges(self, edges, segs=1, layers=None):
+        """Acik (tek yuzlu) kenarlari yuzeyin devami gibi disari uzatir: her kenardan segs dortgen. Ic kenarlar
+        atlanir (SubD'de yuzgec / manifold olmayan kenar olurdu). (sirali taban noktalari, birim disari yonleri)
+        ya da hic acik kenar yoksa None dondurur; layers extrude'daki gibi doldurulur."""
+        ef = self.edge_faces()
+        directed = []                                      # (a, b, yuz): yuzde a -> b sirasiyla
+        for e in edges:
+            fs = ef.get(e, ())
+            if len(fs) != 1:
+                continue
+            f = self.F[fs[0]]
+            for i in range(len(f)):
+                a, b = f[i], f[(i + 1) % len(f)]
+                if _edge(a, b) == e:
+                    directed.append((a, b, fs[0]))
+                    break
+        if not directed:
+            return None
+        verts = sorted({v for a, b, _ in directed for v in (a, b)})
+        # disari yon: yuz duzleminde, kenara dik, yuzden uzaga (yuz normaline gore saat yonu tersi sira:
+        # ic taraf a -> b'nin solunda, yani cross(n, t); disari = cross(t, n)); noktada komsu kenarlarin ortalamasi
+        acc = {v: np.zeros(3) for v in verts}
+        for a, b, fi in directed:
+            o = np.cross(self.V[b] - self.V[a], self.normal(fi))
+            ln = np.linalg.norm(o)
+            if ln > 1e-12:
+                acc[a] += o / ln
+                acc[b] += o / ln
+        dirs = np.array([acc[v] / max(np.linalg.norm(acc[v]), 1e-12) for v in verts])
+        L = self._layers(verts, segs)
+        for a, b, fi in directed:                          # yeni yuz b -> a sirasiyla: komsu yuzle ayni yonde
+            self.F += [[L[b][k], L[a][k], L[a][k + 1], L[b][k + 1]] for k in range(segs)]
+            e = _edge(a, b)
+            if e in self.C:                                # keskinlik yeni acik kenara gecer
+                self.C[_edge(L[a][-1], L[b][-1])] = self.C.pop(e)
+        if layers is not None:
+            layers.update(L)
+        return verts, dirs
 
     def bevel_dirs(self, region):
         """Bevel / Smooth Shift icin, bolgenin her noktasi (sirali, extrude ile ayni sira) icin iki yon:
@@ -1421,6 +1473,7 @@ HELP = ("1 / 2 / 3: point / edge / polygon mode\n"
         "Knife / loop stay on (yellow) until K / J / Esc / right click\n"
         "B: bevel (right = inset, up = shift)  |  I: inset\n"
         "Edge mode B: edge bevel (right = width)\n"
+        "Edge mode E: extrude open edges  |  extrude wheel = segments\n"
         "O: object / edit mode  |  D: duplicate object\n"
         "T / G: move  |  Tab / S: SubPatch\n"
         "A: select all  |  Del: delete\n"
@@ -1455,6 +1508,7 @@ class SubDSession:
         self.armed = None    # kalici arac ("knife" / "line" / "loop"): kapatilana kadar her tiklamada uygulanir
         self.op = None       # surmekte olan islem (panelde canli degerler)
         self.ebevel_segs = 1  # kenar bevel segment sayisi (son kullanilan)
+        self.extrude_segs = 1        # extrude dilim sayisi (son kullanilan)
         self.last_op = None  # biten son islem (panelden degerle yeniden uygulanabilir)
         self.box = None      # bos alana basildi: surukleme kutu secimi olur
         self.rubber = None   # secim kutusu cizimi (QRubberBand)
@@ -2235,11 +2289,7 @@ class SubDSession:
             value = value / 100.0 if name == "Position" else value / max(op["args"]["L"], 1e-9)
             name = "t"
         op["values"][name] = value
-        c, a, b, e = op["before"]
-        self.cage, self.sel, self.sel_v, self.sel_e = c.copy(), set(a), set(b), set(e)
-        self._apply_op(op)
-        self.dirty = True
-        self.refresh()
+        self._reapply(op)
 
     def _apply_op(self, op):
         # tasima / dondurme / olcek degerleri DUNYA eksenlerinde; kafes yerel: donusturulerek uygulanir
@@ -2252,11 +2302,13 @@ class SubDSession:
         elif k == "scale":
             self.apply_scale(self.move_state(a["verts"]), a["c"], np.array([v["X"], v["Y"], v["Z"]]))
         elif k == "extrude":
-            self.cage.extrude(a["region"])
-            verts = sorted({x for fi in a["sel"] for x in self.cage.F[fi]})
-            d = (a["axis"] * v["Distance"] if a["axis"] is not None
-                 else self.w2l_dir(np.array([v["X"], v["Y"], v["Z"]])))
-            self.apply_move(self.move_state(verts), d)
+            segs = min(max(int(round(v["Segments"])), 1), 64)
+            v["Segments"] = float(segs)
+            self.extrude_segs = segs
+            st = self._extrude_build(op["before"], segs, a["axes"])
+            if st is not None:
+                st["op"] = op
+                self.extrude_set(st, v)
         elif k == "bevel":
             self.bevel(inset_only=a["inset_only"], values=(v["Inset"], v.get("Shift", 0.0)), push=False)
         elif k == "ebevel":
@@ -2292,8 +2344,11 @@ class SubDSession:
             if k == "scale":
                 return "Stretch / Size", [(n, v[n], " x", 4, r(n)) for n in "XYZ"], self.drag is None
             if k == "extrude":
-                fields = [mm("Distance")] if a["axis"] is not None else [mm("X"), mm("Y"), mm("Z")]
-                return "Extrude", fields, self.drag is None
+                axes = a["axes"]
+                fields = [mm(n) for n in "XYZ" if n in axes] if axes else [mm("Distance")]
+                fields.append(("Segments", v["Segments"], "", 0, r("Segments")))
+                checks = [(n, n in axes, lambda on, n=n: self.extrude_axis(n, on)) for n in "XYZ"]
+                return "Extrude", fields, self.drag is None, checks
             if k == "bevel":
                 return ("Inset" if a["inset_only"] else "Bevel"), \
                     [mm("Inset")] + ([] if a["inset_only"] else [mm("Shift")]), self.drag is None
@@ -2541,22 +2596,199 @@ class SubDSession:
                 out.add(lookup[frozenset(mf)])
         return out
 
+    # --- extrude (yuz ya da acik kenar) ---
+    # Yonler: X / Y / Z eksenlerinden hicbiri secili degilse NORMAL yonunde (Distance): yuzlerde secili yuzlerin
+    # ortalama normali, kenarlarda yuzeyin devami (yuz duzleminde disari, noktaya gore). Eksen seciliyse yalniz o
+    # DUNYA eksen(ler)inde (X / Y / Z mm). Segments: yan duvar dilim sayisi (tekerlek). Her extrude normalle
+    # (eksensiz) baslar, segment sayisi hatirlanir; paneldeki kutucuklar ve degerlerle islem yeniden yapilir.
+
     def extrude(self, lazy=False):
         """lazy: araç düğmeden başlatıldı; çekme, fare görünüme girip ilk hareket ettiğinde başlar."""
-        if not self.sel or self.mode != "face" or self.drag or self.grab:
+        if self.drag or self.grab or not (self.mode == "face" and self.sel or self.mode == "edge" and self.sel_e):
             return
         self.drop_tool()
         self.push()
-        n = sum(self.cage.normal(fi) for fi in self.sel)
-        ln = np.linalg.norm(n)
-        axis = n / ln if ln > 1e-9 else None
-        region = set(self.mirror_faces(self.sel, self.mirror_map()) if self.sym else self.sel)
-        op = self.new_op("extrude", dict(Distance=0.0, X=0.0, Y=0.0, Z=0.0), region=region, sel=set(self.sel), axis=axis)
-        self.cage.extrude(region)
-        # yalnizca asil taraf fareyle tasinir; aynadaki taraf start_grab'da simetriyle eklenir
-        verts = sorted({v for fi in self.sel for v in self.cage.F[fi]})
+        axes = set()                                       # her extrude normalle baslar; eksen panelden secilir
+        op = self.new_op("extrude", dict(Distance=0.0, X=0.0, Y=0.0, Z=0.0, Segments=float(self.extrude_segs)),
+                         axes=axes, dw=np.zeros(3))
+        st = self._extrude_build(op["before"], self.extrude_segs, axes)
+        if st is None:
+            self.op = None
+            self.do_undo()
+            self.info = T("Extrude: select open (boundary) edges")
+            self.refresh()
+            return
+        st.update(op=op, lazy=lazy)
+        self._extrude_anchor(st)
+        self.grab = st
+        self.gizmo.place(None)
+        self.extrude_set(st, op["values"])
+
+    def _extrude_build(self, before, segs, axes):
+        """Durumu extrude oncesine dondurur ve extrude topolojisini kurar (yeni katlar tabanda); noktalari
+        extrude_set yerlestirir. Acik kenar yoksa None."""
+        c, s0, sv0, se0 = before
+        self.cage, self.sel, self.sel_v, self.sel_e = c.copy(), set(s0), set(sv0), set(se0)
+        cage = self.cage
+        M = self.mirror_map() if self.sym else {}
+        layers = {}
+        m_axis = None
+        if self.mode == "face":
+            orig = {v for fi in self.sel for v in cage.F[fi]}
+            region = self.mirror_faces(self.sel, M) if self.sym else set(self.sel)
+            n = sum(cage.normal(fi) for fi in self.sel)
+            if np.linalg.norm(n) > 1e-9:
+                m_axis = n / np.linalg.norm(n)
+            # normaller birbirini goturuyorsa (or. butun yuzler) nokta basina Smooth Shift yonleri
+            nv = cage.bevel_dirs(region)[0] if m_axis is None else None
+            cage.extrude(region, segs, layers)
+            verts = sorted(layers)
+            if m_axis is None:
+                dirs = nv
+            else:
+                dirs = np.tile(m_axis, (len(verts), 1))
+                if self.sym:                               # aynadaki taraf aynalanmis normalle
+                    dirs[[i for i, v in enumerate(verts) if v not in orig]] *= MIRROR
+        else:
+            edges = set(self.sel_e)
+            if self.sym:
+                alive = cage.edges()
+                edges |= {me for me in (frozenset(M.get(v) for v in e) for e in self.sel_e)
+                          if None not in me and me in alive}
+            res = cage.extrude_edges(edges, segs, layers)
+            if res is None:
+                return None
+            verts, dirs = res
+            orig = {v for e in self.sel_e for v in e}
+            om = [i for i, v in enumerate(verts) if v in orig]
+            m = dirs[om].mean(0) if om else np.zeros(3)
+            if np.linalg.norm(m) > 0.3:                    # yonler kabaca ayni: fare bu eksende olculur
+                m_axis = m / np.linalg.norm(m)
+            self.sel_e = {_edge(layers[a][-1], layers[b][-1]) for a, b in map(tuple, se0)
+                          if a in layers and b in layers and len(layers[a]) > 1}
+        side = np.array([1 if v in orig else -1 for v in verts])
+        plane = [i for i, v in enumerate(verts) if M.get(v) == v]
+        if plane:
+            dirs = dirs.copy()
+            dirs[plane, 0] = 0.0
+        base = cage.V[verts].copy()
+        return dict(kind="extrude", before=before, segs=segs, axes=axes, verts=verts, base=base,
+                    idx=np.array([layers[v][1:] for v in verts]).T, dirs=dirs, side=side, plane=plane,
+                    m_axis=m_axis, c=base[side > 0].mean(0) if (side > 0).any() else base.mean(0))
+
+    def _extrude_anchor(self, st):
+        """Fare olcusunun baslangici: secili eksenlere gore cizgi / duzlem (yerel), olcunun basladigi degerler."""
+        vd, c, axes = self.view_dir(), st["c"], st["axes"]
+
+        def facing(ax):                                    # ax eksenini iceren, bakisa en dik duzlemin normali
+            n = np.cross(ax, np.cross(vd, ax))
+            return n / np.linalg.norm(n) if np.linalg.norm(n) > 1e-6 else vd
+        if not axes:
+            n = facing(st["m_axis"]) if st["m_axis"] is not None else None
+        elif len(axes) == 1:
+            n = facing(self.w2l_dir(np.eye(3)["XYZ".index(next(iter(axes)))]))
+        elif len(axes) == 2:
+            n = self.w2l_dir(np.eye(3)["XYZ".index(({"X", "Y", "Z"} - axes).pop())])
+        else:
+            n = vd
+        p0 = self.ray_plane(self.mouse, c, n) if n is not None else None
+        if n is not None and p0 is None:                   # duzlem yandan gorunuyor: bakis duzlemi
+            n = vd
+            p0 = self.ray_plane(self.mouse, c, n)
+        vv, W, H = _vv(self.view)
+        st.update(n=n, p0=p0, m0=tuple(self.mouse), v0=dict(st["op"]["values"]),
+                  wpp=vv.getWorldToScreenScale(coin.SbVec3f(*self.l2w(c)), 1.0 / float(H)))
+
+    def extrude_move(self):
+        g = self.grab
+        if g.get("lazy"):                                  # düğmeden başladı: ölçü buradan başlar
+            g["lazy"] = False
+            self._extrude_anchor(g)
+            return
+        v, v0, axes = g["op"]["values"], g["v0"], g["axes"]
+        step = self.step_box.value() if _ctrl_held() else 0.0
+        if g["p0"] is None:                                # ortak yon yok (or. delik kenari): saga = mesafe
+            d, t = None, (self.mouse[0] - g["m0"][0]) * g["wpp"] * _gain()
+        else:
+            p = self.ray_plane(self.mouse, g["c"], g["n"])
+            if p is None:
+                return
+            d = p - g["p0"]
+            t = float(d.dot(g["m_axis"])) if not axes and g["m_axis"] is not None else 0.0
+        if not axes:
+            v["Distance"] = _snap(v0["Distance"] + t, step)
+        else:
+            dw = self.l2w_dir(d) if d is not None else np.zeros(3)
+            for j, a in enumerate("XYZ"):
+                v[a] = _snap(v0[a] + dw[j], step) if a in axes else 0.0
+        self.extrude_set(g, v)
+
+    def extrude_set(self, st, v):
+        """Katlari yerlestir: normal yonde Distance ya da secili dunya eksenlerinde (X, Y, Z); kat k = k / segs."""
+        axes = st["axes"]
+        if not axes:
+            D = st["dirs"] * v["Distance"]
+        else:
+            d = self.w2l_dir(np.array([v[a] if a in axes else 0.0 for a in "XYZ"]))
+            D = np.where(st["side"][:, None] < 0, d * MIRROR, d)
+            D[st["plane"], 0] = 0.0                        # simetri duzlemindeki noktalar duzlemde kalir
+        V = self.cage.V
+        s = len(st["idx"])
+        for k, row in enumerate(st["idx"], 1):
+            V[row] = st["base"] + D * (k / s)
+        o = st["side"] > 0
+        st["op"]["args"]["dw"] = self.l2w_dir(D[o].mean(0)) if o.any() else np.zeros(3)   # dunya, asil taraf
+        st["op"]["args"]["m"] = self.l2w_dir(st["m_axis"]) if st["m_axis"] is not None else None
+        if not axes:
+            self.info = T("Extrude  %.3f mm   %d segments") % (v["Distance"], s)
+        else:
+            self.info = T("Extrude  %s mm   %d segments") % (
+                "  ".join("%s %.3f" % (a, v[a]) for a in "XYZ" if a in axes), s)
+        self.refresh(fast=True)
+
+    def extrude_wheel(self, steps):
+        """Extrude surerken fare tekerlegi: segment sayisi (kenar bevel gibi); mesafe ayni kalir."""
+        g = self.grab
+        segs = min(max(g["segs"] + steps, 1), 64)
+        if segs == g["segs"]:
+            return
+        self.extrude_segs = segs
+        g["op"]["values"]["Segments"] = float(segs)
+        st = self._extrude_build(g["before"], segs, g["axes"])
+        for k in ("op", "lazy", "n", "p0", "m0", "v0", "wpp"):
+            st[k] = g[k]
+        self.grab = st
+        self.extrude_set(st, st["op"]["values"])
+
+    def extrude_axis(self, a, on):
+        """Paneldeki X / Y / Z kutucugu: eksen kilidi degisir (surerken: olcu yeniden baslar; bitmisse: islem yeni
+        eksenlerle yeniden yapilir, cekilen mesafe korunur)."""
+        g = self.grab if self.grab is not None and self.grab.get("kind") == "extrude" else None
+        op = g["op"] if g is not None else self.last_op
+        if op is None or op["kind"] != "extrude" or self.drag:
+            return
+        axes, v, dw = op["args"]["axes"], op["values"], op["args"]["dw"]
+        was = set(axes)
+        (axes.add if on else axes.discard)(a)
+        if axes == was:
+            return
+        for j, n in enumerate("XYZ"):                      # o anki yer degistirmeden yeni degerler
+            v[n] = float(dw[j]) if n in axes else 0.0
+        if not axes:                                       # eksenden normale: mesafe = yer degistirmenin normal bileseni
+            m = op["args"].get("m")
+            v["Distance"] = float(dw.dot(m)) if m is not None else float(np.linalg.norm(dw))
+        if g is not None:
+            self._extrude_anchor(g)
+            self.extrude_set(g, v)
+        else:
+            self._reapply(op)
+
+    def _reapply(self, op):
+        c, a, b, e = op["before"]
+        self.cage, self.sel, self.sel_v, self.sel_e = c.copy(), set(a), set(b), set(e)
+        self._apply_op(op)
+        self.dirty = True
         self.refresh()
-        self.start_grab(verts, axis, pushed=True, lazy=lazy, op=op)
 
     def bevel(self, inset_only=False, values=None, lazy=False, push=True):
         """LightWave Bevel / Smooth Shift: secili yuzleri bolge olarak extrude eder; yeni noktalar yuz
@@ -3176,6 +3408,9 @@ class SubDSession:
         if g.get("kind") == "ebevel":
             self.ebevel_move()
             return
+        if g.get("kind") == "extrude":
+            self.extrude_move()
+            return
         if g.get("lazy"):                                  # düğmeden başladı: ölçü buradan başlar
             g["p0"] = self.ray_plane(self.mouse, g["c"], g["n"])
             g["lazy"] = g["p0"] is None
@@ -3632,11 +3867,11 @@ class _KeyFilter(QtCore.QObject):
     def eventFilter(self, obj, ev):
         t = ev.type()
         g = self.session.grab
-        if t == QtCore.QEvent.Wheel and g is not None and g.get("kind") == "ebevel":
-            # kenar bevel surerken tekerlek yakinlastirmaz, segment sayisini degistirir
+        if t == QtCore.QEvent.Wheel and g is not None and g.get("kind") in ("ebevel", "extrude"):
+            # kenar bevel / extrude surerken tekerlek yakinlastirmaz, segment sayisini degistirir
             d = ev.angleDelta().y()
             if d:
-                self.session.ebevel_wheel(1 if d > 0 else -1)
+                (self.session.ebevel_wheel if g["kind"] == "ebevel" else self.session.extrude_wheel)(1 if d > 0 else -1)
             return True
         if t == QtCore.QEvent.Resize and self.session.overlay is not None:
             _later(self.session.overlay.relayout)          # gorunum boyutlaninca menuler yerinde kalsin
@@ -3758,7 +3993,8 @@ class _ToolPanel(QtWidgets.QFrame):
         self.setStyleSheet(OVERLAY_CSS + """
             QDoubleSpinBox { background: #2c2c2c; color: #facc15; border: 1px solid #1e1e1e; padding: 1px 3px; }
             QDoubleSpinBox:focus { border-color: #f59e0b; }
-            QDoubleSpinBox:disabled { color: #f59e0b; background: #333; }""")
+            QDoubleSpinBox:disabled { color: #f59e0b; background: #333; }
+            QCheckBox { color: #e0e0e0; spacing: 3px; }""")
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(5, 4, 5, 6)
         lay.setSpacing(3)
@@ -3766,6 +4002,23 @@ class _ToolPanel(QtWidgets.QFrame):
         self.title.setObjectName("lwHead")
         self.title.setAlignment(QtCore.Qt.AlignCenter)
         lay.addWidget(self.title)
+        # istege bagli kutucuk satiri (or. extrude eksenleri): spec'in 4. ogesi [(ad, isaretli, fn(on))]
+        self.check_bar = QtWidgets.QWidget()
+        cl = QtWidgets.QHBoxLayout(self.check_bar)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(8)
+        cl.addWidget(QtWidgets.QLabel(T("Axis (none = normal)")))
+        cl.addStretch(1)
+        self.checks = []
+        for n in "XYZ":
+            cb = QtWidgets.QCheckBox(n)
+            cb.setFocusPolicy(QtCore.Qt.NoFocus)           # kisayollar gorunumde kalsin
+            cb.toggled.connect(lambda on, i=len(self.checks): self._check(i, on))
+            cl.addWidget(cb)
+            self.checks.append(cb)
+        self.check_fns = []
+        lay.addWidget(self.check_bar)
+        self.check_bar.hide()
         self.grid = QtWidgets.QGridLayout()
         self.grid.setHorizontalSpacing(6)
         self.grid.setVerticalSpacing(2)
@@ -3783,9 +4036,18 @@ class _ToolPanel(QtWidgets.QFrame):
             self.hide()
             self.key = None
             return changed
-        title, fields, editable = spec
-        key = (title, tuple(f[0] for f in fields))
+        title, fields, editable = spec[:3]
+        checks = spec[3] if len(spec) > 3 else []
+        key = (title, tuple(f[0] for f in fields), bool(checks))
         changed = key != self.key
+        self.check_fns = [c[2] for c in checks]
+        for cb, c in zip(self.checks, checks):
+            if cb.isChecked() != bool(c[1]):
+                cb.blockSignals(True)
+                cb.setChecked(bool(c[1]))
+                cb.blockSignals(False)
+        if self.check_bar.isVisible() != bool(checks):
+            self.check_bar.setVisible(bool(checks))
         if changed:
             for lb, box in self.rows:                      # eski satirlari yerlesimden hemen cikar
                 for wdg in (lb, box):
@@ -3828,6 +4090,11 @@ class _ToolPanel(QtWidgets.QFrame):
             self.layout().activate()
             self.setFixedHeight(self.layout().sizeHint().height())
         return changed
+
+    def _check(self, i, on):
+        if i < len(self.check_fns):
+            fn = self.check_fns[i]
+            _later(lambda: (fn(on), self.s.refresh()))
 
     def _commit(self, i, box):
         val = box.value()

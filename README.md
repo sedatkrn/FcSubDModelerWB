@@ -32,7 +32,9 @@ Catmull-Clark limit surface is on the roadmap.
 
 **Cage modeling (in the 3D view)**
 - Point / edge / polygon selection, box select, loop select, ghost mode (see and select hidden elements)
-- Extrude, Bevel / Smooth Shift and Inset (mouse with axis lock, or exact Inset / Shift values)
+- Extrude faces or open edges (edge mode: the surface continues outward), with segments (mouse wheel) and an
+  X / Y / Z axis lock in the panel (no axis = along the normal)
+- Bevel / Smooth Shift and Inset (mouse, or exact Inset / Shift values)
 - **Edge bevel** (LightWave Rounder / Blender Ctrl+B): width + segments (mouse wheel), true circular profile,
   clean all-quad corners where three bevelled edges meet, straight 45° miters on edge loops
 - **Knife (loop)**: loop cut that slides along the ring, exact position in % or mm
@@ -92,7 +94,7 @@ document; save the document as usual (Ctrl+S).
 | 1 / 2 / 3 | point / edge / polygon mode | Tab / S | SubPatch preview on/off |
 | Click, Shift+click | select, add/remove | Drag | box select (Shift add, Ctrl remove) |
 | A | select all | L | select the loop under the cursor |
-| E | extrude | B | bevel (polygon mode) / edge bevel (edge mode) |
+| E | extrude (faces / open edges, wheel = segments) | B | bevel (polygon mode) / edge bevel (edge mode) |
 | I | inset | C | crease / uncrease selected edges |
 | K | loop cut + slide (stays on) | J | line knife, live plane cut (stays on) |
 | T / G | move | R / H | rotate / stretch-size gizmo |

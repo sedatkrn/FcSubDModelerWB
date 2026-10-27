@@ -134,6 +134,10 @@ TR = {
     "Knife: click edges to cut (K / Esc / right click: off)":
         "Knife: kesmek için kenarlara tıkla (K / Esc / sağ tık: kapat)",
     "Distance %.3f mm": "Mesafe %.3f mm",
+    "Axis (none = normal)": "Eksen (boş = normal)",
+    "Extrude: select open (boundary) edges": "Extrude: açık (sınır) kenarları seçin",
+    "Extrude  %.3f mm   %d segments": "Extrude  %.3f mm   %d segment",
+    "Extrude  %s mm   %d segments": "Extrude  %s mm   %d segment",
     "Angle %s  %.2f°": "Açı %s  %.2f°",
     # --- shortcut help ---
     "1 / 2 / 3: point / edge / polygon mode\n"
@@ -147,6 +151,7 @@ TR = {
     "Knife / loop stay on (yellow) until K / J / Esc / right click\n"
     "B: bevel (right = inset, up = shift)  |  I: inset\n"
     "Edge mode B: edge bevel (right = width)\n"
+    "Edge mode E: extrude open edges  |  extrude wheel = segments\n"
     "O: object / edit mode  |  D: duplicate object\n"
         "T / G: move  |  Tab / S: SubPatch\n"
     "A: select all  |  Del: delete\n"
@@ -165,6 +170,7 @@ TR = {
         "Knife / loop açık kalır (sarı): K / J / Esc / sağ tık kapatır\n"
         "B: bevel (sağa inset, yukarı shift)  |  I: inset\n"
         "Kenar modunda B: kenar bevel (sağa = genişlik)\n"
+        "Kenar modunda E: açık kenarları extrude  |  extrude'da tekerlek = segment\n"
         "O: nesne / düzenleme modu  |  D: nesneyi çoğalt\n"
         "T / G: taşı  |  Tab / S: SubPatch\n"
         "A: tümünü seç  |  Del: sil\n"
