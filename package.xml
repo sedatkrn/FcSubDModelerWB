@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
+  <name>SubD Modeler</name>
+  <description>LightWave-style subdivision (SubD) cage modeling inside the 3D view: extrude, bevel / smooth shift, edge bevel with round segments, loop cut and line knife, crease, symmetry, gizmos and exact numeric input. Converts the Catmull-Clark surface into a parametric B-rep solid that exports to STEP.</description>
+  <version>0.1.0</version>
+  <date>2026-10-27</date>
+  <maintainer email="sedatkuran@gmail.com">sedatkrn</maintainer>
+  <license file="LICENSE">MIT</license>
+  <url type="repository" branch="main">https://github.com/sedatkrn/FcSubDModelerWB</url>
+  <url type="readme">https://github.com/sedatkrn/FcSubDModelerWB/blob/main/README.md</url>
+  <icon>icons/subd_modeler.svg</icon>
+  <freecadmin>1.0.0</freecadmin>
+  <tag>subdivision</tag>
+  <tag>subd</tag>
+  <tag>catmull-clark</tag>
+  <tag>organic</tag>
+  <tag>freeform</tag>
+  <tag>mesh modeling</tag>
+  <content>
+    <workbench>
+      <name>SubD Modeler</name>
+      <classname>SubDModelerWorkbench</classname>
+      <icon>icons/subd_modeler.svg</icon>
+      <subdirectory>./</subdirectory>
+      <description>SubD Modeler workbench: opens the cage modeler and makes B-rep solids from SubD objects.</description>
+      <freecadmin>1.0.0</freecadmin>
+    </workbench>
+  </content>
+</package>

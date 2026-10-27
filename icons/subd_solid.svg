@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="top" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d7dfeb"/>
+      <stop offset="1" stop-color="#aebbd0"/>
+    </linearGradient>
+    <linearGradient id="left" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#93a6c2"/>
+      <stop offset="1" stop-color="#71859f"/>
+    </linearGradient>
+    <linearGradient id="right" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#60738f"/>
+      <stop offset="1" stop-color="#485a74"/>
+    </linearGradient>
+  </defs>
+  <path d="M32 6 C36 6 50 13 52 15 C55 17 55 19 55 22 L55 38 C55 42 53 44 50 45.5 L36 53 C33.5 54.2 30.5 54.2 28 53 L14 45.5 C11 44 9 42 9 38 L9 22 C9 19 9 17 12 15 C14 13 28 6 32 6 Z" fill="url(#left)"/>
+  <path d="M32 30 L55 19 L55 38 C55 42 53 44 50 45.5 L36 53 C34.7 53.6 33.4 53.9 32 54 Z" fill="url(#right)"/>
+  <path d="M32 6 C36 6 50 13 52 15 C54.5 16.5 54.5 18.2 52.5 19.6 L36 28.5 C33.5 29.8 30.5 29.8 28 28.5 L11.5 19.6 C9.5 18.2 9.5 16.5 12 15 C14 13 28 6 32 6 Z" fill="url(#top)"/>
+  <!-- B-spline patch lines -->
+  <g fill="none" stroke="#1e293b" stroke-width="1" opacity="0.55">
+    <path d="M20 12 C24 16 30 19 32 30 M44 12 C40 16 34 19 32 30"/>
+    <path d="M20.5 34 L20.5 49 M43.5 34 L43.5 49"/>
+  </g>
+  <rect x="30" y="44" width="32" height="16" rx="3" fill="#16a34a"/>
+  <text x="46" y="56" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="bold"
+        fill="#ffffff" text-anchor="middle">STEP</text>
+</svg>

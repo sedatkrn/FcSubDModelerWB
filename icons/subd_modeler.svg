@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="top" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c9d3e3"/>
+      <stop offset="1" stop-color="#9fb0c9"/>
+    </linearGradient>
+    <linearGradient id="left" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8ea1bd"/>
+      <stop offset="1" stop-color="#6c809f"/>
+    </linearGradient>
+    <linearGradient id="right" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5d7090"/>
+      <stop offset="1" stop-color="#465873"/>
+    </linearGradient>
+  </defs>
+  <!-- smooth SubD body (rounded cube) -->
+  <path d="M32 9 C36 9 50 16 52 18 C55 20 55 22 55 25 L55 41 C55 45 53 47 50 48.5 L36 56 C33.5 57.2 30.5 57.2 28 56 L14 48.5 C11 47 9 45 9 41 L9 25 C9 22 9 20 12 18 C14 16 28 9 32 9 Z" fill="url(#left)"/>
+  <path d="M32 33 L55 22 L55 41 C55 45 53 47 50 48.5 L36 56 C34.7 56.6 33.4 56.9 32 57 Z" fill="url(#right)"/>
+  <path d="M32 9 C36 9 50 16 52 18 C54.5 19.5 54.5 21.2 52.5 22.6 L36 31.5 C33.5 32.8 30.5 32.8 28 31.5 L11.5 22.6 C9.5 21.2 9.5 19.5 12 18 C14 16 28 9 32 9 Z" fill="url(#top)"/>
+  <!-- control cage -->
+  <g fill="none" stroke="#f59e0b" stroke-width="1.8" stroke-linejoin="round">
+    <path d="M32 4 L60 18 L60 46 L32 60 L4 46 L4 18 Z"/>
+    <path d="M4 18 L32 32 L60 18 M32 32 L32 60"/>
+  </g>
+  <g fill="#f59e0b">
+    <circle cx="32" cy="4" r="2.6"/><circle cx="60" cy="18" r="2.6"/><circle cx="60" cy="46" r="2.6"/>
+    <circle cx="32" cy="60" r="2.6"/><circle cx="4" cy="46" r="2.6"/><circle cx="4" cy="18" r="2.6"/>
+    <circle cx="32" cy="32" r="2.6"/>
+  </g>
+</svg>

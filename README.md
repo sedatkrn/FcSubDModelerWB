@@ -1,0 +1,118 @@
+# SubD Modeler for FreeCAD
+
+LightWave / Blender-style **subdivision surface (SubD) modeling inside FreeCAD's 3D view** — and a
+**real B-rep solid** at the end that exports to STEP and works with Part / PartDesign.
+
+![SubD Modeler user interface](docs/ui_overview.png)
+
+You model a low-poly control cage with polygon tools (extrude, bevel, knife, loop cut...) and see the smooth
+Catmull-Clark surface live. Everything has exact numeric input, so it stays a CAD tool: after every operation a
+small panel in the viewport shows its values — type a number, press Enter, and the operation is redone with it.
+
+> **Status:** early version (0.1). It works and is fun to use, but expect rough edges. Feedback and bug reports
+> are very welcome.
+
+## Is the result a mesh or a B-rep?
+
+**A B-rep.** The modeler stores the cage in a `SubD` document object (its Catmull-Clark surface is shown as a
+mesh while you work). **Solid (STEP)** turns it into a parametric `Part` solid made of bicubic B-spline faces:
+
+- after one Catmull-Clark step the cage is all quads; every quad becomes one untrimmed B-spline patch
+  (9 x 9 interpolated points by default),
+- neighbouring patches share their boundary curves exactly, so the faces sew into a closed, valid solid,
+- the solid is linked to the `SubD` object and updates when you edit the cage,
+- creased edges stay sharp, so a fully creased 20 mm cube becomes exactly 20 x 20 x 20 mm (8000 mm³).
+
+![B-rep solid made of B-spline patches](docs/step_solid.png)
+
+On a 95 mm test model the B-rep deviates at most ~0.02 mm from the subdivision surface. Evaluating the exact
+Catmull-Clark limit surface is on the roadmap.
+
+## Features
+
+**Cage modeling (in the 3D view)**
+- Point / edge / polygon selection, box select, loop select, ghost mode (see and select hidden elements)
+- Extrude, Bevel / Smooth Shift and Inset (mouse with axis lock, or exact Inset / Shift values)
+- **Edge bevel** (LightWave Rounder / Blender Ctrl+B): width + segments (mouse wheel), true circular profile,
+  clean all-quad corners where three bevelled edges meet, straight 45° miters on edge loops
+- **Knife (loop)**: loop cut that slides along the ring, exact position in % or mm
+- **Knife (line)**: LightWave knife — draw a line and the model is cut **live** by the plane through it;
+  then set the plane exactly (normal + offset)
+- Crease (sharp or semi-sharp edges) — makes the surface hit exact dimensions
+- X symmetry for every tool
+- Move / rotate / stretch / size gizmo (ported from FC YBT Raytracer), Ctrl = mm / degree steps
+- Exact numeric input for every operation, plus selection center / size in mm
+
+**CAD side**
+- The cage is saved in the document (`SubD` object), auto-saved every 20 s
+- Parametric B-rep solid (`SubD to solid`), STEP export, booleans, PartDesign
+- Shows both the cage size and the real surface size
+
+![Edge bevel with 4 segments](docs/edge_bevel_smooth.png)
+
+![Line knife with exact plane values](docs/knife_panel.png)
+
+## Installation
+
+Requires **FreeCAD 1.0 or newer** (developed on 26.3). No extra Python packages — only `numpy`, which ships
+with FreeCAD.
+
+**Addon Manager (custom repository)**
+1. *Tools → Addon manager → ⚙ (settings) → Custom repositories*, add
+   `https://github.com/sedatkrn/FcSubDModelerWB` with branch `main`.
+2. Find **SubD Modeler** in the list, install, restart FreeCAD.
+
+**Manual**
+Clone or unzip this repository into FreeCAD's user `Mod` folder and restart FreeCAD:
+- Windows: `%APPDATA%\FreeCAD\<version>\Mod\FcSubDModelerWB`
+- Linux: `~/.local/share/FreeCAD/<version>/Mod/FcSubDModelerWB` (older versions: `~/.FreeCAD/Mod`)
+- macOS: `~/Library/Application Support/FreeCAD/<version>/Mod/FcSubDModelerWB`
+
+## Usage
+
+Switch to the **SubD Modeler** workbench and press **SubD Modeler** (or run `macros/SubDModeler.FCMacro` from
+any workbench). With a `SubD` object selected it is opened for editing, otherwise you start with a box.
+**Close** writes the cage back to the document; save the document as usual (Ctrl+S).
+
+| Key | Action | Key | Action |
+|---|---|---|---|
+| 1 / 2 / 3 | point / edge / polygon mode | Tab / S | SubPatch preview on/off |
+| Click, Shift+click | select, add/remove | Drag | box select (Shift add, Ctrl remove) |
+| A | select all | L | select the loop under the cursor |
+| E | extrude | B | bevel (polygon mode) / edge bevel (edge mode) |
+| I | inset | C | crease / uncrease selected edges |
+| K | loop cut + slide | J | line knife (live plane cut) |
+| T / G | move | R / H | rotate / stretch-size gizmo |
+| Y | X symmetry | X | ghost mode |
+| Del | delete faces | Ctrl+Z | undo |
+| F | save to the document | N | numeric panel |
+| Ctrl (while dragging) | mm / degree steps | Shift (while dragging) | fine control |
+| Esc / right click | cancel the running tool | Mouse wheel (edge bevel) | segments |
+
+## Language
+
+The interface is English by default and **Turkish** is built in. The **EN / TR** button at the right end of the
+bottom bar switches it (the modeler reopens with the same model). The setting is stored in
+`Preferences/Mod/SubDModeler/Language` (`auto` follows FreeCAD's language).
+
+![Turkish interface](docs/turkish_ui.png)
+
+## Roadmap
+
+- Exact Catmull-Clark limit surface for the B-rep (Stam evaluation)
+- Edge slide, more selection tools (face strips, grow / shrink)
+- Export / import of the raw cage with creases (OBJ / USD) for Blender round-trips
+- Odd segment counts for all-quad edge-bevel corners
+
+## License
+
+MIT — see [LICENSE](LICENSE). Code comments are mostly in Turkish (the author's language); the user
+interface and documentation are in English.
+
+---
+
+### Türkçe
+
+FreeCAD için LightWave / Blender tarzı SubD (alt bölümlemeli yüzey) modelleyici: 3B görünümün içinde kafes
+modelleme ve sonunda STEP'e aktarılabilen gerçek bir B-rep katı. Arayüz dili alt çubuktaki **EN / TR**
+düğmesiyle Türkçeye çevrilebilir. Kurulum ve kullanım yukarıdaki İngilizce bölümle aynıdır.

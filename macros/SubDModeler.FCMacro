@@ -1,0 +1,4 @@
+# SubD Modeler: opens the modeler without switching workbench.
+# Edits the selected SubD object, or starts with a box. Requires the SubD Modeler addon to be installed.
+import subd_modeler
+subd_modeler.start()
