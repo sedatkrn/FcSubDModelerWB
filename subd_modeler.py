@@ -769,9 +769,17 @@ class SubDSolid:
 
     def execute(self, obj):
         if is_subd(obj.Source):
-            cage = cage_from_obj(obj.Source)
-            if cage.F:
+            # kaynak yalniz tasindiysa (kafes ayni) yamalari yeniden kurma: hem hizli hem geri alma bozulmaz
+            key = (cage_key(obj.Source), obj.Samples, obj.Tolerance)
+            if getattr(self, "_key", None) != key or obj.Shape.isNull():
+                cage = cage_from_obj(obj.Source)
+                if not cage.F:
+                    return
                 obj.Shape = subd_solid(cage, max(1, min(obj.Samples, 5)), max(obj.Tolerance, 1e-6))
+                self._key = key
+            # kafes nesnenin yerel koordinatinda: kati da kaynakla ayni yerde dursun
+            if not obj.Placement.isSame(obj.Source.Placement, 1e-12):
+                obj.Placement = obj.Source.Placement
 
     def dumps(self):
         return None
@@ -822,6 +830,12 @@ def cage_from_obj(obj):
     return Cage(V, F, C)
 
 
+def cage_key(obj):
+    """Kafesin degisip degismedigini anlamak icin ozet (Placement haric)."""
+    return (hash(tuple((p.x, p.y, p.z) for p in obj.CagePoints)), tuple(obj.CageFaces),
+            tuple(getattr(obj, "CageCreases", ())), tuple(getattr(obj, "CageSharpness", ())), obj.Levels)
+
+
 def is_subd(obj):
     return obj is not None and "CageFaces" in getattr(obj, "PropertiesList", [])
 
@@ -835,9 +849,17 @@ class SubDObject:
         obj.Proxy = self
 
     def execute(self, obj):
+        # Nesne yalniz tasindiysa (kafes ayni) yuzeyi yeniden uretme: FreeCAD mesh'i Placement ile zaten tasir.
+        # Yeniden atamak hem gereksiz hem de geri almayi bozuyordu (eski mesh yeni Placement'i geri getiriyordu).
+        key = cage_key(obj)
+        if getattr(self, "_key", None) == key and obj.Mesh.CountPoints:
+            return
         cage = cage_from_obj(obj)
         if cage.F:
-            obj.Mesh = subd_mesh(cage, max(1, min(obj.Levels, 5)))
+            m = subd_mesh(cage, max(1, min(obj.Levels, 5)))
+            m.Placement = obj.Placement                    # yeni mesh atanirken nesnenin Placement'i sifirlanmasin
+            obj.Mesh = m
+            self._key = key
 
     def dumps(self):
         return None
@@ -1313,7 +1335,8 @@ HELP = ("1 / 2 / 3: point / edge / polygon mode\n"
         "E: extrude  |  K: knife (loop cut)  |  J: knife (line / plane)\n"
         "B: bevel (right = inset, up = shift)  |  I: inset\n"
         "Edge mode B: edge bevel (right = width)\n"
-        "T / G: move  |  Tab / S: SubPatch\n"
+        "Tab: object / edit mode  |  D: duplicate object\n"
+        "T / G: move  |  S: SubPatch\n"
         "A: select all  |  Del: delete\n"
         "Ctrl+Z: undo  |  F: save to document\n"
         "Ctrl + gizmo / T: stepped (mm, degrees)\n"
@@ -1321,19 +1344,17 @@ HELP = ("1 / 2 / 3: point / edge / polygon mode\n"
 
 
 class SubDSession:
-    def __init__(self, obj=None):
+    def __init__(self, obj=None, object_mode=False):
         self.view = Gui.ActiveDocument.ActiveView
-        self.obj = obj       # belgedeki SubD nesnesi (ilk kayitta olusur)
+        self.obj = obj       # duzenlenen (Object modunda: son etkin) SubD nesnesi; yeni kafes ilk kayitta olusur
         self.dirty = False
         self.info = ""       # surukleme sirasinda gosterilen deger (delta / aci)
         self.cage = cage_from_obj(obj) if obj is not None else Cage.cube()
         self.hidden = []     # duzenlerken gizlenen nesneler (SubD ve ondan uretilen katilar); kapatinca geri
-        if obj is not None:
-            for o in [obj] + [o for o in obj.InList if "Samples" in o.PropertiesList]:
-                if o.ViewObject.Visibility:
-                    o.ViewObject.Visibility = False  # duzenlerken kendi onizlememiz gorunur
-                    self.hidden.append(o)
-        self.mode = "face"   # "point" | "edge" | "face"
+        if not object_mode:
+            self._hide_edited()
+        self.mode = "object" if object_mode else "face"   # "object" | "point" | "edge" | "face"
+        self.edit_mode = "face"                            # Object modundan Edit'e donulecek secim modu
         self.sel = set()     # yuz indeksleri
         self.sel_v = set()   # nokta indeksleri
         self.sel_e = set()   # frozenset({a, b}) kenarlar
@@ -1356,6 +1377,7 @@ class SubDSession:
         self.mouse = (0, 0)
         self.gizmo = MoveGizmo(self.view)
         self._build_scene()
+        self.set_placement(obj.Placement if obj is not None else App.Placement())
         self._build_dock()
         # pivy geri cagrilari: gizmo tutamagi tutulunca olay "islendi" sayilir, secime/gezinmeye gitmez
         self._cb_btn, self._cb_mov = self._on_button, self._on_motion
@@ -1375,9 +1397,346 @@ class SubDSession:
         for w in self.key_targets:
             w.installEventFilter(self.key_filter)
         self.overlay = _Overlay(self)
+        self.geo_switch.whichChild = -1 if object_mode else 0
         self.refresh()
-        self.view.viewIsometric()
-        self.view.fitAll()
+        if not object_mode:
+            self.view.viewIsometric()
+            self.view.fitAll()
+
+    # --- Object / Edit modu ---
+    # Object modunda belgedeki butun SubD nesneleri kendi halleriyle (Placement'lariyla) gorunur; secim FreeCAD'in
+    # secimidir (agactan da secilebilir). Gizmo secili nesneleri tasir / dondurur (Placement) ya da olcekler
+    # (kafes noktalari). Tab: secili (etkin) nesnenin kafesine girer / Object moduna doner.
+
+    def _hide_edited(self):
+        """Duzenlenen nesneyi ve ondan uretilen katilari gizle (yerine kendi onizlememiz gorunur)."""
+        self.hidden = []
+        if self.obj is not None:
+            for o in [self.obj] + [o for o in self.obj.InList if "Samples" in o.PropertiesList]:
+                if o.ViewObject.Visibility:
+                    o.ViewObject.Visibility = False
+                    self.hidden.append(o)
+
+    def _show_edited(self):
+        if self.obj is not None and not self.hidden:
+            self.obj.ViewObject.Visibility = True
+        for o in self.hidden:
+            try:
+                o.ViewObject.Visibility = True
+            except Exception:
+                pass
+        self.hidden = []
+
+    def subd_objects(self):
+        doc = App.ActiveDocument
+        return [o for o in doc.Objects if is_subd(o)] if doc else []
+
+    def selected_objects(self):
+        """Object modunda secili SubD nesneleri (FreeCAD secimi; secili kati -> kaynagi)."""
+        out = []
+        for o in Gui.Selection.getSelection():
+            if not is_subd(o) and "Samples" in getattr(o, "PropertiesList", []) and is_subd(o.Source):
+                o = o.Source
+            if is_subd(o) and o not in out:
+                out.append(o)
+        return out
+
+    def set_object_selection(self, objs):
+        Gui.Selection.clearSelection()
+        for o in objs:
+            Gui.Selection.addSelection(o.Document.Name, o.Name)
+
+    def objects_center(self, objs=None):
+        objs = self.selected_objects() if objs is None else objs
+        cs = []
+        for o in objs:
+            bb = o.Mesh.BoundBox
+            if bb.isValid():
+                cs.append((bb.Center.x, bb.Center.y, bb.Center.z))
+        return np.mean(cs, 0) if cs else None
+
+    def enter_object_mode(self):
+        """Kafesi nesneye yaz, nesneyi goster, Object moduna gec (nesne secili kalir)."""
+        if self.mode == "object" or self.drag or self.grab:
+            return
+        if self.cage.F and (self.dirty or self.obj is None):
+            self.save()
+        self._show_edited()
+        self.edit_mode = self.mode
+        self.mode = "object"
+        self.geo_switch.whichChild = -1
+        self.op = self.last_op = None
+        self.undo = []
+        self.set_object_selection([self.obj] if self.obj is not None else [])
+        self.refresh()
+
+    def edit_object(self, o=None):
+        """Object modundan: verilen ya da secili (son) nesnenin kafesine gir."""
+        if self.drag or self.grab:
+            return
+        if o is None:
+            objs = self.selected_objects()
+            o = objs[-1] if objs else self.obj
+        if o is None:
+            return
+        Gui.Selection.clearSelection()
+        self.obj = o
+        self.cage = cage_from_obj(o)
+        self.levels = o.Levels
+        self.undo, self.op, self.last_op = [], None, None
+        self.sel, self.sel_v, self.sel_e = set(), set(), set()
+        self.dirty = False
+        self.set_placement(o.Placement)
+        self._hide_edited()
+        self.mode = self.edit_mode
+        self.geo_switch.whichChild = 0
+        self.refresh()
+
+    def toggle_object_mode(self):
+        if self.mode == "object":
+            self.edit_object()
+        else:
+            self.enter_object_mode()
+
+    def object_new_box(self):
+        """Object modunda: olcu panelindeki boyutta yeni bir SubD kutusu ekle ve sec."""
+        doc = App.ActiveDocument
+        doc.openTransaction("SubD box")
+        o = doc.addObject("Mesh::FeaturePython", "SubD")
+        SubDObject(o)
+        if App.GuiUp:
+            o.ViewObject.Proxy = 0
+        cage_to_obj(Cage.cube([b.value() for b in self.box_size]), o)
+        o.recompute()
+        doc.commitTransaction()
+        self.set_object_selection([o])
+        self.refresh()
+
+    def object_duplicate(self):
+        """Secili nesnelerin kopyalari (ayni yerde); kopyalar secili olur, gizmoyla tasinabilir."""
+        objs = self.selected_objects()
+        if not objs:
+            return
+        doc = objs[0].Document
+        doc.openTransaction("SubD duplicate")
+        copies = []
+        for o in objs:
+            n = doc.addObject("Mesh::FeaturePython", "SubD")
+            SubDObject(n)
+            if App.GuiUp:
+                n.ViewObject.Proxy = 0
+            cage_to_obj(cage_from_obj(o), n)
+            n.Levels = o.Levels
+            n.Placement = o.Placement
+            n.Label = o.Label
+            n.recompute()
+            copies.append(n)
+        doc.commitTransaction()
+        self.set_object_selection(copies)
+        self.refresh()
+
+    def object_mirror(self):
+        """Secili nesnelerin dunya X = 0 duzlemine gore aynalanmis kopyalari (kafes dunyada aynalanir)."""
+        objs = self.selected_objects()
+        if not objs:
+            return
+        doc = objs[0].Document
+        doc.openTransaction("SubD mirror")
+        copies = []
+        for o in objs:
+            c = cage_from_obj(o)
+            pl = o.Placement
+            V = np.array([tuple(pl.multVec(App.Vector(*p))) for p in c.V]) * MIRROR
+            m = Cage(V, [f[::-1] for f in c.F], dict(c.C))  # aynalama yonu cevirir: yuzleri ters sirala
+            n = doc.addObject("Mesh::FeaturePython", "SubD")
+            SubDObject(n)
+            if App.GuiUp:
+                n.ViewObject.Proxy = 0
+            cage_to_obj(m, n)
+            n.Levels = o.Levels
+            n.Label = o.Label + "_Mirror"
+            n.recompute()
+            copies.append(n)
+        doc.commitTransaction()
+        self.set_object_selection(copies)
+        self.refresh()
+
+    def object_solids(self):
+        """Object modunda: secili her SubD nesnesi icin B-rep kati olustur (varsa guncelle)."""
+        objs = self.selected_objects()
+        if not objs:
+            return
+        doc = objs[0].Document
+        doc.openTransaction("SubD solid")
+        for o in objs:
+            if not any("Samples" in x.PropertiesList for x in o.InList):
+                make_solid(o)
+        doc.recompute()
+        doc.commitTransaction()
+        self.refresh()
+
+    def object_delete(self):
+        objs = self.selected_objects()
+        if not objs:
+            return
+        doc = objs[0].Document
+        doc.openTransaction("SubD delete")
+        for o in objs:
+            for s in [x for x in o.InList if "Samples" in x.PropertiesList]:
+                doc.removeObject(s.Name)
+            if o is self.obj:
+                self.obj = None
+            doc.removeObject(o.Name)
+        doc.commitTransaction()
+        Gui.Selection.clearSelection()
+        self.refresh()
+
+    def object_pick(self, pos):
+        """Imlecin altindaki SubD nesnesi (kati tiklandiysa kaynagi)."""
+        info = self.view.getObjectInfo((int(pos[0]), int(pos[1])))
+        if not info:
+            return None
+        o = App.ActiveDocument.getObject(info.get("Object", ""))
+        if o is not None and not is_subd(o) and "Samples" in o.PropertiesList and is_subd(o.Source):
+            o = o.Source
+        return o if is_subd(o) else None
+
+    def object_click(self, pos, shift):
+        o = self.object_pick(pos)
+        objs = self.selected_objects()
+        if o is None:
+            objs = objs if shift else []
+        elif shift:
+            objs = [x for x in objs if x is not o] if o in objs else objs + [o]
+        else:
+            objs = [o]
+        self.set_object_selection(objs)
+        self.refresh()
+
+    def object_box_select(self, p0, p1, add=False, sub=False):
+        lo, hi = np.minimum(p0, p1), np.maximum(p0, p1)
+        found = []
+        for o in self.subd_objects():
+            bb = o.Mesh.BoundBox
+            if not bb.isValid():
+                continue
+            x, y = tuple(self.view.getPointOnViewport(bb.Center))[:2]
+            if lo[0] <= x <= hi[0] and lo[1] <= y <= hi[1]:
+                found.append(o)
+        objs = self.selected_objects()
+        if sub:
+            objs = [o for o in objs if o not in found]
+        elif add:
+            objs = objs + [o for o in found if o not in objs]
+        else:
+            objs = found
+        self.set_object_selection(objs)
+        self.refresh()
+
+    def objects_move(self, g, d):
+        for o, pl0 in zip(g["objs"], g["pl0"]):
+            o.Placement = App.Placement(pl0.Base + App.Vector(*d), pl0.Rotation)
+        self.gizmo.place(g["c0"] + App.Vector(*d))
+        self.refresh(fast=True)
+
+    def objects_rotate(self, g, axis, deg):
+        rot = App.Placement(App.Vector(), App.Rotation(axis, deg), g["c0"])   # c0 etrafinda
+        for o, pl0 in zip(g["objs"], g["pl0"]):
+            o.Placement = rot.multiply(pl0)
+        self.refresh(fast=True)
+
+    def objects_scale(self, g, kk):
+        """Dunya eksenlerinde olcek: Placement olceklenemedigi icin kafes noktalari olceklenir."""
+        c = np.array(tuple(g["c0"]))
+        for o, pl0, c0 in zip(g["objs"], g["pl0"], g["cage0"]):
+            Pw = np.array([tuple(pl0.multVec(App.Vector(*p))) for p in c0.V])
+            Pw = c + (Pw - c) * kk
+            inv = pl0.inverse()
+            cage = c0.copy()
+            cage.V = np.array([tuple(inv.multVec(App.Vector(*p))) for p in Pw])
+            cage_to_obj(cage, o)
+            o.recompute()
+        self.refresh(fast=True)
+
+    def object_panel_spec(self):
+        """Object modunda panel: tek nesne -> konum, donus (Z / Y / X), boyut; birden fazla -> toplam boyut."""
+        objs = self.selected_objects()
+        if not objs:
+            return None
+        edit = self.drag is None
+        bb = None
+        for o in objs:
+            b = o.Mesh.BoundBox
+            if bb is None:
+                bb = App.BoundBox(b)
+            else:
+                bb.add(b)
+        size = [(T("Size ") + n, v, " mm", 3, lambda val, j=j: self.set_object_size(j, val))
+                for j, (n, v) in enumerate(zip("XYZ", (bb.XLength, bb.YLength, bb.ZLength)))]
+        if len(objs) > 1:
+            return T("%d objects") % len(objs), size, edit
+        o = objs[0]
+        pl = o.Placement
+        ypr = pl.Rotation.getYawPitchRoll()
+        pos = [(T("Position ") + n, v, " mm", 3, lambda val, j=j: self.set_object_position(j, val))
+               for j, (n, v) in enumerate(zip("XYZ", tuple(pl.Base)))]
+        rot = [(T("Rotation ") + n, ypr[j], "°", 2, lambda val, j=j: self.set_object_rotation(j, val))
+               for j, n in enumerate("ZYX")]
+        return o.Label, pos + rot + size, edit
+
+    def set_object_position(self, j, val):
+        objs = self.selected_objects()
+        if len(objs) != 1:
+            return
+        o = objs[0]
+        o.Document.openTransaction("SubD placement")
+        b = list(tuple(o.Placement.Base))
+        b[j] = val
+        o.Placement = App.Placement(App.Vector(*b), o.Placement.Rotation)
+        o.Document.recompute()
+        o.Document.commitTransaction()
+        self.refresh()
+
+    def set_object_rotation(self, j, val):
+        """j: 0 = Z (yaw), 1 = Y (pitch), 2 = X (roll), derece."""
+        objs = self.selected_objects()
+        if len(objs) != 1:
+            return
+        o = objs[0]
+        ypr = list(o.Placement.Rotation.getYawPitchRoll())
+        ypr[j] = val
+        r = App.Rotation()
+        r.setYawPitchRoll(*ypr)
+        o.Document.openTransaction("SubD placement")
+        o.Placement = App.Placement(o.Placement.Base, r)
+        o.Document.recompute()
+        o.Document.commitTransaction()
+        self.refresh()
+
+    def set_object_size(self, j, val):
+        """Secili nesne(ler)in dunya kutusunun j eksenindeki boyunu, kutunun ortasina gore olcekleyerek val yap."""
+        objs = self.selected_objects()
+        if not objs or val <= 0:
+            return
+        bb = None
+        for o in objs:
+            b = o.Mesh.BoundBox
+            if bb is None:
+                bb = App.BoundBox(b)
+            else:
+                bb.add(b)
+        cur = (bb.XLength, bb.YLength, bb.ZLength)[j]
+        if cur < 1e-9:
+            return
+        kk = np.ones(3)
+        kk[j] = val / cur
+        objs[0].Document.openTransaction("SubD size")
+        g = dict(objs=objs, pl0=[App.Placement(o.Placement) for o in objs],
+                 cage0=[cage_from_obj(o) for o in objs], c0=bb.Center)
+        self.objects_scale(g, kk)
+        objs[0].Document.recompute()
+        objs[0].Document.commitTransaction()
+        self.refresh()
 
     # --- sahne ---
     def _build_scene(self):
@@ -1441,19 +1800,28 @@ class SubDSession:
             ds.pointSize = size
             return _sep(lm, bc, ds, coord, node)
 
+        # kafes / yuzey nesnenin yerel koordinatinda: duzenlenen nesnenin Placement'i ile dunyaya tasinir.
+        # Object modunda bu grup gizlenir (nesneler belgedeki halleriyle gorunur). Gizmo dunya koordinatinda.
+        self.geo_switch = coin.SoSwitch()
+        geo = coin.SoSeparator()
+        self.geo_switch.addChild(geo)
+        self.geo_switch.whichChild = 0
+        self.xform = coin.SoTransform()
+        geo.addChild(self.xform)
         self.p_switch = coin.SoSwitch()  # nokta modunda tum kafes noktalari
         self.p_switch.addChild(points((0.10, 0.15, 0.35), 6, self.c_coord, coin.SoPointSet()))
         self.selp_coord = coin.SoCoordinate3()
         self.selp_set = coin.SoPointSet()
-        self.root.addChild(self.p_switch)
-        self.root.addChild(points((1.0, 0.45, 0.0), 10, self.selp_coord, self.selp_set))
+        geo.addChild(self.p_switch)
+        geo.addChild(points((1.0, 0.45, 0.0), 10, self.selp_coord, self.selp_set))
 
         self.crease_lines = coin.SoIndexedLineSet()
         for n in (self.s_switch, self.c_switch,
                   lines((0.10, 0.15, 0.35), 1.5, self.c_lines),
                   lines((0.85, 0.20, 0.85), 3.0, self.crease_lines),
                   lines((1.0, 0.45, 0.0), 3.0, self.sel_lines)):
-            self.root.addChild(n)
+            geo.addChild(n)
+        self.root.addChild(self.geo_switch)
         self.root.addChild(self.gizmo.root)
         self.parent = _scene_parent(self.view)
         self.parent.addChild(self.root)
@@ -1552,7 +1920,7 @@ class SubDSession:
     def _update_measure(self, fast):
         verts = self.selected_verts()
         V = self.cage.V
-        P = V[verts] if verts else None
+        P = self.l2w(V[verts]) if verts else None          # dunya koordinatinda
         vals = [P.mean(0), P.max(0) - P.min(0)] if P is not None else [None, None]
         for boxes, val in zip((self.center_boxes, self.size_boxes), vals):
             for j, b in enumerate(boxes):
@@ -1570,6 +1938,14 @@ class SubDSession:
         self.dims_label.setText(T("Cage:  %.2f x %.2f x %.2f mm\nSurface:  %.2f x %.2f x %.2f mm") % (tuple(cd) + tuple(sd)))
 
     def refresh(self, fast=False):
+        if self.mode == "object":
+            if not (self.drag and fast):               # surukleme sirasinda gizmo nesneyle birlikte tasinir
+                c = self.objects_center()
+                self.gizmo.place(App.Vector(*c) if c is not None else None)
+            if self.overlay is not None:
+                self.overlay.sync()
+            self.status.setText(T("Object mode: %d selected") % len(self.selected_objects()))
+            return
         V, F = self.cage.V, self.cage.F
         _set_coords(self.c_coord, V if len(V) else np.zeros((1, 3)))
         _set_index(self.c_faces, _poly_index(F))
@@ -1592,7 +1968,7 @@ class SubDSession:
         self.s_switch.whichChild = 0 if self.smooth else -1
         self.c_switch.whichChild = -1 if self.smooth else 0
         verts = self.selected_verts() if not self.grab else []
-        self.gizmo.place(App.Vector(*V[verts].mean(0)) if verts else None)
+        self.gizmo.place(App.Vector(*self.l2w(V[verts].mean(0))) if verts else None)
         self._update_measure(fast)
         if self.overlay is not None:
             self.overlay.sync()
@@ -1600,8 +1976,37 @@ class SubDSession:
         self.status.setText(T("%d points, %d faces  |  %d selected") % (len(V), len(F), count)
                             + (T("  |  Symmetry X") if self.sym else "") + ("  |  SubPatch" if self.smooth else ""))
 
+    # --- yerel (kafes) <-> dunya koordinati: duzenlenen nesnenin Placement'i ---
+    # Kafes noktalari nesnenin yerel koordinatinda saklanir; ekran, isinlar ve gizmo dunya koordinatinda.
+    def set_placement(self, pl):
+        self._R = np.array(pl.Rotation.toMatrix().A).reshape(4, 4)[:3, :3]
+        self._t = np.array(tuple(pl.Base))
+        self.xform.translation = tuple(self._t)
+        self.xform.rotation.setValue(*pl.Rotation.Q)
+
+    def l2w(self, P):
+        return np.asarray(P) @ self._R.T + self._t
+
+    def w2l(self, P):
+        return (np.asarray(P) - self._t) @ self._R
+
+    def l2w_dir(self, d):
+        return np.asarray(d) @ self._R.T
+
+    def w2l_dir(self, d):
+        return np.asarray(d) @ self._R
+
+    def view_dir(self):
+        """Bakis yonu, kafesin yerel koordinatinda."""
+        return self.w2l_dir(np.array(tuple(self.view.getViewDirection())))
+
+    def world_matrix(self, kk):
+        """Dunya eksenlerinde kk olcegi (Stretch / Size), yerel koordinatta: R^T diag(kk) R."""
+        return self._R.T @ np.diag(kk) @ self._R
+
     # --- isin / secim ---
     def ray(self, pos):
+        """Imlecten isin, kafesin yerel koordinatinda: (baslangic, birim yon)."""
         p = np.array(tuple(self.view.getPoint(*pos)))
         d = np.array(tuple(self.view.getViewDirection()))
         if self.view.getCameraType() == "Perspective":
@@ -1609,7 +2014,7 @@ class SubDSession:
             d = p - o
         else:
             o = p - d * 1e5
-        return o, d / np.linalg.norm(d)
+        return self.w2l(o), self.w2l_dir(d / np.linalg.norm(d))
 
     def pick(self, pos):
         V, F = self.cage.V, self.cage.F
@@ -1646,11 +2051,12 @@ class SubDSession:
         return o + d * ((c - o).dot(n) / den)
 
     def project(self, P):
-        """3B noktalari ekran (viewport) koordinatlarina cevirir: olaylardaki Position ile ayni duzen."""
-        return np.array([tuple(self.view.getPointOnViewport(App.Vector(*p)))[:2] for p in P], float)
+        """Kafes (yerel) noktalarini ekran (viewport) koordinatlarina cevirir: olaylardaki Position ile ayni duzen."""
+        W = self.l2w(np.asarray(P, float).reshape(-1, 3))
+        return np.array([tuple(self.view.getPointOnViewport(App.Vector(*p)))[:2] for p in W], float)
 
     def depth(self, P):
-        return P.dot(np.array(tuple(self.view.getViewDirection())))
+        return np.asarray(P).dot(self.view_dir())
 
     def pick_point(self, pos, radius=12.0):
         V = self.cage.V
@@ -1681,6 +2087,9 @@ class SubDSession:
         return edges[near[np.argmin(self.depth(mids))]]
 
     def click(self, pos, shift):
+        if self.mode == "object":
+            self.object_click(pos, shift)
+            return
         if self.mode == "point":
             hit, target = self.pick_point(pos), self.sel_v
         elif self.mode == "edge":
@@ -1733,19 +2142,20 @@ class SubDSession:
         self.refresh()
 
     def _apply_op(self, op):
+        # tasima / dondurme / olcek degerleri DUNYA eksenlerinde; kafes yerel: donusturulerek uygulanir
         k, a, v = op["kind"], op["args"], op["values"]
         if k == "move":
-            self.apply_move(self.move_state(a["verts"]), np.array([v["X"], v["Y"], v["Z"]]))
+            self.apply_move(self.move_state(a["verts"]), self.w2l_dir(np.array([v["X"], v["Y"], v["Z"]])))
         elif k == "rotate":
-            self.apply_rotation(self.move_state(a["verts"]), a["c"], a["axis"], math.radians(v["Angle"]))
+            self.apply_rotation(self.move_state(a["verts"]), a["c"], self.w2l_dir(np.array(a["axis"])),
+                                math.radians(v["Angle"]))
         elif k == "scale":
-            kk, c = np.array([v["X"], v["Y"], v["Z"]]), a["c"]
-            cm = c * MIRROR
-            self.apply_transform(self.move_state(a["verts"]), lambda P: c + (P - c) * kk, lambda P: cm + (P - cm) * kk)
+            self.apply_scale(self.move_state(a["verts"]), a["c"], np.array([v["X"], v["Y"], v["Z"]]))
         elif k == "extrude":
             self.cage.extrude(a["region"])
             verts = sorted({x for fi in a["sel"] for x in self.cage.F[fi]})
-            d = a["axis"] * v["Distance"] if a["axis"] is not None else np.array([v["X"], v["Y"], v["Z"]])
+            d = (a["axis"] * v["Distance"] if a["axis"] is not None
+                 else self.w2l_dir(np.array([v["X"], v["Y"], v["Z"]])))
             self.apply_move(self.move_state(verts), d)
         elif k == "bevel":
             self.bevel(inset_only=a["inset_only"], values=(v["Inset"], v.get("Shift", 0.0)), push=False)
@@ -1767,6 +2177,8 @@ class SubDSession:
 
     def panel_spec(self):
         """Viewport'taki arac panelinin icerigi: (baslik, [(ad, deger, birim, ondalik, geri cagri)], duzenlenebilir)."""
+        if self.mode == "object":
+            return self.object_panel_spec()
         live = bool(self.grab or self.drag)
         op = self.op if live else self.last_op
         if op is not None:
@@ -1799,7 +2211,7 @@ class SubDSession:
                                  ("Distance", t * L, " mm", 3, r("Distance"))], self.drag is None
         verts = self.selected_verts()
         if verts:
-            P = self.cage.V[verts]
+            P = self.l2w(self.cage.V[verts])               # dunya koordinatinda
             c, s = P.mean(0), P.max(0) - P.min(0)
             return T("Selection"), [(T("Center ") + n, c[j], " mm", 3, lambda val, j=j: self.set_center(j, val))
                              for j, n in enumerate("XYZ")] + \
@@ -1808,36 +2220,35 @@ class SubDSession:
         return None
 
     def set_center(self, axis, value):
-        """Secimi, merkezi (noktalarin ortalamasi) verilen degere gelecek sekilde eksen boyunca tasir."""
+        """Secimi, merkezi (noktalarin ortalamasi, dunya koordinati) verilen degere gelecek sekilde
+        dunya ekseni boyunca tasir."""
         verts = self.selected_verts()
         if not verts or self.drag or self.grab:
             return
         d = np.zeros(3)
-        d[axis] = value - self.cage.V[verts].mean(0)[axis]
+        d[axis] = value - self.l2w(self.cage.V[verts]).mean(0)[axis]
         if abs(d[axis]) < 1e-9:
             return
         self.push()
         self.last_op = None
-        self.apply_move(self.move_state(verts), d)
+        self.apply_move(self.move_state(verts), self.w2l_dir(d))
         self.refresh()
 
     def set_size(self, axis, value):
-        """Secimin o eksendeki boyunu, kendi kutusunun ortasina gore olcekleyerek verilen degere getirir."""
+        """Secimin o (dunya) eksendeki boyunu, kendi kutusunun ortasina gore olcekleyerek verilen degere getirir."""
         verts = self.selected_verts()
         if not verts or self.drag or self.grab or value <= 0:
             return
-        P = self.cage.V[verts]
+        P = self.l2w(self.cage.V[verts])
         lo, hi = P.min(0), P.max(0)
         cur = hi[axis] - lo[axis]
         if cur < 1e-9 or abs(cur - value) < 1e-9:
             return
         k = np.ones(3)
         k[axis] = value / cur
-        c = (lo + hi) / 2
-        cm = c * MIRROR
         self.push()
         self.last_op = None
-        self.apply_transform(self.move_state(verts), lambda Q: c + (Q - c) * k, lambda Q: cm + (Q - cm) * k)
+        self.apply_scale(self.move_state(verts), self.w2l((lo + hi) / 2), k)
         self.refresh()
 
     def selected_edges(self):
@@ -1913,7 +2324,7 @@ class SubDSession:
         return self.obj
 
     def _autosave(self):
-        if self.dirty and self.drag is None and self.grab is None and self.cage.F:
+        if self.mode != "object" and self.dirty and self.drag is None and self.grab is None and self.cage.F:
             self.save(full=False)
 
     def do_undo(self):
@@ -1941,6 +2352,13 @@ class SubDSession:
         self.refresh()
 
     def set_mode(self, mode):
+        if mode == "object":
+            self.enter_object_mode()
+            return
+        if self.mode == "object":                          # Object modundan secim moduna: secili nesneye gir
+            self.edit_mode = mode
+            self.edit_object()
+            return
         self.mode = mode
         self.last_op = None
         self.refresh()
@@ -1955,8 +2373,9 @@ class SubDSession:
     def switch_language(self):
         """EN <-> TR: dili kaydet, modelleyiciyi kapatip (kafes belgeye yazilir) ayni nesneyle yeniden ac."""
         subd_i18n.set_language("tr" if subd_i18n.language() == "en" else "en")
+        object_mode = self.mode == "object"
         self.close()
-        start(self.obj)
+        start(self.obj, object_mode=object_mode)
 
     def toggle_numeric(self):
         """LightWave 'Numeric' gibi: olcu / ayar panelini (sagdaki dock) ac-kapa."""
@@ -1992,6 +2411,8 @@ class SubDSession:
         self.refresh()
 
     def selected_verts(self):
+        if self.mode == "object":
+            return []
         if self.mode == "point":
             return sorted(self.sel_v)
         if self.mode == "edge":
@@ -2055,7 +2476,7 @@ class SubDSession:
             return
         vv, W, H = _vv(self.view)
         c = st["base"].mean(0)
-        st["wpp"] = vv.getWorldToScreenScale(coin.SbVec3f(*c), 1.0 / float(H))   # 1 piksel kac mm
+        st["wpp"] = vv.getWorldToScreenScale(coin.SbVec3f(*self.l2w(c)), 1.0 / float(H))   # 1 piksel kac mm
         st["p0"] = tuple(self.mouse)
         st["lazy"] = lazy
         self.grab = st
@@ -2086,7 +2507,7 @@ class SubDSession:
             return
         vv, W, H = _vv(self.view)
         c = self.cage.V[sorted({v for e in edges for v in e})].mean(0)
-        st["wpp"] = vv.getWorldToScreenScale(coin.SbVec3f(*c), 1.0 / float(H))
+        st["wpp"] = vv.getWorldToScreenScale(coin.SbVec3f(*self.l2w(c)), 1.0 / float(H))
         st["p0"] = tuple(self.mouse)
         st["lazy"] = lazy
         self.grab = st
@@ -2207,7 +2628,8 @@ class SubDSession:
         for e in np.eye(3):                                # dunya eksenine cok yakinsa tam eksene oturt
             if abs(n.dot(e)) > math.cos(math.radians(2.0)):
                 n = e * np.sign(n.dot(e))
-        return n, float(n.dot(P0)), p1
+        nl = self.w2l_dir(n)                               # kesim kafesin yerel koordinatinda yapilir
+        return nl, float(nl.dot(self.w2l(P0))), p1
 
     def line_live(self, b, pos):
         """Knife cizgisi surulurken (LightWave gibi canli): durumu kesim oncesine dondur, yeni duzlemle kes."""
@@ -2340,8 +2762,8 @@ class SubDSession:
         T = V[np.array(tri)]
         e1, e2 = T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]
         persp = self.view.getCameraType() == "Perspective"
-        vd = np.array(tuple(self.view.getViewDirection()))
-        eye = np.array(self.view.getCameraNode().position.getValue().getValue()) if persp else None
+        vd = self.view_dir()
+        eye = self.w2l(np.array(self.view.getCameraNode().position.getValue().getValue())) if persp else None
         eps = 1e-4 * max(np.ptp(V, 0).max(), 1.0)
         out = np.ones(len(P), bool)
         for k, p in enumerate(P):
@@ -2367,12 +2789,15 @@ class SubDSession:
 
     def box_select(self, p0, p1, add=False, sub=False):
         """Ekranda cizilen kutunun icindekileri secer. Hayalet modu kapaliysa yalniz gorunenler."""
+        if self.mode == "object":
+            self.object_box_select(p0, p1, add, sub)
+            return
         V, F = self.cage.V, self.cage.F
         if not len(V):
             return
         lo, hi = np.minimum(p0, p1), np.maximum(p0, p1)
         inside = lambda S: np.all((S >= lo) & (S <= hi), axis=1)
-        vd = np.array(tuple(self.view.getViewDirection()))
+        vd = self.view_dir()
         lift = -vd * 1e-3 * max(np.ptp(V, 0).max(), 1.0)   # yuzeydeki noktayi kameraya biraz yaklastir
         if self.mode == "point":
             idx = np.nonzero(inside(self.project(V)))[0]
@@ -2500,7 +2925,7 @@ class SubDSession:
             op = self.new_op("move", dict(X=0.0, Y=0.0, Z=0.0), verts=list(verts))
         V = self.cage.V
         c = V[verts].mean(0)
-        vd = np.array(tuple(self.view.getViewDirection()))
+        vd = self.view_dir()
         n = vd
         if axis is not None:
             n = np.cross(axis, np.cross(vd, axis))
@@ -2532,6 +2957,13 @@ class SubDSession:
         Rm = R * np.outer(MIRROR, MIRROR)
         cm = c * MIRROR
         self.apply_transform(st, lambda P: c + (P - c) @ R.T, lambda P: cm + (P - cm) @ Rm.T)
+
+    def apply_scale(self, st, c, kk):
+        """Stretch / Size: c (yerel) etrafinda, DUNYA eksenlerinde kk olcegi; aynadaki esler aynalanmis matrisle."""
+        A = self.world_matrix(kk)
+        Am = A * np.outer(MIRROR, MIRROR)
+        cm = c * MIRROR
+        self.apply_transform(st, lambda P: c + (P - c) @ A.T, lambda P: cm + (P - cm) @ Am.T)
 
     def apply_transform(self, st, f, fm):
         V = self.cage.V
@@ -2570,8 +3002,10 @@ class SubDSession:
             vals["Distance"] = t
         else:
             d = np.array([_snap(x, step) for x in d])
-            self.info = "Δ  X %.3f   Y %.3f   Z %.3f mm" % tuple(d)
-        vals.update(X=float(d[0]), Y=float(d[1]), Z=float(d[2]))
+        dw = self.l2w_dir(d)                               # panelde ve gostergede dunya eksenleri
+        if g["axis"] is None:
+            self.info = "Δ  X %.3f   Y %.3f   Z %.3f mm" % tuple(dw)
+        vals.update(X=float(dw[0]), Y=float(dw[1]), Z=float(dw[2]))
         self.apply_move(g["state"], d)
 
     def end_grab(self, ok):
@@ -2589,13 +3023,27 @@ class SubDSession:
 
     # --- gizmo ile tasima ---
     def drag_begin(self, key, pos):
+        if self.mode == "object":                          # secili nesneleri tasi / dondur / olcekle
+            objs = self.selected_objects()
+            c = self.objects_center(objs)
+            if not objs or c is None:
+                return
+            objs[0].Document.openTransaction("SubD objects")
+            self.info = ""
+            self.op = dict(kind="object", values=dict(X=0.0, Y=0.0, Z=0.0, Angle=0.0), args={}, before=None)
+            c0 = App.Vector(*c)
+            self.drag = dict(key=key, objs=objs, pl0=[App.Placement(o.Placement) for o in objs],
+                             cage0=[cage_from_obj(o) for o in objs], c0=c0, c=c,
+                             free_n=_view_dir(self.view, c0), acc=0.0, vec=App.Vector())
+            self.drag["ref"] = self.drag["ref0"] = self.drag_measure(pos)
+            return
         verts = self.selected_verts()
         if not verts:
             return
         self.push()
         self.info = ""
-        c0 = App.Vector(*self.cage.V[verts].mean(0))
-        c = np.array(tuple(c0))
+        c = self.cage.V[verts].mean(0)                     # yerel merkez (islem bununla yeniden yapilir)
+        c0 = App.Vector(*self.l2w(c))                      # gizmo hesaplari dunya koordinatinda
         kind, i = key
         if kind == "rotate":
             self.new_op("rotate", dict(Angle=0.0), verts=verts, c=c, axis=tuple(AXES[i]), letter="XYZ"[i])
@@ -2603,7 +3051,7 @@ class SubDSession:
             self.new_op("scale", dict(X=1.0, Y=1.0, Z=1.0), verts=verts, c=c)
         else:
             self.new_op("move", dict(X=0.0, Y=0.0, Z=0.0), verts=verts)
-        self.drag = dict(key=key, state=self.move_state(verts), c0=c0, free_n=_view_dir(self.view, c0),
+        self.drag = dict(key=key, state=self.move_state(verts), c0=c0, c=c, free_n=_view_dir(self.view, c0),
                          acc=0.0, vec=App.Vector())
         self.drag["ref"] = self.drag["ref0"] = self.drag_measure(pos)
 
@@ -2656,7 +3104,10 @@ class SubDSession:
                 deg = _snap(deg, self.angle_box.value())
             self.info = T("Angle %s  %.2f°") % ("XYZ"[i], deg)
             self.op["values"]["Angle"] = deg
-            self.apply_rotation(g["state"], np.array(tuple(g["c0"])), tuple(n), math.radians(deg))
+            if self.mode == "object":
+                self.objects_rotate(g, n, deg)
+            else:
+                self.apply_rotation(g["state"], g["c"], self.w2l_dir(np.array(tuple(n))), math.radians(deg))
             return
         if kind in ("stretch", "size"):
             # Stretch: imlecin eksen uzerindeki uzakligi / tutuldugu andaki uzaklik; Size: saga 150 px = 2 kat
@@ -2678,9 +3129,10 @@ class SubDSession:
                 kk[:] = f
             self.op["values"].update(X=kk[0], Y=kk[1], Z=kk[2])
             self.info = ("Stretch %s  x%.4f" % ("XYZ"[i], f)) if kind == "stretch" else "Size  x%.4f" % f
-            c = np.array(tuple(g["c0"]))
-            cm = c * MIRROR
-            self.apply_transform(g["state"], lambda P: c + (P - c) * kk, lambda P: cm + (P - cm) * kk)
+            if self.mode == "object":
+                self.objects_scale(g, kk)
+            else:
+                self.apply_scale(g["state"], g["c"], kk)
             return
         # her adimin farki o anki oranla (direnc; Shift = ince) carpilip toplanir: Shift ortada basilinca ziplamaz.
         # Ctrl: toplam tasima mm adimina yakalanir (ham deger birikmeye devam eder, Ctrl birakilinca kaldigi yerden).
@@ -2694,14 +3146,24 @@ class SubDSession:
         g["ref"] = cur
         self.info = "Δ  X %.3f   Y %.3f   Z %.3f mm" % tuple(d)
         self.op["values"].update(X=float(d[0]), Y=float(d[1]), Z=float(d[2]))
-        self.apply_move(g["state"], d)
+        if self.mode == "object":
+            self.objects_move(g, d)
+        else:
+            self.apply_move(g["state"], self.w2l_dir(d))       # d dunya ekseninde, kafes yerel
 
     def drag_end(self):
         if self.drag is None:
             return
         self.drag_apply()
         self.gizmo.set_hover(None)
-        self.drag = None
+        g, self.drag = self.drag, None
+        if self.mode == "object":                          # nesne donusumu: tek FreeCAD geri alma adimi
+            doc = g["objs"][0].Document
+            doc.recompute()
+            doc.commitTransaction()
+            self.op = None
+            self.refresh()
+            return
         self.last_op, self.op = self.op, None
         self.refresh()
 
@@ -2841,6 +3303,37 @@ class SubDSession:
             elif k in ("b", "i") and self.grab.get("kind") == "bevel":
                 self.bevel_switch()
             return
+        if self.mode == "object":                          # Object modu: yalniz nesne komutlari
+            if ctrl and k == "z":
+                App.ActiveDocument.undo()
+                self.refresh()
+            elif ctrl:
+                self.set_mode({"g": "point", "h": "face"}.get(k, "face"))
+            elif k == "tab":
+                self.edit_object()
+            elif k in ("1", "2", "3"):
+                self.set_mode({"1": "point", "2": "edge", "3": "face"}[k])
+            elif k == "d":
+                self.object_duplicate()
+            elif k in ("delete", "backspace"):
+                self.object_delete()
+            elif k == "a":
+                objs = self.subd_objects()
+                self.set_object_selection([] if len(self.selected_objects()) == len(objs) else objs)
+                self.refresh()
+            elif k == "escape":
+                Gui.Selection.clearSelection()
+                self.refresh()
+            elif k == "r":
+                self.toggle_gizmo("rotate")
+            elif k == "h":
+                self.toggle_gizmo("scale")
+            elif k == "n":
+                self.toggle_numeric()
+            return
+        if k == "tab":                                     # Edit -> Object modu
+            self.enter_object_mode()
+            return
         if ctrl:                                           # LightWave: ^G nokta, ^H cokgen
             {"z": self.do_undo, "g": lambda: self.set_mode("point"), "h": lambda: self.set_mode("face")}[k]()
         elif k == "n":
@@ -2849,7 +3342,7 @@ class SubDSession:
             self.armed = None
             self.info = ""
             self.refresh()
-        elif k in ("tab", "s"):
+        elif k == "s":
             self.toggle_smooth()
         elif k == "e":
             self.extrude()
@@ -2891,12 +3384,10 @@ class SubDSession:
         self.timer.stop()
         self.autosave.stop()
         try:
-            if self.cage.F and (self.dirty or self.obj is None):
-                self.save()
-            if self.obj is not None and not self.hidden:
-                self.obj.ViewObject.Visibility = True
-            for o in self.hidden:
-                o.ViewObject.Visibility = True
+            if self.mode != "object":                      # Object modunda yazilacak kafes yok
+                if self.cage.F and (self.dirty or self.obj is None):
+                    self.save()
+                self._show_edited()
         except Exception as e:
             App.Console.PrintError(T("SubD could not be saved: %s\n") % e)
         try:
@@ -2934,7 +3425,7 @@ _KEYS = {
     QtCore.Qt.Key_1: "1", QtCore.Qt.Key_2: "2", QtCore.Qt.Key_3: "3", QtCore.Qt.Key_Y: "y", QtCore.Qt.Key_R: "r",
     QtCore.Qt.Key_C: "c", QtCore.Qt.Key_B: "b", QtCore.Qt.Key_I: "i",
     QtCore.Qt.Key_H: "h", QtCore.Qt.Key_N: "n", QtCore.Qt.Key_L: "l", QtCore.Qt.Key_X: "x",
-    QtCore.Qt.Key_J: "j",
+    QtCore.Qt.Key_J: "j", QtCore.Qt.Key_D: "d",
 }
 _CTRL_KEYS = ("z", "g", "h")   # Ctrl+Z geri al, Ctrl+G nokta modu, Ctrl+H cokgen modu (LightWave)
 
@@ -2993,6 +3484,7 @@ QPushButton:hover { background: #6b6b6b; }
 QPushButton:pressed { background: #4a4a4a; }
 QPushButton:checked { background: #3f6fb0; border-color: #24426b; }
 QPushButton:disabled { color: #8a8a8a; background: #4c4c4c; }
+QLabel:disabled { color: #7a7a7a; }
 QLabel { color: #e0e0e0; background: transparent; }
 QLabel#lwInfo { color: #f59e0b; font-weight: bold; }
 """
@@ -3157,7 +3649,7 @@ class _Overlay(object):
         self.s = s = session
         self.vp = s.gv.viewport()
         self.toggles = {}    # ad -> (dugme, durum fonksiyonu)
-        self.needs_sel = []  # secim yokken pasif olan dugmeler
+        self.gated = []      # (dugme, secim gerekir mi, yalniz hangi modda: None / "edit" / "object")
 
         self.left = QtWidgets.QFrame(self.vp)
         self.left.setObjectName("lwPanel")
@@ -3173,37 +3665,42 @@ class _Overlay(object):
             lay.addSpacing(4)
             lay.addWidget(lb)
 
-        def btn(text, key, fn, toggle=None, sel=False):
+        def btn(text, key, fn, toggle=None, sel=False, mode=None):
             b = _lw_button(T(text), key, 150)
             b.clicked.connect(lambda checked=False: (fn(), self.sync()))
             if toggle:
                 b.setCheckable(True)
                 self.toggles[text] = (b, toggle)
-            if sel:
-                self.needs_sel.append(b)
+            if sel or mode:
+                self.gated.append((b, sel, mode))
             lay.addWidget(b)
 
+        obj = lambda: s.mode == "object"
         head("Create")
-        btn("Box", "", s.new_cube)
+        btn("Box", "", lambda: s.object_new_box() if obj() else s.new_cube())
+        head("Object")
+        btn("Duplicate", "D", s.object_duplicate, sel=True, mode="object")
+        btn("Mirror X", "", s.object_mirror, sel=True, mode="object")
         head("Select")
-        btn("Select all", "A", s.select_all)
-        btn("Deselect", "Esc", lambda: (s.clear_selection(), s.refresh()))
-        btn("Select loop", "L", s.arm_loop)
+        btn("Select all", "A", lambda: s.key("a"))
+        btn("Deselect", "Esc", lambda: s.key("escape"))
+        btn("Select loop", "L", s.arm_loop, mode="edit")
         head("Polygon")
-        btn("Extrude", "E", lambda: s.extrude(lazy=True), sel=True)
-        btn("Bevel", "B", lambda: s.edge_bevel(lazy=True) if s.mode == "edge" else s.bevel(lazy=True), sel=True)
-        btn("Inset", "I", lambda: s.bevel(inset_only=True, lazy=True), sel=True)
-        btn("Knife (loop)", "K", s.arm_knife)
-        btn("Knife (line)", "J", s.arm_line_knife)
-        btn("Delete", "Del", s.delete, sel=True)
+        btn("Extrude", "E", lambda: s.extrude(lazy=True), sel=True, mode="edit")
+        btn("Bevel", "B", lambda: s.edge_bevel(lazy=True) if s.mode == "edge" else s.bevel(lazy=True),
+            sel=True, mode="edit")
+        btn("Inset", "I", lambda: s.bevel(inset_only=True, lazy=True), sel=True, mode="edit")
+        btn("Knife (loop)", "K", s.arm_knife, mode="edit")
+        btn("Knife (line)", "J", s.arm_line_knife, mode="edit")
+        btn("Delete", "Del", lambda: s.object_delete() if obj() else s.delete(), sel=True)
         head("Modify")
         btn("Move", "T", lambda: s.set_gizmo("move"), toggle=lambda: s.gizmo.mode == "move")
         btn("Rotate", "R", lambda: s.set_gizmo("rotate"), toggle=lambda: s.gizmo.mode == "rotate")
         btn("Stretch / Size", "H", lambda: s.set_gizmo("scale"), toggle=lambda: s.gizmo.mode == "scale")
-        btn("Crease", "C", s.crease_selected, sel=True)
+        btn("Crease", "C", s.crease_selected, sel=True, mode="edit")
         head("File")
-        btn("Save", "F", s.save)
-        btn("Solid (STEP)", "", s.make_solid)
+        btn("Save", "F", s.save, mode="edit")
+        btn("Solid (STEP)", "", lambda: s.object_solids() if obj() else s.make_solid())
         btn("Close", "", lambda: _later(s.close))
         self.left.adjustSize()
 
@@ -3224,12 +3721,14 @@ class _Overlay(object):
             self.toggles[text] = (b, state)
             row.addWidget(b)
 
+        tog("Object", "Tab", s.toggle_object_mode, lambda: s.mode == "object")
+        row.addSpacing(6)
         tog("Point", "^G", lambda: s.set_mode("point"), lambda: s.mode == "point")
         tog("Edge", "2", lambda: s.set_mode("edge"), lambda: s.mode == "edge")
         tog("Polygon", "^H", lambda: s.set_mode("face"), lambda: s.mode == "face")
         row.addSpacing(10)
         tog("Symmetry", "Y", s.toggle_sym, lambda: s.sym)
-        tog("Subpatch", "Tab", s.toggle_smooth, lambda: s.smooth)
+        tog("Subpatch", "S", s.toggle_smooth, lambda: s.smooth)
         tog("Ghost", "X", s.toggle_ghost, lambda: s.ghost)
         cc = QtWidgets.QLabel("Catmull-Clark")
         cc.setStyleSheet("padding-left: 10px;")
@@ -3269,10 +3768,13 @@ class _Overlay(object):
         s = self.s
         for b, state in self.toggles.values():
             b.setChecked(bool(state()))
-        has = bool(s.selected_verts())
-        for b in self.needs_sel:
-            b.setEnabled(has)
-        count = {"point": len(s.sel_v), "edge": len(s.sel_e), "face": len(s.sel)}[s.mode]
+        is_obj = s.mode == "object"
+        nobj = len(s.selected_objects()) if is_obj else 0
+        has = nobj > 0 if is_obj else bool(s.selected_verts())
+        for b, sel, mode in self.gated:
+            ok = mode is None or (mode == "object") == is_obj
+            b.setEnabled(ok and (has or not sel))
+        count = nobj if is_obj else {"point": len(s.sel_v), "edge": len(s.sel_e), "face": len(s.sel)}[s.mode]
         self.sel_label.setText("Sel: %d" % count)
         self.step_label.setText(T("Step: %g mm / %g°") % (s.step_box.value(), s.angle_box.value()))
         self.info_label.setText(s.info)
@@ -3288,17 +3790,23 @@ class _Overlay(object):
 _session = None
 
 
-def start(obj=None):
-    """Modelleyiciyi acar: verilen ya da secili SubD nesnesini duzenler, yoksa yeni kutuyla baslar."""
+def start(obj=None, object_mode=None):
+    """Modelleyiciyi acar. Tek SubD nesnesi secili (ya da verilmis) ise onun kafesini duzenler; birden fazla
+    secili ya da hic secili degilken belgede SubD nesneleri varsa Object modunda acar; hic yoksa yeni kutuyla
+    Edit modunda baslar."""
     global _session
     if _session:
         _session.close()
     if App.ActiveDocument is None or Gui.ActiveDocument is None:
         App.newDocument("SubD")
-    if obj is None:
-        sel = Gui.Selection.getSelection()
-        obj = sel[0] if len(sel) == 1 and is_subd(sel[0]) else None
-    if obj is not None:
+    if object_mode is None:
+        if obj is None:
+            sel = [o for o in Gui.Selection.getSelection() if is_subd(o)]
+            obj = sel[0] if len(sel) == 1 else None
+            object_mode = obj is None and any(is_subd(o) for o in App.ActiveDocument.Objects)
+        else:
+            object_mode = False
+    if not object_mode and obj is not None:
         Gui.Selection.clearSelection()
-    _session = SubDSession(obj)
+    _session = SubDSession(obj, object_mode=object_mode)
     return _session

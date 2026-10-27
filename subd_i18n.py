@@ -63,6 +63,14 @@ TR = {
     "Save": "Kaydet",
     "Solid (STEP)": "Katı (STEP)",
     "Close": "Kapat",
+    # --- object mode ---
+    "Object": "Nesne",
+    "Duplicate": "Çoğalt",
+    "Mirror X": "Ayna X",
+    "Object mode: %d selected": "Nesne modu: %d seçili",
+    "%d objects": "%d nesne",
+    "Position ": "Konum ",
+    "Rotation ": "Dönüş ",
     # --- bottom bar ---
     "Step: %g mm / %g°": "Adım: %g mm / %g°",
     "Switch the interface language (reopens the modeler)": "Arayüz dilini değiştir (modelleyici yeniden açılır)",
@@ -125,7 +133,8 @@ TR = {
     "E: extrude  |  K: knife (loop cut)  |  J: knife (line / plane)\n"
     "B: bevel (right = inset, up = shift)  |  I: inset\n"
     "Edge mode B: edge bevel (right = width)\n"
-    "T / G: move  |  Tab / S: SubPatch\n"
+    "Tab: object / edit mode  |  D: duplicate object\n"
+        "T / G: move  |  S: SubPatch\n"
     "A: select all  |  Del: delete\n"
     "Ctrl+Z: undo  |  F: save to document\n"
     "Ctrl + gizmo / T: stepped (mm, degrees)\n"
@@ -140,7 +149,8 @@ TR = {
         "E: extrude  |  K: knife (loop cut)  |  J: knife (çizgi / düzlem)\n"
         "B: bevel (sağa inset, yukarı shift)  |  I: inset\n"
         "Kenar modunda B: kenar bevel (sağa = genişlik)\n"
-        "T / G: taşı  |  Tab / S: SubPatch\n"
+        "Tab: nesne / düzenleme modu  |  D: nesneyi çoğalt\n"
+        "T / G: taşı  |  S: SubPatch\n"
         "A: tümünü seç  |  Del: sil\n"
         "Ctrl+Z: geri al  |  F: belgeye kaydet\n"
         "Ctrl + gizmo / T: adımlı (mm, derece)\n"
