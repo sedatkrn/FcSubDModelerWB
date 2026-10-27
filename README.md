@@ -43,6 +43,9 @@ Catmull-Clark limit surface is on the roadmap.
 - Crease (sharp or semi-sharp edges) — makes the surface hit exact dimensions
 - Copy / cut / paste polygons (with their creases): paste in place into the same cage, into another SubD
   object, or as a new object (e.g. copy the neck of a bottle to start its cap)
+- Mirror X / Y / Z (LightWave Mirror): mirrors the selected polygons (or the whole cage) across a world axis
+  plane (exact center in the panel) and welds the points on the plane, so a half model becomes one piece
+- LightWave-style **Create / Modify** tabs in the FreeCAD toolbar choose which tool menu the viewport shows
 - X symmetry for every tool
 - Move / rotate / stretch / size gizmo (ported from FC YBT Raytracer), Ctrl = mm / degree steps
 - Exact numeric input for every operation, plus selection center / size in mm
@@ -51,7 +54,7 @@ Catmull-Clark limit surface is on the roadmap.
 - Work with several SubD objects: click / Shift+click / box select them (or select them in the tree)
 - Move and rotate with the gizmo (stored in FreeCAD's standard `Placement`), stretch / size the cage
 - Exact position, rotation and size in the viewport panel
-- New box, duplicate (D), mirror across X, delete, solids for all selected objects
+- New box, duplicate (D), mirror across X / Y / Z, delete, solids for all selected objects
 - O (or Tab) on a selected object edits its cage; the other objects stay visible as reference
 
 **CAD side**

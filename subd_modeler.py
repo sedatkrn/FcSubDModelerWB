@@ -777,6 +777,29 @@ class Cage:
                     sub.C[me] = s
         return sub
 
+    def mirror(self, sel, Vm, keep):
+        """sel yuzlerinin aynasini ayri parca olarak ekler. Vm: her noktanin aynadaki konumu; keep[v]: nokta ayna
+        duzleminde -> yeni parca onu paylasir (kaynak; iki yari birlesir). Butun noktalari duzlemde olan yuz
+        (kesim duvari) silinir: iki yari birlesince ic duvar olur, kenarlari uc yuzlu (manifold disi) kalirdi.
+        Aynalama yonu cevirdiginden yeni yuzler ters sirali. Yeni yuz indeksleri."""
+        walls = {fi for fi in sel if all(keep[v] for v in self.F[fi])}
+        faces = [self.F[fi] for fi in sorted(sel) if fi not in walls]
+        used = sorted({v for f in faces for v in f})
+        add = [v for v in used if not keep[v]]
+        n0, nf = len(self.V), len(self.F)
+        if add:
+            self.V = np.vstack([self.V, Vm[add]])
+        new = {v: n0 + i for i, v in enumerate(add)}
+        new.update({v: v for v in used if keep[v]})
+        self.F += [[new[v] for v in f[::-1]] for f in faces]
+        alive = {_edge(f[i], f[(i + 1) % len(f)]) for f in faces for i in range(len(f))}
+        for e, s in list(self.C.items()):                  # keskin kenarlar aynada da keskin
+            if e in alive:
+                self.C[_edge(*(new[v] for v in e))] = s
+        if walls:
+            self.delete(walls)                             # yeni yuzler sonda: indeksleri silinenler kadar kayar
+        return list(range(nf - len(walls), len(self.F)))
+
     def append(self, other):
         """Baska bir kafesi (ayri parca olarak) ekler; eklenen yuzlerin indekslerini dondurur."""
         n, nf = len(self.V), len(self.F)
@@ -1486,6 +1509,7 @@ HELP = ("1 / 2 / 3: point / edge / polygon mode\n"
 class SubDSession:
     def __init__(self, obj=None, object_mode=False):
         self.view = Gui.ActiveDocument.ActiveView
+        self.doc_name = Gui.ActiveDocument.Document.Name   # bu belge kapaninca oturum kapanir (_DocWatcher)
         self.obj = obj       # duzenlenen (Object modunda: son etkin) SubD nesnesi; yeni kafes ilk kayitta olusur
         self.dirty = False
         self.info = ""       # surukleme sirasinda gosterilen deger (delta / aci)
@@ -1688,18 +1712,20 @@ class SubDSession:
         self.set_object_selection(copies)
         self.refresh()
 
-    def object_mirror(self):
-        """Secili nesnelerin dunya X = 0 duzlemine gore aynalanmis kopyalari (kafes dunyada aynalanir)."""
+    def object_mirror(self, axis=0):
+        """Secili nesnelerin dunya X / Y / Z = 0 duzlemine gore aynalanmis kopyalari (kafes dunyada aynalanir)."""
         objs = self.selected_objects()
         if not objs:
             return
+        flip = np.ones(3)
+        flip[axis] = -1.0
         doc = objs[0].Document
         doc.openTransaction("SubD mirror")
         copies = []
         for o in objs:
             c = cage_from_obj(o)
             pl = o.Placement
-            V = np.array([tuple(pl.multVec(App.Vector(*p))) for p in c.V]) * MIRROR
+            V = np.array([tuple(pl.multVec(App.Vector(*p))) for p in c.V]) * flip
             m = Cage(V, [f[::-1] for f in c.F], dict(c.C))  # aynalama yonu cevirir: yuzleri ters sirala
             n = doc.addObject("Mesh::FeaturePython", "SubD")
             SubDObject(n)
@@ -1707,7 +1733,7 @@ class SubDSession:
                 n.ViewObject.Proxy = 0
             cage_to_obj(m, n)
             n.Levels = o.Levels
-            n.Label = o.Label + "_Mirror"
+            n.Label = o.Label + "_Mirror" + "XYZ"[axis]
             n.recompute()
             copies.append(n)
         doc.commitTransaction()
@@ -2318,6 +2344,8 @@ class SubDSession:
             if v["Width"] > 0:
                 self.cage.bevel_edges(a["edges"], v["Width"], segs)
             self.sel, self.sel_v, self.sel_e = set(), set(), set()
+        elif k == "mirror":
+            self._mirror(a["axis"], v["Center"], a["faces"])
         elif k == "plane":
             n = np.array([v["Nx"], v["Ny"], v["Nz"]], float)
             if np.linalg.norm(n) > 1e-9:
@@ -2355,6 +2383,8 @@ class SubDSession:
             if k == "ebevel":
                 return T("Edge bevel"), [mm("Width"), ("Segments", v["Segments"], "", 0, r("Segments"))], \
                     self.drag is None
+            if k == "mirror":
+                return T("Mirror ") + "XYZ"[a["axis"]], [mm("Center")], self.drag is None
             if k == "plane":
                 return T("Knife (plane: N.p = Offset)"), [("Normal X", v["Nx"], "", 4, r("Nx")),
                                                        ("Normal Y", v["Ny"], "", 4, r("Ny")),
@@ -3319,6 +3349,39 @@ class SubDSession:
             self.enter_object_mode()
         self.object_paste()
 
+    # --- Mirror X / Y / Z (LightWave Mirror) ---
+    # Secili cokgenlerin (secim yoksa butun kafesin) DUNYA ekseni duzlemine (eksen = Center, varsayilan 0) gore
+    # aynasi ayni kafese eklenir; duzlemdeki noktalar kaynaklanir, yarim model tek parca olur. Center panelden.
+
+    def mirror_polygons(self, axis):
+        if self.mode == "object":
+            self.object_mirror(axis)
+            return
+        if self.drag or self.grab or not self.cage.F:
+            return
+        self.drop_tool()
+        faces = self.selected_faces() or set(range(len(self.cage.F)))
+        self.push()
+        op = self.new_op("mirror", dict(Center=0.0), axis=axis, faces=faces)
+        self._apply_op(op)
+        self.last_op, self.op = op, None
+        self.refresh()
+
+    def _mirror(self, axis, center, faces):
+        W = self.l2w(self.cage.V)
+        d = W[:, axis] - center
+        tol = 1e-4 * max(np.ptp(W, 0).max(), 1.0)
+        keep = np.abs(d) < tol
+        W[keep, axis] = center                             # duzleme cok yakin noktalar tam duzleme
+        self.cage.V[keep] = self.w2l(W[keep])
+        Wm = W.copy()
+        Wm[:, axis] = 2 * center - W[:, axis]
+        used = {v for fi in faces for v in self.cage.F[fi]}
+        new = self.cage.mirror(faces, self.w2l(Wm), keep)
+        self.sel, self.sel_v, self.sel_e = set(new) if self.mode == "face" else set(), set(), set()
+        self.info = T("Mirror %s: %d polygons, %d points merged") % ("XYZ"[axis], len(new),
+                                                                    sum(1 for v in used if keep[v]))
+
     def object_paste(self):
         doc = App.ActiveDocument
         levels = self.levels
@@ -3807,41 +3870,68 @@ class SubDSession:
             self.clear_selection()
             self.refresh()
 
-    def close(self):
-        self.timer.stop()
-        self.autosave.stop()
-        try:
-            if self.mode != "object":                      # Object modunda yazilacak kafes yok
-                if self.cage.F and (self.dirty or self.obj is None):
-                    self.save()
-                self._show_edited()
-        except Exception as e:
-            App.Console.PrintError(T("SubD could not be saved: %s\n") % e)
-        try:
-            self.view.removeEventCallbackPivy(coin.SoMouseButtonEvent.getClassTypeId(), self._cb_btn)
-            self.view.removeEventCallbackPivy(coin.SoLocation2Event.getClassTypeId(), self._cb_mov)
-            for w in self.key_targets:
-                w.removeEventFilter(self.key_filter)
-        except Exception:
-            pass
-        try:
-            self.parent.removeChild(self.root)
-        except Exception:
-            pass
-        if self.overlay is not None:
-            self.overlay.close()
-            self.overlay = None
-        if self.rubber is not None:
-            self.rubber.deleteLater()
-            self.rubber = None
-        if self.line_overlay is not None:
-            self.line_overlay.deleteLater()
-            self.line_overlay = None
-        self.dock.close()
-        self.dock.deleteLater()
+    def close(self, doc_gone=False):
+        """Kafesi kaydet ve modelleyiciyi kaldir. Her adim ayri korunur: belge / 3B gorunum once kapandiysa
+        widget'lari ve sahnesi zaten silinmistir; bir adimin hatasi kalanlari (or. arac cubugu) engellemesin,
+        oturum her durumda kapansin (yoksa modelleyici bir daha acilamiyordu). doc_gone: belge kapaniyor,
+        kaydetme / gosterme yok."""
         global _session
         if _session is self:
             _session = None
+        _quiet(self.timer.stop)
+        _quiet(self.autosave.stop)
+        if not doc_gone and self.mode != "object":         # Object modunda yazilacak kafes yok
+            try:
+                if self.cage.F and (self.dirty or self.obj is None):
+                    self.save()
+                self._show_edited()
+            except Exception as e:
+                App.Console.PrintError(T("SubD could not be saved: %s\n") % e)
+        _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoMouseButtonEvent.getClassTypeId(), self._cb_btn))
+        _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoLocation2Event.getClassTypeId(), self._cb_mov))
+        for w in self.key_targets:
+            _quiet(lambda w=w: w.removeEventFilter(self.key_filter))
+        _quiet(lambda: self.parent.removeChild(self.root))
+        if self.overlay is not None:
+            _quiet(self.overlay.close)
+            self.overlay = None
+        for w in (self.rubber, self.line_overlay):
+            if w is not None:
+                _quiet(w.deleteLater)
+        self.rubber = self.line_overlay = None
+        _quiet(self.dock.close)
+        _quiet(self.dock.deleteLater)
+
+
+def _quiet(fn):
+    """Kapatirken: silinmis Qt / Coin nesnesine dokunma hatalarini yut (RuntimeError: already deleted...)."""
+    try:
+        fn()
+    except Exception:
+        pass
+
+
+class _DocWatcher(object):
+    """Duzenlenen belge kapaninca modelleyiciyi de kapat: 3B gorunum silinince sol menu / alt cubuk onunla
+    gidiyor ama ana penceredeki Create / Modify arac cubugu ve oturum ortada kaliyordu."""
+
+    def slotDeletedDocument(self, doc):
+        s = _session
+        if s is not None and s.doc_name == doc.Name:
+            s.close(doc_gone=True)
+
+    def slotStartSaveDocument(self, doc, filename):
+        # Ctrl+S: kafesin son hali dosyaya girsin (yoksa en son otomatik kayit / F ile yazilan hal kaydedilirdi)
+        s = _session
+        if (s is not None and s.doc_name == doc.Name and s.mode != "object" and s.cage.F
+                and s.drag is None and s.grab is None and (s.dirty or s.obj is None)):
+            try:
+                s.save(full=False)
+            except Exception as e:
+                App.Console.PrintError(T("SubD could not be saved: %s\n") % e)
+
+
+App.addDocumentObserver(_DocWatcher())
 
 
 _KEYS = {
@@ -3917,6 +4007,13 @@ QPushButton:disabled { color: #8a8a8a; background: #4c4c4c; }
 QLabel:disabled { color: #7a7a7a; }
 QLabel { color: #e0e0e0; background: transparent; }
 QLabel#lwInfo { color: #f59e0b; font-weight: bold; }
+"""
+
+
+MENU_CSS = """
+QMenu { background: #3a3a3a; color: #ececec; border: 1px solid #1e1e1e; padding: 2px; }
+QMenu::item { padding: 3px 18px 3px 10px; }
+QMenu::item:selected { background: #3f6fb0; }
 """
 
 
@@ -4106,6 +4203,51 @@ class _ToolPanel(QtWidgets.QFrame):
         _later(lambda: fn(val))
 
 
+_last_tab = ["create"]   # son secilen sekme; modelleyici yeniden acilinca (or. dil degisince) ayni sekme
+
+TAB_CSS = """
+QToolBar { spacing: 3px; }
+QToolButton { background: #5a5a5a; color: #ececec; border: 1px solid #2b2b2b; border-radius: 2px;
+              padding: 3px 18px; min-width: 47px; }
+QToolButton:hover { background: #6b6b6b; }
+QToolButton:checked { background: #3f6fb0; border-color: #24426b; }
+"""
+
+
+class _TabBar(object):
+    """FreeCAD arac cubugunda Create / Modify sekme dugmeleri (LightWave'in ust sekmeleri gibi): sol arac
+    sutununda hangi menunun gorunecegini secer. Modelleyici kapaninca arac cubugu kaldirilir."""
+    TABS = (("create", "Create"), ("modify", "Modify"))
+
+    def __init__(self, overlay):
+        self.mw = Gui.getMainWindow()
+        for old in self.mw.findChildren(QtWidgets.QToolBar, "SubDModelerTabs"):   # duzgun kapanmamis oturumdan
+            _quiet(lambda old=old: self.mw.removeToolBar(old))
+            _quiet(old.deleteLater)
+        self.tb = QtWidgets.QToolBar(T("SubD Modeler tabs"), self.mw)
+        self.tb.setObjectName("SubDModelerTabs")
+        self.tb.setStyleSheet(TAB_CSS)
+        self.buttons = {}
+        for key, text in self.TABS:
+            b = QtWidgets.QToolButton()
+            b.setText(T(text))
+            b.setCheckable(True)
+            b.setFocusPolicy(QtCore.Qt.NoFocus)            # kisayollar gorunumde kalsin
+            b.clicked.connect(lambda checked=False, k=key: (overlay.set_tab(k), _later(overlay.s.gv.setFocus)))
+            self.tb.addWidget(b)
+            self.buttons[key] = b
+        self.mw.addToolBar(self.tb)
+        self.tb.show()
+
+    def sync(self, tab):
+        for k, b in self.buttons.items():
+            b.setChecked(k == tab)
+
+    def close(self):
+        _quiet(lambda: self.mw.removeToolBar(self.tb))
+        _quiet(self.tb.deleteLater)
+
+
 class _Overlay(object):
     def __init__(self, session):
         self.s = s = session
@@ -4114,19 +4256,32 @@ class _Overlay(object):
         self.gated = []      # (dugme, secim gerekir mi, yalniz hangi modda: None / "edit" / "object")
         self.tool_buttons = []  # kalici arac dugmeleri (Knife, Select loop): aciksa sari, yazi koyu
 
+        # Arac sutunu bolumlerden olusur (baslik + dugmeler). Bolumler LightWave gibi sekmelere ayrilir: FreeCAD
+        # arac cubugundaki Create / Modify dugmeleri hangisinin gorunecegini secer. Secili sekme gorunume
+        # sigmazsa relayout bolumlerini yan yana sutunlara akitir.
         self.left = QtWidgets.QFrame(self.vp)
         self.left.setObjectName("lwPanel")
         self.left.setStyleSheet(OVERLAY_CSS)
-        lay = QtWidgets.QVBoxLayout(self.left)
-        lay.setContentsMargins(4, 4, 4, 4)
-        lay.setSpacing(2)
+        self.cols_lay = QtWidgets.QHBoxLayout(self.left)
+        self.cols_lay.setContentsMargins(4, 4, 4, 4)
+        self.cols_lay.setSpacing(4)
+        self.cols = []       # sutun widget'lari (gerektikce eklenir)
+        self.sections = []   # (sekme, bolum widget'i), sirayla
+        self.groups = None   # son yerlesim: (sekme, her sutundaki bolum sayisi)
+        self.tab = _last_tab[0]
+        cur = {}
 
-        def head(t):
+        def head(t, tab="create"):
+            sec = QtWidgets.QWidget()
+            lay = cur["lay"] = QtWidgets.QVBoxLayout(sec)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(2)
             lb = QtWidgets.QLabel(T(t))
             lb.setObjectName("lwHead")
             lb.setAlignment(QtCore.Qt.AlignCenter)
             lay.addSpacing(4)
             lay.addWidget(lb)
+            self.sections.append((tab, sec))
 
         def btn(text, key, fn, toggle=None, sel=False, mode=None, tool=None):
             b = _lw_button(T(text), key, 112)
@@ -4140,7 +4295,18 @@ class _Overlay(object):
                 self.toggles[text] = (b, toggle)
             if sel or mode:
                 self.gated.append((b, sel, mode))
-            lay.addWidget(b)
+            cur["lay"].addWidget(b)
+
+        def menu_btn(text, items):
+            """Acilir dugme (LightWave alt menusu gibi): tiklayinca secenekler dugmenin saginda acilir."""
+            b = _lw_button(T(text), "▸", 112)
+            m = QtWidgets.QMenu(b)
+            m.setStyleSheet(MENU_CSS)
+            for label, fn in items:
+                m.addAction(T(label)).triggered.connect(
+                    lambda checked=False, fn=fn: (fn(), self.sync(), _later(s.gv.setFocus)))
+            b.clicked.connect(lambda checked=False: m.popup(b.mapToGlobal(QtCore.QPoint(b.width() + 2, 0))))
+            cur["lay"].addWidget(b)
 
         obj = lambda: s.mode == "object"
         head("File")
@@ -4151,7 +4317,6 @@ class _Overlay(object):
         btn("Box", "", s.add_box)
         head("Object")
         btn("Duplicate", "D", s.object_duplicate, sel=True, mode="object")
-        btn("Mirror X", "", s.object_mirror, sel=True, mode="object")
         head("Select")
         btn("Select all", "A", lambda: s.key("a"))
         btn("Deselect", "Esc", lambda: s.key("escape"))
@@ -4169,12 +4334,14 @@ class _Overlay(object):
         btn("Cut", "^X", lambda: s.copy_faces(cut=True), sel=True, mode="edit")
         btn("Paste", "^V", s.paste_faces, mode="edit")
         btn("Paste as object", "", s.paste_as_object)
-        head("Modify")
+        head("Modify", tab="modify")
         btn("Move", "T", lambda: s.set_gizmo("move"), toggle=lambda: s.gizmo.mode == "move")
         btn("Rotate", "R", lambda: s.set_gizmo("rotate"), toggle=lambda: s.gizmo.mode == "rotate")
         btn("Stretch / Size", "H", lambda: s.set_gizmo("scale"), toggle=lambda: s.gizmo.mode == "scale")
         btn("Crease", "C", s.crease_selected, sel=True, mode="edit")
-        self.left.adjustSize()
+        # kafeste: secili cokgenler (secim yoksa hepsi) ayni kafese aynalanir; Object modunda: secili nesnelerin kopyasi
+        menu_btn("Mirror", [("Mirror X", lambda: s.mirror_polygons(0)), ("Mirror Y", lambda: s.mirror_polygons(1)),
+                            ("Mirror Z", lambda: s.mirror_polygons(2))])
 
         self.bar = QtWidgets.QFrame(self.vp)
         self.bar.setObjectName("lwBar")
@@ -4221,6 +4388,8 @@ class _Overlay(object):
         row.addWidget(lang)
 
         self.panel = _ToolPanel(self.vp, s)
+        self.tabs = _TabBar(self)
+        self.tabs.sync(self.tab)
 
         for w in (self.left, self.bar):
             w.show()
@@ -4232,9 +4401,58 @@ class _Overlay(object):
         self.bar.setFixedWidth(w)
         self.bar.adjustSize()
         self.bar.move(0, h - self.bar.height())
+        self._flow_columns(h - self.bar.height() - 6 - 6 - 8)   # ust bosluk, alt bosluk, cerceve kenarlari
         self.left.move(6, 6)
         # islem paneli: sol menunun sagi, alt cubugun hemen ustu
         self.panel.move(self.left.x() + self.left.width() + 8, h - self.bar.height() - self.panel.height() - 8)
+
+    def set_tab(self, tab):
+        """Create / Modify sekmesi: sol sutunda yalniz o sekmenin bolumleri (LightWave sekmeleri gibi)."""
+        self.tab = _last_tab[0] = tab
+        self.relayout()
+        if self.tabs is not None:
+            self.tabs.sync(tab)
+
+    def _flow_columns(self, avail):
+        """Secili sekmenin bolumlerini sirayla sutunlara yerlestir: sutun avail yuksekligi asacaksa sonraki
+        bolum yeni sutuna. Oteki sekmelerin bolumleri gizlenir."""
+        groups, used = [], None
+        for tab, sec in self.sections:
+            if tab != self.tab:
+                continue
+            hs = sec.sizeHint().height()
+            if used is None or (used + hs > avail and groups[-1]):
+                groups.append([])
+                used = 0
+            groups[-1].append(sec)
+            used += hs
+        key = (self.tab, [len(g) for g in groups])
+        if key == self.groups:
+            return
+        self.groups = key
+        for _, sec in self.sections:                       # eski sutunlardan cikar
+            p = sec.parentWidget()
+            if p is not None and p.layout() is not None:
+                p.layout().removeWidget(sec)
+            sec.hide()
+        while len(self.cols) < len(groups):
+            col = QtWidgets.QWidget()
+            cl = QtWidgets.QVBoxLayout(col)
+            cl.setContentsMargins(0, 0, 0, 0)
+            cl.setSpacing(0)
+            cl.addStretch(1)
+            self.cols_lay.addWidget(col, 0, QtCore.Qt.AlignTop)
+            self.cols.append(col)
+        for col, g in zip(self.cols, groups):
+            cl = col.layout()
+            for sec in g:
+                cl.insertWidget(cl.count() - 1, sec)
+                sec.show()
+            col.show()
+        for col in self.cols[len(groups):]:
+            col.hide()
+        self.left.layout().activate()
+        self.left.adjustSize()
 
     def sync(self):
         s = self.s
@@ -4261,9 +4479,10 @@ class _Overlay(object):
             self.relayout()
 
     def close(self):
-        for w in (self.left, self.bar, self.panel):
-            w.hide()
-            w.deleteLater()
+        self.tabs.close()                                  # ana pencerede: gorunum silinse de kalir, once kaldir
+        for w in (self.left, self.bar, self.panel):        # gorunumun cocuklari: gorunumle silinmis olabilir
+            _quiet(w.hide)
+            _quiet(w.deleteLater)
 
 
 _session = None
