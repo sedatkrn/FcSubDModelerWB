@@ -391,6 +391,7 @@ class Cage:
             return V[v] + u * min(t, lim)
 
         repl, inserts, caps, ends, nsel = {}, [], [], {}, {}
+        kept, fans = set(), []                         # koseyi koruyan noktalar ve yelpaze kapaklari
         for v in verts:
             f0, fan, cross = vf[v][0], [], []
             f = f0
@@ -412,12 +413,25 @@ class Cage:
             S = [i for i in range(k) if cross[i] in edges]
             nsel[v] = len(S)
             if len(S) >= 2:
-                ring = []
+                ring = []                              # dilim basina (ilk, son) yeni nokta
                 for j, s0 in enumerate(S):
                     s1 = S[(j + 1) % len(S)]
                     n = (s1 - s0) % k or k
                     faces = [fan[(s0 + 1 + q) % k] for q in range(n)]
                     inner = [cross[(s0 + 1 + q) % k] for q in range(n - 1)]
+                    if len(inner) >= 2:
+                        # dilimde birden cok secili olmayan kenar: tek ortalama nokta kenarlardan kacip sivri
+                        # bir uc yapiyordu. Blender gibi: her pahli kenar kendi komsu kenari boyunca kayar,
+                        # aradaki yuzler koseyi korur; bosluk koseden yelpazeyle kapanir (kalan kose).
+                        p1 = add(slide(v, [inner[0]], [cross[s0]]))
+                        p2 = add(slide(v, [inner[-1]], [cross[s1]]))
+                        repl[(faces[0], v)] = p1
+                        repl[(faces[-1], v)] = p2
+                        inserts.append((faces[1], v, other(inner[0], v), p1))
+                        inserts.append((faces[-2], v, other(inner[-1], v), p2))
+                        ring.append((p1, p2))
+                        kept.add(v)
+                        continue
                     if inner:
                         p = slide(v, inner, [cross[s0], cross[s1]])
                     else:                              # dilim tek yuz: yuzde aciortay
@@ -433,9 +447,11 @@ class Cage:
                     nv = add(p)
                     for fi in faces:
                         repl[(fi, v)] = nv
-                    ring.append(nv)
-                if len(S) >= 3:
-                    caps.append((v, ring))
+                    ring.append((nv, nv))
+                if v in kept:
+                    fans.append((v, ring))
+                elif len(S) >= 3:
+                    caps.append((v, [a for a, _ in ring]))
             else:                                      # zincirin ucu: nokta kalir, iki yanina nokta acilir
                 s = S[0]
                 fs, fs1 = fan[s], fan[(s + 1) % k]
@@ -486,7 +502,7 @@ class Cage:
             # iki pahli kenarin bulustugu noktada (zincir ortasi / halka kosesi) x ve y zincirin iki yaninda:
             # tegetler kosede kesisir, kontrol kose olur ve profil gonye duzleminde kalir. Zincir ucunda ve
             # 3+ kenarli kosede x-y tek kenarla ayrilir: tegetler o kenarin dogrusunda kesisir.
-            if e is not None and nsel.get(v) != 2:
+            if e is not None and (nsel.get(v) != 2 or v in kept):
                 d = V[other(e, v)] - V[v]
                 d = d / max(np.linalg.norm(d), 1e-12)
                 C = V[v] + d * ((A + B) / 2 - V[v]).dot(d)
@@ -524,8 +540,29 @@ class Cage:
                 k, side = ends[x]
                 if k == 3:                             # kose kalkar: yan yuz profili alir
                     drop[(side, x)] = P
-                else:                                  # kose kalir: profille arasi bir yuz
-                    out.append([P[0], x, P[-1]] + P[-2:0:-1])
+                else:                                  # kose kalir: profille arasi koseden yelpaze (Blender gibi);
+                    for q in range(len(P) - 1):        # tek buyuk n-gen icbukey olur, cizimde ve SubD'de bozulurdu
+                        out.append([x, P[q + 1], P[q]])
+        for v, ring in fans:                           # koseyi koruyan nokta: seritlerin uclari arasi koseden yelpaze
+            n = len(ring)
+            for j in range(n):
+                if ring[j][0] == ring[j][1]:
+                    continue
+                path = [ring[j][1]]                    # korunan dilimin son noktasindan basla,
+                q = j
+                while True:                            # sonraki seritlerin profilleri boyunca ilerle,
+                    nq = (q + 1) % n
+                    path += profile(v, ring[q][1], ring[nq][0])[1:]
+                    q = nq
+                    if ring[q][0] != ring[q][1]:       # bir sonraki korunan dilimin ilk noktasinda dur
+                        break
+                Vt = np.vstack([V, extra])
+                P = Vt[[v] + path]
+                nrm = np.cross(P, np.roll(P, -1, 0)).sum(0)
+                if nrm.dot(sum(self.normal(fi) for fi in vf[v])) < 0:
+                    path = path[::-1]
+                for i in range(len(path) - 1):
+                    out.append([v, path[i], path[i + 1]])
         for (side, x), P in drop.items():
             g = out[side]
             i = g.index(x)
@@ -1760,6 +1797,7 @@ class SubDSession:
             h = coin.SoShapeHints()
             h.vertexOrdering = coin.SoShapeHints.COUNTERCLOCKWISE
             h.creaseAngle = crease
+            h.faceType = coin.SoShapeHints.UNKNOWN_FACE_TYPE   # icbukey kafes cokgenleri dogru ucgenlensin
             return h
 
         def material(diffuse, spec=(0.3, 0.3, 0.3), shine=0.4, transp=0.0):
