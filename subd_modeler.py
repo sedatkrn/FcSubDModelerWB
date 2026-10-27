@@ -1335,8 +1335,8 @@ HELP = ("1 / 2 / 3: point / edge / polygon mode\n"
         "E: extrude  |  K: knife (loop cut)  |  J: knife (line / plane)\n"
         "B: bevel (right = inset, up = shift)  |  I: inset\n"
         "Edge mode B: edge bevel (right = width)\n"
-        "Tab: object / edit mode  |  D: duplicate object\n"
-        "T / G: move  |  S: SubPatch\n"
+        "O: object / edit mode  |  D: duplicate object\n"
+        "T / G: move  |  Tab / S: SubPatch\n"
         "A: select all  |  Del: delete\n"
         "Ctrl+Z: undo  |  F: save to document\n"
         "Ctrl + gizmo / T: stepped (mm, degrees)\n"
@@ -3320,7 +3320,7 @@ class SubDSession:
                 self.refresh()
             elif ctrl:
                 self.set_mode({"g": "point", "h": "face"}.get(k, "face"))
-            elif k == "tab":
+            elif k in ("tab", "o"):                   # O (ya da Tab): secili nesnenin kafesine gir
                 self.edit_object()
             elif k in ("1", "2", "3"):
                 self.set_mode({"1": "point", "2": "edge", "3": "face"}[k])
@@ -3342,7 +3342,7 @@ class SubDSession:
             elif k == "n":
                 self.toggle_numeric()
             return
-        if k == "tab":                                     # Edit -> Object modu
+        if k == "o":                                       # Edit -> Object modu (Tab LightWave gibi SubPatch)
             self.enter_object_mode()
             return
         if ctrl:                                           # LightWave: ^G nokta, ^H cokgen
@@ -3353,7 +3353,7 @@ class SubDSession:
             self.armed = None
             self.info = ""
             self.refresh()
-        elif k == "s":
+        elif k in ("tab", "s"):
             self.toggle_smooth()
         elif k == "e":
             self.extrude()
@@ -3436,7 +3436,7 @@ _KEYS = {
     QtCore.Qt.Key_1: "1", QtCore.Qt.Key_2: "2", QtCore.Qt.Key_3: "3", QtCore.Qt.Key_Y: "y", QtCore.Qt.Key_R: "r",
     QtCore.Qt.Key_C: "c", QtCore.Qt.Key_B: "b", QtCore.Qt.Key_I: "i",
     QtCore.Qt.Key_H: "h", QtCore.Qt.Key_N: "n", QtCore.Qt.Key_L: "l", QtCore.Qt.Key_X: "x",
-    QtCore.Qt.Key_J: "j", QtCore.Qt.Key_D: "d",
+    QtCore.Qt.Key_J: "j", QtCore.Qt.Key_D: "d", QtCore.Qt.Key_O: "o",
 }
 _CTRL_KEYS = ("z", "g", "h")   # Ctrl+Z geri al, Ctrl+G nokta modu, Ctrl+H cokgen modu (LightWave)
 
@@ -3732,14 +3732,14 @@ class _Overlay(object):
             self.toggles[text] = (b, state)
             row.addWidget(b)
 
-        tog("Object", "Tab", s.toggle_object_mode, lambda: s.mode == "object")
+        tog("Object", "O", s.toggle_object_mode, lambda: s.mode == "object")
         row.addSpacing(6)
         tog("Point", "^G", lambda: s.set_mode("point"), lambda: s.mode == "point")
         tog("Edge", "2", lambda: s.set_mode("edge"), lambda: s.mode == "edge")
         tog("Polygon", "^H", lambda: s.set_mode("face"), lambda: s.mode == "face")
         row.addSpacing(10)
         tog("Symmetry", "Y", s.toggle_sym, lambda: s.sym)
-        tog("Subpatch", "S", s.toggle_smooth, lambda: s.smooth)
+        tog("Subpatch", "Tab", s.toggle_smooth, lambda: s.smooth)
         tog("Ghost", "X", s.toggle_ghost, lambda: s.ghost)
         cc = QtWidgets.QLabel("Catmull-Clark")
         cc.setStyleSheet("padding-left: 10px;")

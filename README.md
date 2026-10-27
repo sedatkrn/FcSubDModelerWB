@@ -43,12 +43,12 @@ Catmull-Clark limit surface is on the roadmap.
 - Move / rotate / stretch / size gizmo (ported from FC YBT Raytracer), Ctrl = mm / degree steps
 - Exact numeric input for every operation, plus selection center / size in mm
 
-**Object mode (Tab)**
+**Object mode (O)**
 - Work with several SubD objects: click / Shift+click / box select them (or select them in the tree)
 - Move and rotate with the gizmo (stored in FreeCAD's standard `Placement`), stretch / size the cage
 - Exact position, rotation and size in the viewport panel
 - New box, duplicate (D), mirror across X, delete, solids for all selected objects
-- Tab on a selected object edits its cage; the other objects stay visible as reference
+- O (or Tab) on a selected object edits its cage; the other objects stay visible as reference
 
 **CAD side**
 - The cage is saved in the document (`SubD` object), auto-saved every 20 s
@@ -80,13 +80,14 @@ Clone or unzip this repository into FreeCAD's user `Mod` folder and restart Free
 Switch to the **SubD Modeler** workbench and press **SubD Modeler** (or run `macros/SubDModeler.FCMacro` from
 any workbench). With one `SubD` object selected its cage is opened for editing; if the document already has
 SubD objects and none is selected you start in object mode; in an empty document you start with a box.
-**Tab** switches between object mode and editing the selected object. **Close** writes the cage back to the
+**O** switches between object mode and editing the selected object (**Tab** toggles the SubPatch preview, as
+in LightWave). **Close** writes the cage back to the
 document; save the document as usual (Ctrl+S).
 
 | Key | Action | Key | Action |
 |---|---|---|---|
-| Tab | object mode / edit the selected object | D | duplicate (object mode) |
-| 1 / 2 / 3 | point / edge / polygon mode | S | SubPatch preview on/off |
+| O | object mode / edit the selected object | D | duplicate (object mode) |
+| 1 / 2 / 3 | point / edge / polygon mode | Tab / S | SubPatch preview on/off |
 | Click, Shift+click | select, add/remove | Drag | box select (Shift add, Ctrl remove) |
 | A | select all | L | select the loop under the cursor |
 | E | extrude | B | bevel (polygon mode) / edge bevel (edge mode) |
