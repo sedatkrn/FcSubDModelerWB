@@ -855,6 +855,24 @@ def _sep(*nodes):
     return s
 
 
+def _graphics_view(view):
+    """3B gorunumun QGraphicsView'i. Belge kapatilip yenisi acilinca yeni gorunum eskisinin bellek adresine
+    gelebiliyor; o zaman PySide onbellekteki silinmis eski sarmalayiciyi dondurur ("Internal C++ object already
+    deleted"). Gecersizse sarmalayiciyi onbellekten dusur ve yeniden iste."""
+    gv = view.graphicsView()
+    try:
+        import shiboken6 as shiboken
+    except ImportError:
+        try:
+            import shiboken2 as shiboken
+        except ImportError:
+            return gv
+    if not shiboken.isValid(gv):
+        shiboken.invalidate(gv)
+        gv = view.graphicsView()
+    return gv
+
+
 def _scene_parent(view):
     # Bu FreeCAD surumunde yalnizca SoFCUnifiedSelection > ObjectGroup altindaki
     # dugumler ciziliyor; sahne kokune eklenenler gorunmuyor.
@@ -1351,7 +1369,7 @@ class SubDSession:
         self.autosave.start(20000)
         # Klavye Qt duzeyinde yakalanir: Coin'e giden olaylarin bazilarini (Tab, A, E...)
         # FreeCAD tuketiyor, Ctrl+Z gibi tuslar da FreeCAD kisayollarina gidiyor.
-        gv = self.view.graphicsView()
+        gv = self.gv = _graphics_view(self.view)
         self.key_targets = [gv, gv.viewport()]
         self.key_filter = _KeyFilter(self)
         for w in self.key_targets:
@@ -2249,7 +2267,7 @@ class SubDSession:
         self.refresh()
 
     def _line_show(self, p0, p1):
-        vp = self.view.graphicsView().viewport()
+        vp = self.gv.viewport()
         if self.line_overlay is None:
             self.line_overlay = _LineOverlay(vp)
         dpr = vp.devicePixelRatioF()
@@ -2373,8 +2391,15 @@ class SubDSession:
             C = np.array([V[f].mean(0) for f in F])
             idx = np.nonzero(inside(self.project(C)))[0]
             if not self.ghost and len(idx):
-                Nn = np.array([self.cage.normal(i) for i in idx])
-                idx = idx[(Nn.dot(vd) < 0) & self.visible(C[idx] + lift)]   # arka yuzler secilmez
+                # yalniz onu tamamen kapali olanlar elenir; yuzun yonune bakilmaz: ondeki yuzler silinince
+                # delikten gorunen arka yuzlerin ic tarafi da secilebilmeli. Yuz, merkezi ya da koselerine
+                # yakin noktalarindan biri gorunuyorsa gorunur sayilir (delikten bakinca merkez cogu zaman kapali).
+                keep = []
+                for i in idx:
+                    P = V[F[i]]
+                    samples = np.vstack([C[i], 0.75 * P + 0.25 * C[i]]) + lift
+                    keep.append(self.visible(samples).any())
+                idx = idx[np.array(keep, bool)]
             found, target = {int(i) for i in idx}, self.sel
         if sub:
             target -= found
@@ -2783,7 +2808,7 @@ class SubDSession:
 
     def _rubber_show(self, p0, p1):
         """Secim kutusunu ciz: Coin olay konumu (sol alt kokenli, aygit pikseli) -> Qt (sol ust, mantiksal)."""
-        vp = self.view.graphicsView().viewport()
+        vp = self.gv.viewport()
         if self.rubber is None:
             self.rubber = QtWidgets.QRubberBand(QtWidgets.QRubberBand.Rectangle, vp)
         dpr = vp.devicePixelRatioF()
@@ -2935,7 +2960,7 @@ class _KeyFilter(QtCore.QObject):
                 and self.session.box is not None):
             # basisi biz yakalayinca FreeCAD gezinmesi birakmayi sahneye iletmiyor: Qt'de yakala
             s = self.session
-            vp = s.view.graphicsView().viewport()
+            vp = s.gv.viewport()
             dpr = vp.devicePixelRatioF()
             p = vp.mapFrom(obj, ev.position().toPoint()) if obj is not vp else ev.position().toPoint()
             s.finish_box((p.x() * dpr, s.view.getSize()[1] - p.y() * dpr))
@@ -3123,14 +3148,14 @@ class _ToolPanel(QtWidgets.QFrame):
             return
         self.vals[i] = val
         fn = self.fns[i]
-        _later(lambda: self.s.view.graphicsView().setFocus())     # kisayollar gorunumde calismaya devam etsin
+        _later(lambda: self.s.gv.setFocus())     # kisayollar gorunumde calismaya devam etsin
         _later(lambda: fn(val))
 
 
 class _Overlay(object):
     def __init__(self, session):
         self.s = s = session
-        self.vp = s.view.graphicsView().viewport()
+        self.vp = s.gv.viewport()
         self.toggles = {}    # ad -> (dugme, durum fonksiyonu)
         self.needs_sel = []  # secim yokken pasif olan dugmeler
 
