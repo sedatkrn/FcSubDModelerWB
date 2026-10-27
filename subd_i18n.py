@@ -77,6 +77,25 @@ TR = {
     # --- object mode ---
     "Object": "Nesne",
     "Duplicate": "Çoğalt",
+    "Hole": "Delik",
+    "Radius": "Yarıçap",
+    "Support": "Destek",
+    "Hole: select faces": "Delik: yüz seçin",
+    "Hole: the selected faces must form one patch without holes":
+        "Delik: seçili yüzler deliksiz tek bir parça olmalı",
+    "Hole: the selected faces are not flat": "Delik: seçili yüzler düz değil",
+    "Hole: radius too large for the selected faces (max %.2f mm)":
+        "Delik: yarıçap seçili yüzlere sığmıyor (en çok %.2f mm)",
+    "Hole: radius %.2f mm, %d segments": "Delik: yarıçap %.2f mm, %d segment",
+    "Bridge": "Köprü",
+    "Number of Cuts": "Kesim sayısı",
+    "Twist": "Burgu",
+    "Smoothness": "Yumuşaklık",
+    "Profile Factor": "Profil çarpanı",
+    "Bridge: %d polygons": "Köprü: %d çokgen",
+    "Bridge: select open (boundary) edges": "Köprü: açık (sınır) kenarları seçin",
+    "Bridge: select two loops (edges or face regions) with the same number of edges":
+        "Köprü: kenar sayısı eşit iki halka seçin (kenar ya da yüz bölgesi)",
     "Mirror": "Ayna",
     "Mirror X": "Ayna X",
     "Mirror Y": "Ayna Y",
@@ -100,10 +119,17 @@ TR = {
     "Distance": "Mesafe",
     "Angle": "Açı",
     "Width": "Genişlik",
+    "Depth": "Derinlik",
+    "Height": "Yükseklik",
+    "Segments X": "Segment X",
+    "Segments Y": "Segment Y",
+    "Segments Z": "Segment Z",
+    "Box: size / segments in the panel": "Kutu: ölçü / segment panelde",
     "Segments": "Segment",
     "Position": "Konum",
     "Offset": "Konum",
-    # --- numeric dock ---
+    # --- Options dock ---
+    "SubD Options": "SubD Seçenekler",
     "Measure": "Ölçü",
     "Center": "Merkez",
     "Size": "Boyut",
@@ -152,14 +178,14 @@ TR = {
     "C: crease selected edges\n"
     "Click: select  |  Shift+click: add\n"
     "Drag: box select (Shift add, Ctrl remove)\n"
-    "L: select loop under cursor  |  X: ghost\n"
+    "L: loop from the selection (or under the cursor)  |  X: ghost\n"
     "E: extrude  |  K: knife (loop cut)  |  J: knife (line / plane)\n"
     "Knife / loop stay on (yellow) until K / J / Esc / right click\n"
     "B: bevel (right = inset, up = shift)  |  I: inset\n"
     "Edge mode B: edge bevel (right = width)\n"
-    "Edge mode E: extrude open edges  |  extrude wheel = segments\n"
+    "Edge mode E: extrude open edges  |  extrude: wheel = segments, X / Y / Z = axis\n"
     "O: object / edit mode  |  D: duplicate object\n"
-        "T / G: move  |  Tab / S: SubPatch\n"
+        "T: move gizmo  |  G: free move (mouse)  |  Tab / S: SubPatch\n"
     "A: select all  |  Del: delete\n"
     "Ctrl+C / X / V: copy / cut / paste polygons\n"
     "Ctrl+Z: undo  |  F: save to document\n"
@@ -171,14 +197,14 @@ TR = {
         "C: seçili kenarları keskinleştir (crease)\n"
         "Tık: seç  |  Shift+Tık: ekle\n"
         "Sürükle: kutu seçimi (Shift ekle, Ctrl çıkar)\n"
-        "L: imlecin altındaki halkayı seç  |  X: hayalet\n"
+        "L: seçimden halka (ya da imlecin altındaki)  |  X: hayalet\n"
         "E: extrude  |  K: knife (loop cut)  |  J: knife (çizgi / düzlem)\n"
         "Knife / loop açık kalır (sarı): K / J / Esc / sağ tık kapatır\n"
         "B: bevel (sağa inset, yukarı shift)  |  I: inset\n"
         "Kenar modunda B: kenar bevel (sağa = genişlik)\n"
-        "Kenar modunda E: açık kenarları extrude  |  extrude'da tekerlek = segment\n"
+        "Kenar modunda E: açık kenarları extrude  |  extrude'da tekerlek = segment, X / Y / Z = eksen\n"
         "O: nesne / düzenleme modu  |  D: nesneyi çoğalt\n"
-        "T / G: taşı  |  Tab / S: SubPatch\n"
+        "T: taşıma gizmosu  |  G: serbest taşı (fare)  |  Tab / S: SubPatch\n"
         "A: tümünü seç  |  Del: sil\n"
         "Ctrl+C / X / V: çokgen kopyala / kes / yapıştır\n"
         "Ctrl+Z: geri al  |  F: belgeye kaydet\n"

@@ -33,7 +33,7 @@ Catmull-Clark limit surface is on the roadmap.
 **Cage modeling (in the 3D view)**
 - Point / edge / polygon selection, box select, loop select, ghost mode (see and select hidden elements)
 - Extrude faces or open edges (edge mode: the surface continues outward), with segments (mouse wheel) and an
-  X / Y / Z axis lock in the panel (no axis = along the normal)
+  X / Y / Z axis lock in the panel or with the X / Y / Z keys while dragging (no axis = along the normal)
 - Bevel / Smooth Shift and Inset (mouse, or exact Inset / Shift values)
 - **Edge bevel** (LightWave Rounder / Blender Ctrl+B): width + segments (mouse wheel), true circular profile,
   clean all-quad corners where three bevelled edges meet, straight 45° miters on edge loops
@@ -43,6 +43,10 @@ Catmull-Clark limit surface is on the roadmap.
 - Crease (sharp or semi-sharp edges) — makes the surface hit exact dimensions
 - Copy / cut / paste polygons (with their creases): paste in place into the same cage, into another SubD
   object, or as a new object (e.g. copy the neck of a bottle to start its cap)
+- **Hole**: a round hole in the middle of the selected faces (one, two, four... in one flat patch); the patch is
+  re-meshed around it automatically (quads where the counts match), with radius, segments and a support loop
+- **Bridge** (Blender Bridge Edge Loops): connects two open edge loops / chains, or two face regions (their
+  faces are removed), with number of cuts, twist, smoothness (tangent to the surfaces) and profile factor
 - Mirror X / Y / Z (LightWave Mirror): mirrors the selected polygons (or the whole cage) across a world axis
   plane (exact center in the panel) and welds the points on the plane, so a half model becomes one piece
 - LightWave-style **Create / Modify** tabs in the FreeCAD toolbar choose which tool menu the viewport shows
@@ -54,7 +58,7 @@ Catmull-Clark limit surface is on the roadmap.
 - Work with several SubD objects: click / Shift+click / box select them (or select them in the tree)
 - Move and rotate with the gizmo (stored in FreeCAD's standard `Placement`), stretch / size the cage
 - Exact position, rotation and size in the viewport panel
-- New box, duplicate (D), mirror across X / Y / Z, delete, solids for all selected objects
+- New box with a Box panel (width / depth / height and X / Y / Z segments, rebuilt as you type), duplicate (D), mirror across X / Y / Z, delete, solids for all selected objects
 - O (or Tab) on a selected object edits its cage; the other objects stay visible as reference
 
 **CAD side**
@@ -96,15 +100,15 @@ document; save the document as usual (Ctrl+S).
 | O | object mode / edit the selected object | D | duplicate (object mode) |
 | 1 / 2 / 3 | point / edge / polygon mode | Tab / S | SubPatch preview on/off |
 | Click, Shift+click | select, add/remove | Drag | box select (Shift add, Ctrl remove) |
-| A | select all | L | select the loop under the cursor |
+| A | select all | L | loop from the selection (edges, points, two faces), or under the cursor |
 | E | extrude (faces / open edges, wheel = segments) | B | bevel (polygon mode) / edge bevel (edge mode) |
 | I | inset | C | crease / uncrease selected edges |
 | K | loop cut + slide (stays on) | J | line knife, live plane cut (stays on) |
-| T / G | move | R / H | rotate / stretch-size gizmo |
+| T / R / H | move / rotate / stretch-size gizmo | G | free move with the mouse |
 | Y | X symmetry | X | ghost mode |
 | Del | delete faces | Ctrl+Z | undo |
 | Ctrl+C / Ctrl+X | copy / cut polygons | Ctrl+V | paste in place (object mode: as a new SubD object) |
-| F | save to the document | N | numeric panel |
+| F | save to the document | N | Options panel |
 | Ctrl (while dragging) | mm / degree steps | Shift (while dragging) | fine control |
 | Esc / right click | cancel the running tool / turn the knife off | Mouse wheel (edge bevel) | segments |
 
