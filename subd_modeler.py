@@ -3506,15 +3506,15 @@ def _lw_button(text, key="", width=None):
     b = QtWidgets.QPushButton()
     b.setFocusPolicy(QtCore.Qt.NoFocus)
     lay = QtWidgets.QHBoxLayout(b)
-    lay.setContentsMargins(7, 0, 7, 0)
-    lay.setSpacing(10)
+    lay.setContentsMargins(5, 0, 5, 0)
+    lay.setSpacing(6)
     for t, css in ((text, ""), (key, "color:#a8a8a8;")):
         lb = QtWidgets.QLabel(t)
         lb.setStyleSheet(css)
         lb.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
         lay.addWidget(lb, 1 if t is text else 0)
     fm = b.fontMetrics()
-    b.setMinimumWidth(width or fm.horizontalAdvance(text + key) + 34)
+    b.setMinimumWidth(max(width or 0, fm.horizontalAdvance(text + key) + 24))   # yazi hicbir zaman kesilmesin
     return b
 
 
@@ -3677,7 +3677,7 @@ class _Overlay(object):
             lay.addWidget(lb)
 
         def btn(text, key, fn, toggle=None, sel=False, mode=None):
-            b = _lw_button(T(text), key, 150)
+            b = _lw_button(T(text), key, 112)
             b.clicked.connect(lambda checked=False: (fn(), self.sync()))
             if toggle:
                 b.setCheckable(True)
@@ -3687,6 +3687,10 @@ class _Overlay(object):
             lay.addWidget(b)
 
         obj = lambda: s.mode == "object"
+        head("File")
+        btn("Save", "F", s.save, mode="edit")
+        btn("Solid (STEP)", "", lambda: s.object_solids() if obj() else s.make_solid())
+        btn("Close", "", lambda: _later(s.close))
         head("Create")
         btn("Box", "", s.add_box)
         head("Object")
@@ -3709,10 +3713,6 @@ class _Overlay(object):
         btn("Rotate", "R", lambda: s.set_gizmo("rotate"), toggle=lambda: s.gizmo.mode == "rotate")
         btn("Stretch / Size", "H", lambda: s.set_gizmo("scale"), toggle=lambda: s.gizmo.mode == "scale")
         btn("Crease", "C", s.crease_selected, sel=True, mode="edit")
-        head("File")
-        btn("Save", "F", s.save, mode="edit")
-        btn("Solid (STEP)", "", lambda: s.object_solids() if obj() else s.make_solid())
-        btn("Close", "", lambda: _later(s.close))
         self.left.adjustSize()
 
         self.bar = QtWidgets.QFrame(self.vp)
