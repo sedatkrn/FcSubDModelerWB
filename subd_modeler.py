@@ -11,7 +11,9 @@
 #   Click: select   Shift+click: add/remove   Drag: box select   A: select all   L: select loop   X: ghost
 #   E: extrude   B: bevel / Smooth Shift (edge mode: edge bevel, wheel = segments)   I: inset
 #   K: loop cut + slide   J: LightWave knife (draw a line, live plane cut)   C: crease   Del: delete
+#   Knife (K / J) and Select loop stay on (yellow button) until K / J / the button / Esc / right click
 #   T / G: move   R: rotate gizmo   H: stretch / size gizmo   Y: X symmetry   Tab / S: SubPatch
+#   Ctrl+C / Ctrl+X / Ctrl+V: copy / cut / paste polygons (object mode Ctrl+V: as a new SubD object)
 #   Ctrl+Z: undo   F: save to the document   N: numeric panel   Esc / right click: cancel
 #   After every operation the small panel in the viewport shows its values; type a value + Enter and the
 #   operation is redone with it. Ctrl while dragging = steps (mm / degrees).
@@ -707,6 +709,31 @@ class Cage:
                 self.C[_edge(m, b)] = sh
         return list(mids.values())
 
+    def subset(self, sel):
+        """Secili yuzlerden yeni (bagimsiz) kafes: kullanilan noktalar yeniden numaralanir, iki ucu da kalan
+        keskin kenarlar keskin kalir. Kopyala / yapistir icin."""
+        faces = [self.F[fi] for fi in sorted(sel)]
+        used = sorted({v for f in faces for v in f})
+        remap = {v: i for i, v in enumerate(used)}
+        F = [[remap[v] for v in f] for f in faces]
+        sub = Cage(self.V[used].copy() if used else np.zeros((0, 3)), F)
+        alive = sub.edges()
+        for e, s in self.C.items():
+            if all(v in remap for v in e):
+                me = _edge(*(remap[v] for v in e))
+                if me in alive:
+                    sub.C[me] = s
+        return sub
+
+    def append(self, other):
+        """Baska bir kafesi (ayri parca olarak) ekler; eklenen yuzlerin indekslerini dondurur."""
+        n, nf = len(self.V), len(self.F)
+        self.V = np.vstack([self.V, other.V]) if len(self.V) else other.V.copy()
+        self.F += [[v + n for v in f] for f in other.F]
+        for e, s in other.C.items():
+            self.C[_edge(*(v + n for v in e))] = s
+        return list(range(nf, len(self.F)))
+
     def delete(self, sel):
         self.F = [f for i, f in enumerate(self.F) if i not in sel]
         used = sorted({v for f in self.F for v in f})
@@ -823,6 +850,26 @@ class SubDSolid:
 
     def loads(self, state):
         return None
+
+
+def repair_proxies(doc):
+    """Python baglantisi (Proxy) kopmus SubD nesnelerini ve katilarini onarir, yeniden hesaplar. Belge acilirken
+    FreeCAD modulu ice aktaramazsa (or. FreeCAD 26.3 'module not permitted': Mod klasoru disindaki eklenti)
+    nesneler Proxy'siz kalir; o zaman kafes kaydedilir ama yuzey / kati guncellenmez (eski sekil gorunur)."""
+    fixed = []
+    for o in (doc.Objects if doc is not None else []):
+        props = getattr(o, "PropertiesList", [])
+        cls = SubDObject if "CageFaces" in props else SubDSolid if "Samples" in props and "Source" in props else None
+        if cls is None or type(getattr(o, "Proxy", None)).__name__ == cls.__name__:
+            continue
+        o.Proxy = cls.__new__(cls)                         # __init__ ozellik ekler; onlar zaten var
+        o.touch()
+        fixed.append(o)
+    for o in fixed:
+        o.recompute()
+    if fixed:
+        App.Console.PrintMessage(T("SubD: repaired %d objects (%s)\n") % (len(fixed), ", ".join(o.Name for o in fixed)))
+    return fixed
 
 
 def make_solid(subd_obj):
@@ -975,6 +1022,7 @@ AXES = (App.Vector(1, 0, 0), App.Vector(0, 1, 0), App.Vector(0, 0, 1))
 PLANE_A, PLANE_B = 0.22, 0.42          # duzlem karesinin iki eksendeki baslangic / bitisi (ok boyunun orani)
 FREE_R = 0.07                          # merkez kupun yari boyu
 MIRROR = np.array([-1.0, 1.0, 1.0])    # X = 0 duzlemine gore ayna
+_clipboard = None                       # kopyalanan cokgenler (Cage, dunya koordinati); bkz. copy_faces
 PLANE_EDGE = 0.2        # duzlem normali ile bakis arasindaki |cos| bundan kucukse kare yandan gorunuyor sayilir
 
 
@@ -1370,11 +1418,13 @@ HELP = ("1 / 2 / 3: point / edge / polygon mode\n"
         "Drag: box select (Shift add, Ctrl remove)\n"
         "L: select loop under cursor  |  X: ghost\n"
         "E: extrude  |  K: knife (loop cut)  |  J: knife (line / plane)\n"
+        "Knife / loop stay on (yellow) until K / J / Esc / right click\n"
         "B: bevel (right = inset, up = shift)  |  I: inset\n"
         "Edge mode B: edge bevel (right = width)\n"
         "O: object / edit mode  |  D: duplicate object\n"
         "T / G: move  |  Tab / S: SubPatch\n"
         "A: select all  |  Del: delete\n"
+        "Ctrl+C / X / V: copy / cut / paste polygons\n"
         "Ctrl+Z: undo  |  F: save to document\n"
         "Ctrl + gizmo / T: stepped (mm, degrees)\n"
         "Esc / right click: cancel")
@@ -1402,7 +1452,7 @@ class SubDSession:
         self.undo = []
         self.grab = None     # klavyeyle tasima (T / G, extrude)
         self.drag = None     # gizmo tutamagiyla tasima
-        self.armed = None    # "knife": dugmeden secildi, bir sonraki tiklamada uygulanir
+        self.armed = None    # kalici arac ("knife" / "line" / "loop"): kapatilana kadar her tiklamada uygulanir
         self.op = None       # surmekte olan islem (panelde canli degerler)
         self.ebevel_segs = 1  # kenar bevel segment sayisi (son kullanilan)
         self.last_op = None  # biten son islem (panelden degerle yeniden uygulanabilir)
@@ -1499,6 +1549,7 @@ class SubDSession:
         if self.cage.F and (self.dirty or self.obj is None):
             self.save()
         self._show_edited()
+        self.drop_tool()
         self.edit_mode = self.mode
         self.mode = "object"
         self.geo_switch.whichChild = -1
@@ -2433,11 +2484,13 @@ class SubDSession:
 
     def toggle_gizmo(self, mode="rotate"):
         """Gizmo modu: R = Dondur, H = Stretch / Size; ayni tusa tekrar basmak Tasi'ya doner."""
+        self.drop_tool()                                   # gizmo tutamaklari knife tiklamalarinin altinda kalmasin
         self.gizmo.set_hover(None)
         self.gizmo.set_mode(mode if self.gizmo.mode != mode else "move")
         self.refresh()
 
     def set_gizmo(self, mode):
+        self.drop_tool()
         self.gizmo.set_hover(None)
         self.gizmo.set_mode(mode)
         self.refresh()
@@ -2492,6 +2545,7 @@ class SubDSession:
         """lazy: araç düğmeden başlatıldı; çekme, fare görünüme girip ilk hareket ettiğinde başlar."""
         if not self.sel or self.mode != "face" or self.drag or self.grab:
             return
+        self.drop_tool()
         self.push()
         n = sum(self.cage.normal(fi) for fi in self.sel)
         ln = np.linalg.norm(n)
@@ -2511,6 +2565,7 @@ class SubDSession:
         if not self.sel or self.mode != "face" or self.drag or self.grab:
             return
         if push:                                           # push=False: son islem yeniden uygulaniyor
+            self.drop_tool()
             self.push()
             self.new_op("bevel", dict(Inset=0.0, Shift=0.0), inset_only=inset_only)
         region = self.mirror_faces(self.sel, self.mirror_map()) if self.sym else set(self.sel)
@@ -2536,6 +2591,7 @@ class SubDSession:
         """Kenar modunda B: secili kenarlari pahla (Rounder). Fare saga = genislik (canli); panelde mm."""
         if self.mode != "edge" or not self.sel_e or self.drag or self.grab:
             return
+        self.drop_tool()
         edges = set(self.sel_e)
         if self.sym:
             M, alive = self.mirror_map(), self.cage.edges()
@@ -2637,12 +2693,6 @@ class SubDSession:
         g["p0"] = tuple(self.mouse)
         g["param"] = "shift" if g.get("param") == "inset" else "inset"
         self.bevel_set(g, *g["vals0"])
-
-    def arm_line_knife(self):
-        """LightWave Knife: gorunumde cizgi cek, cizgiden gecen (bakisa paralel) duzlemle kes."""
-        self.armed = "line"
-        self.info = T("Knife: drag to draw the cut line (Ctrl: 15° steps, Esc: cancel)")
-        self.refresh()
 
     def _plane_cut(self, n, d, verts):
         """Duzlemle kes; simetride aynalanmis duzlemle de. verts: kesilecek yuzlerin noktalari (None = hepsi)."""
@@ -2750,17 +2800,24 @@ class SubDSession:
         if self.line_overlay is not None:
             self.line_overlay.set_line(None, None)
 
-    def arm_loop(self):
-        """Dugmeden: bir sonraki tiklamada imlecin altindaki halkayi secer."""
-        self.armed = "loop"
-        self.info = T("Loop: click an edge of the loop")
+    # --- kalici araclar (LightWave gibi): dugme sari yanar, kapatilana kadar her tiklama araci uygular ---
+    # "knife": kenara tikla = loop cut + kaydirma; "line": cizgi cek = duzlemle kes; "loop": kenara tikla = halka sec.
+    # Kapatma: ayni dugme / tus (K, J), Esc, sag tik; baska bir arac (extrude, bevel, tasima...) da kapatir.
+
+    def toggle_tool(self, name):
+        if self.drag or self.grab or self.box is not None or self.mode == "object":
+            return
+        self.armed = None if self.armed == name else name
+        self.info = {None: "",
+                     "knife": T("Knife: click edges to cut (K / Esc / right click: off)"),
+                     "line": T("Knife: drag cut lines (Ctrl: 15° steps; J / Esc / right click: off)"),
+                     "loop": T("Loop: click edges to select loops (Esc / right click: off)")}[self.armed]
         self.refresh()
 
-    def arm_knife(self):
-        """Düğmeden: bir sonraki tıklama imlecin altındaki kenardan loop cut yapar."""
-        self.armed = "knife"
-        self.info = T("Knife: click the edge to cut (Esc: cancel)")
-        self.refresh()
+    def drop_tool(self):
+        if self.armed:
+            self.armed = None
+            self.info = ""
 
     def hover_edge(self, pos):
         """Imlecin altindaki yuz ve o yuzun imlece en yakin kenari: (yuz, u, v) ya da None."""
@@ -2959,15 +3016,100 @@ class SubDSession:
 
     def delete(self):
         if self.sel and self.mode == "face":
+            self.drop_tool()
             self.push()
             self.cage.delete(self.mirror_faces(self.sel, self.mirror_map()) if self.sym else self.sel)
             self.clear_selection()
             self.refresh()
 
+    # --- kopyala / kes / yapistir (cokgenler) ---
+    # Pano modul duzeyinde: modelleyici kapanip acilsa da, baska bir SubD nesnesine gecilse de kalir. Noktalar
+    # DUNYA koordinatinda saklanir; yapistirilan parca kopyalandigi yerde durur (Placement'i farkli nesnede de).
+
+    def selected_faces(self):
+        """Yuz modunda secili yuzler; nokta / kenar modunda butun noktalari secime giren yuzler."""
+        if self.mode == "face":
+            return set(self.sel)
+        verts = set(self.selected_verts())
+        return {fi for fi, f in enumerate(self.cage.F) if verts.issuperset(f)}
+
+    def copy_faces(self, cut=False):
+        """Ctrl+C / Ctrl+X: secili cokgenleri (keskin kenarlariyla) panoya alir; cut: sonra siler."""
+        global _clipboard
+        if self.mode == "object" or self.drag or self.grab:
+            return
+        sel = self.selected_faces()
+        if self.sym:
+            sel = self.mirror_faces(sel, self.mirror_map())
+        if not sel:
+            self.info = T("Copy: select polygons first")
+            self.refresh()
+            return
+        sub = self.cage.subset(sel)
+        sub.V = self.l2w(sub.V)
+        _clipboard = sub
+        self.info = (T("Cut %d polygons") if cut else T("Copied %d polygons")) % len(sub.F)
+        if cut:
+            self.push()
+            self.cage.delete(sel)
+            self.clear_selection()
+        self.refresh()
+
+    def paste_faces(self):
+        """Ctrl+V: panodaki cokgenleri bu kafese ayri parca olarak ekler (kopyalandigi yerde) ve secer;
+        T / gizmo ile hemen tasinabilir. Object modunda yeni bir SubD nesnesi olur."""
+        if _clipboard is None or not _clipboard.F or self.drag or self.grab:
+            return
+        if self.mode == "object":
+            self.object_paste()
+            return
+        self.push()
+        c = _clipboard.copy()
+        c.V = self.w2l(c.V)
+        new = self.cage.append(c)
+        self.sel, self.sel_v, self.sel_e = set(), set(), set()
+        if self.mode == "face":
+            self.sel = set(new)
+        elif self.mode == "point":
+            self.sel_v = {v for fi in new for v in self.cage.F[fi]}
+        else:
+            self.sel_e = {_edge(f[i], f[(i + 1) % len(f)]) for f in (self.cage.F[fi] for fi in new)
+                          for i in range(len(f))}
+        self.last_op = None
+        self.info = T("Pasted %d polygons (T: move)") % len(new)
+        self.refresh()
+
+    def paste_as_object(self):
+        """Panodaki cokgenlerden yeni bir SubD nesnesi (or. sisenin agzindan kapak) ve hemen kafesine gir."""
+        if _clipboard is None or not _clipboard.F or self.drag or self.grab:
+            return
+        if self.mode != "object":
+            self.enter_object_mode()
+        self.object_paste()
+
+    def object_paste(self):
+        doc = App.ActiveDocument
+        levels = self.levels
+        doc.openTransaction("SubD paste")
+        o = doc.addObject("Mesh::FeaturePython", "SubD")
+        SubDObject(o)
+        if App.GuiUp:
+            o.ViewObject.Proxy = 0
+        cage_to_obj(_clipboard, o)                         # dunya koordinati: Placement birim
+        o.Levels = levels
+        o.recompute()
+        doc.commitTransaction()
+        self.edit_mode = "face"
+        self.edit_object(o)
+        self.sel = set(range(len(self.cage.F)))
+        self.info = T("Pasted %d polygons as a new object") % len(self.cage.F)
+        self.refresh()
+
     # --- tasima (grab) ---
     def start_grab(self, verts, axis=None, pushed=False, lazy=False, op=None):
         if not verts or self.drag or self.grab:
             return
+        self.drop_tool()
         if not pushed:
             self.push()
         if op is None:
@@ -3244,21 +3386,18 @@ class SubDSession:
             _later(lambda ok=left: self.end_grab(ok))
             return
         if not left:
-            if self.armed:
-                self.armed = None
-                self.info = ""
+            if self.armed and ev.getButton() == coin.SoMouseButtonEvent.BUTTON2:   # sag tik: kalici araci kapat
+                self.drop_tool()
                 _later(self.refresh)
             return
+        # kalici arac (sari dugme) acik kaldikca her tiklama onu uygular; secim / kutu secimi yapilmaz
         if self.armed == "line":                           # knife cizgisi baslar; birakinca kesilir
             cb.setHandled()
-            self.armed = None
             self.box = dict(p0=pos, moved=False, kind="line", shift=False, ctrl=False)
             return
         if self.armed in ("knife", "loop"):
             cb.setHandled()
             fn = self.knife if self.armed == "knife" else self.loop_select
-            self.armed = None
-            self.info = ""
             _later(lambda: fn(pos))
             return
         key = self.gizmo.pick(pos)
@@ -3356,6 +3495,10 @@ class SubDSession:
             if ctrl and k == "z":
                 App.ActiveDocument.undo()
                 self.refresh()
+            elif ctrl and k == "v":                       # panodaki cokgenler -> yeni SubD nesnesi
+                self.paste_faces()
+            elif ctrl and k in ("c", "x"):                # nesne modunda kopyalanacak cokgen yok
+                pass
             elif ctrl:
                 self.set_mode({"g": "point", "h": "face"}.get(k, "face"))
             elif k in ("tab", "o"):                   # O (ya da Tab): secili nesnenin kafesine gir
@@ -3384,19 +3527,19 @@ class SubDSession:
             self.enter_object_mode()
             return
         if ctrl:                                           # LightWave: ^G nokta, ^H cokgen
-            {"z": self.do_undo, "g": lambda: self.set_mode("point"), "h": lambda: self.set_mode("face")}[k]()
+            {"z": self.do_undo, "g": lambda: self.set_mode("point"), "h": lambda: self.set_mode("face"),
+             "c": self.copy_faces, "x": lambda: self.copy_faces(cut=True), "v": self.paste_faces}[k]()
         elif k == "n":
             self.toggle_numeric()
         elif k == "escape" and self.armed:
-            self.armed = None
-            self.info = ""
+            self.drop_tool()
             self.refresh()
         elif k in ("tab", "s"):
             self.toggle_smooth()
         elif k == "e":
             self.extrude()
         elif k == "k":
-            self.knife()
+            self.toggle_tool("knife")
         elif k in ("t", "g"):
             self.start_grab(self.selected_verts())
         elif k == "a":
@@ -3418,7 +3561,7 @@ class SubDSession:
         elif k == "l":
             self.loop_select()
         elif k == "j":
-            self.arm_line_knife()
+            self.toggle_tool("line")
         elif k == "x":
             self.toggle_ghost()
         elif k == "b":
@@ -3474,9 +3617,11 @@ _KEYS = {
     QtCore.Qt.Key_1: "1", QtCore.Qt.Key_2: "2", QtCore.Qt.Key_3: "3", QtCore.Qt.Key_Y: "y", QtCore.Qt.Key_R: "r",
     QtCore.Qt.Key_C: "c", QtCore.Qt.Key_B: "b", QtCore.Qt.Key_I: "i",
     QtCore.Qt.Key_H: "h", QtCore.Qt.Key_N: "n", QtCore.Qt.Key_L: "l", QtCore.Qt.Key_X: "x",
-    QtCore.Qt.Key_J: "j", QtCore.Qt.Key_D: "d", QtCore.Qt.Key_O: "o",
+    QtCore.Qt.Key_J: "j", QtCore.Qt.Key_D: "d", QtCore.Qt.Key_O: "o", QtCore.Qt.Key_V: "v",
 }
-_CTRL_KEYS = ("z", "g", "h")   # Ctrl+Z geri al, Ctrl+G nokta modu, Ctrl+H cokgen modu (LightWave)
+# Ctrl+Z geri al, Ctrl+G nokta modu, Ctrl+H cokgen modu (LightWave), Ctrl+C / X / V cokgen kopyala / kes / yapistir
+_CTRL_KEYS = ("z", "g", "h", "c", "x", "v")
+_CTRL_ONLY = ("z", "v")        # tek basina bizim degil (FreeCAD'e gider)
 
 
 class _KeyFilter(QtCore.QObject):
@@ -3509,7 +3654,7 @@ class _KeyFilter(QtCore.QObject):
             return False
         k = _KEYS.get(ev.key())
         ctrl = bool(ev.modifiers() & QtCore.Qt.ControlModifier)
-        if k is None or (ctrl and k not in _CTRL_KEYS) or (not ctrl and k == "z"):
+        if k is None or (ctrl and k not in _CTRL_KEYS) or (not ctrl and k in _CTRL_ONLY):
             return False
         if t == QtCore.QEvent.ShortcutOverride:
             ev.accept()  # tusu FreeCAD kisayollarindan once biz alalim
@@ -3532,6 +3677,7 @@ QPushButton { background: #5a5a5a; color: #ececec; border: 1px solid #2b2b2b; bo
 QPushButton:hover { background: #6b6b6b; }
 QPushButton:pressed { background: #4a4a4a; }
 QPushButton:checked { background: #3f6fb0; border-color: #24426b; }
+QPushButton[tool="true"]:checked { background: #e8b923; border-color: #8a6a00; }
 QPushButton:disabled { color: #8a8a8a; background: #4c4c4c; }
 QLabel:disabled { color: #7a7a7a; }
 QLabel { color: #e0e0e0; background: transparent; }
@@ -3699,6 +3845,7 @@ class _Overlay(object):
         self.vp = s.gv.viewport()
         self.toggles = {}    # ad -> (dugme, durum fonksiyonu)
         self.gated = []      # (dugme, secim gerekir mi, yalniz hangi modda: None / "edit" / "object")
+        self.tool_buttons = []  # kalici arac dugmeleri (Knife, Select loop): aciksa sari, yazi koyu
 
         self.left = QtWidgets.QFrame(self.vp)
         self.left.setObjectName("lwPanel")
@@ -3714,9 +3861,13 @@ class _Overlay(object):
             lay.addSpacing(4)
             lay.addWidget(lb)
 
-        def btn(text, key, fn, toggle=None, sel=False, mode=None):
+        def btn(text, key, fn, toggle=None, sel=False, mode=None, tool=None):
             b = _lw_button(T(text), key, 112)
             b.clicked.connect(lambda checked=False: (fn(), self.sync()))
+            if tool:                                       # kalici arac: acikken sari (mavi = acik modlar)
+                b.setProperty("tool", True)
+                toggle = lambda: s.armed == tool
+                self.tool_buttons.append(b)
             if toggle:
                 b.setCheckable(True)
                 self.toggles[text] = (b, toggle)
@@ -3737,15 +3888,20 @@ class _Overlay(object):
         head("Select")
         btn("Select all", "A", lambda: s.key("a"))
         btn("Deselect", "Esc", lambda: s.key("escape"))
-        btn("Select loop", "L", s.arm_loop, mode="edit")
+        btn("Select loop", "L", lambda: s.toggle_tool("loop"), mode="edit", tool="loop")
         head("Polygon")
         btn("Extrude", "E", lambda: s.extrude(lazy=True), sel=True, mode="edit")
         btn("Bevel", "B", lambda: s.edge_bevel(lazy=True) if s.mode == "edge" else s.bevel(lazy=True),
             sel=True, mode="edit")
         btn("Inset", "I", lambda: s.bevel(inset_only=True, lazy=True), sel=True, mode="edit")
-        btn("Knife (loop)", "K", s.arm_knife, mode="edit")
-        btn("Knife (line)", "J", s.arm_line_knife, mode="edit")
+        btn("Knife (loop)", "K", lambda: s.toggle_tool("knife"), mode="edit", tool="knife")
+        btn("Knife (line)", "J", lambda: s.toggle_tool("line"), mode="edit", tool="line")
         btn("Delete", "Del", lambda: s.object_delete() if obj() else s.delete(), sel=True)
+        head("Clipboard")
+        btn("Copy", "^C", s.copy_faces, sel=True, mode="edit")
+        btn("Cut", "^X", lambda: s.copy_faces(cut=True), sel=True, mode="edit")
+        btn("Paste", "^V", s.paste_faces, mode="edit")
+        btn("Paste as object", "", s.paste_as_object)
         head("Modify")
         btn("Move", "T", lambda: s.set_gizmo("move"), toggle=lambda: s.gizmo.mode == "move")
         btn("Rotate", "R", lambda: s.set_gizmo("rotate"), toggle=lambda: s.gizmo.mode == "rotate")
@@ -3817,6 +3973,13 @@ class _Overlay(object):
         s = self.s
         for b, state in self.toggles.values():
             b.setChecked(bool(state()))
+        for b in self.tool_buttons:                        # sari zeminde koyu yazi
+            lit = b.isChecked()
+            if b.property("lit") != lit:
+                b.setProperty("lit", lit)
+                name, key = b.findChildren(QtWidgets.QLabel)
+                name.setStyleSheet("color:#1a1a1a;" if lit else "")
+                key.setStyleSheet("color:#4a3a00;" if lit else "color:#a8a8a8;")
         is_obj = s.mode == "object"
         nobj = len(s.selected_objects()) if is_obj else 0
         has = nobj > 0 if is_obj else bool(s.selected_verts())
@@ -3848,6 +4011,7 @@ def start(obj=None, object_mode=None):
         _session.close()
     if App.ActiveDocument is None or Gui.ActiveDocument is None:
         App.newDocument("SubD")
+    repair_proxies(App.ActiveDocument)
     if object_mode is None:
         if obj is None:
             sel = [o for o in Gui.Selection.getSelection() if is_subd(o)]

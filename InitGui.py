@@ -26,4 +26,17 @@ class SubDModelerWorkbench(Gui.Workbench):
         return "Gui::PythonWorkbench"
 
 
+class _RestoreObserver:
+    """Belge acilinca: Proxy'si kopmus SubD nesnelerini onar (FreeCAD modulu acilista ice aktaramadiysa yuzey ve
+    katilar guncellenmez). Modul yalniz belgede SubD nesnesi varsa yuklenir."""
+
+    def slotFinishRestoreDocument(self, doc):
+        if any(("CageFaces" in o.PropertiesList or "Samples" in o.PropertiesList)
+               and getattr(o, "Proxy", None) is None for o in doc.Objects):
+            import subd_modeler
+            subd_modeler.repair_proxies(doc)
+
+
+import FreeCAD as App
+App.addDocumentObserver(_RestoreObserver())
 Gui.addWorkbench(SubDModelerWorkbench())

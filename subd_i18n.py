@@ -63,6 +63,16 @@ TR = {
     "Save": "Kaydet",
     "Solid (STEP)": "Katı (STEP)",
     "Close": "Kapat",
+    "Clipboard": "Pano",
+    "Copy": "Kopyala",
+    "Cut": "Kes",
+    "Paste": "Yapıştır",
+    "Paste as object": "Yeni nesneye",
+    "Copy: select polygons first": "Kopyala: önce çokgen seçin",
+    "Copied %d polygons": "%d çokgen kopyalandı",
+    "Cut %d polygons": "%d çokgen kesildi",
+    "Pasted %d polygons (T: move)": "%d çokgen yapıştırıldı (T: taşı)",
+    "Pasted %d polygons as a new object": "%d çokgen yeni nesneye yapıştırıldı",
     # --- object mode ---
     "Object": "Nesne",
     "Duplicate": "Çoğalt",
@@ -109,17 +119,20 @@ TR = {
     "SubD solid: %s, %d faces, valid=%s, closed=%s, volume=%.3f mm3\n":
         "SubD katı: %s, %d yüz, geçerli=%s, kapalı=%s, hacim=%.3f mm3\n",
     "SubD could not be saved: %s\n": "SubD kaydedilemedi: %s\n",
+    "SubD: repaired %d objects (%s)\n": "SubD: %d nesne onarıldı (%s)\n",
     "Edge bevel: drag right, wheel = segments (Ctrl: mm step, Shift: fine)":
         "Kenar bevel: fareyi sağa çek, tekerlek = segment (Ctrl: mm adım, Shift: ince)",
     "Edge bevel  %.3f mm   %d segments": "Kenar bevel  %.3f mm   %d segment",
     "Edge bevel: points on open edges are not supported": "Kenar bevel: açık kenarlı noktalar desteklenmiyor",
     "(B: switch)": "(B: değiştir)",
-    "Knife: drag to draw the cut line (Ctrl: 15° steps, Esc: cancel)":
-        "Knife: kesim çizgisini sürükleyerek çek (Ctrl: 15° adım, Esc: vazgeç)",
+    "Knife: drag cut lines (Ctrl: 15° steps; J / Esc / right click: off)":
+        "Knife: kesim çizgilerini sürükleyerek çek (Ctrl: 15° adım; J / Esc / sağ tık: kapat)",
     "Knife  N (%.3f, %.3f, %.3f)   Offset %.3f mm": "Knife  N (%.3f, %.3f, %.3f)   Konum %.3f mm",
     "Knife: the line does not cut the model": "Knife: çizgi modeli kesmiyor",
-    "Loop: click an edge of the loop": "Loop: halkadaki bir kenara tıkla",
-    "Knife: click the edge to cut (Esc: cancel)": "Knife: kesilecek kenara tıkla (Esc: vazgeç)",
+    "Loop: click edges to select loops (Esc / right click: off)":
+        "Loop: halka seçmek için kenarlara tıkla (Esc / sağ tık: kapat)",
+    "Knife: click edges to cut (K / Esc / right click: off)":
+        "Knife: kesmek için kenarlara tıkla (K / Esc / sağ tık: kapat)",
     "Distance %.3f mm": "Mesafe %.3f mm",
     "Angle %s  %.2f°": "Açı %s  %.2f°",
     # --- shortcut help ---
@@ -131,11 +144,13 @@ TR = {
     "Drag: box select (Shift add, Ctrl remove)\n"
     "L: select loop under cursor  |  X: ghost\n"
     "E: extrude  |  K: knife (loop cut)  |  J: knife (line / plane)\n"
+    "Knife / loop stay on (yellow) until K / J / Esc / right click\n"
     "B: bevel (right = inset, up = shift)  |  I: inset\n"
     "Edge mode B: edge bevel (right = width)\n"
     "O: object / edit mode  |  D: duplicate object\n"
         "T / G: move  |  Tab / S: SubPatch\n"
     "A: select all  |  Del: delete\n"
+    "Ctrl+C / X / V: copy / cut / paste polygons\n"
     "Ctrl+Z: undo  |  F: save to document\n"
     "Ctrl + gizmo / T: stepped (mm, degrees)\n"
     "Esc / right click: cancel":
@@ -147,11 +162,13 @@ TR = {
         "Sürükle: kutu seçimi (Shift ekle, Ctrl çıkar)\n"
         "L: imlecin altındaki halkayı seç  |  X: hayalet\n"
         "E: extrude  |  K: knife (loop cut)  |  J: knife (çizgi / düzlem)\n"
+        "Knife / loop açık kalır (sarı): K / J / Esc / sağ tık kapatır\n"
         "B: bevel (sağa inset, yukarı shift)  |  I: inset\n"
         "Kenar modunda B: kenar bevel (sağa = genişlik)\n"
         "O: nesne / düzenleme modu  |  D: nesneyi çoğalt\n"
         "T / G: taşı  |  Tab / S: SubPatch\n"
         "A: tümünü seç  |  Del: sil\n"
+        "Ctrl+C / X / V: çokgen kopyala / kes / yapıştır\n"
         "Ctrl+Z: geri al  |  F: belgeye kaydet\n"
         "Ctrl + gizmo / T: adımlı (mm, derece)\n"
         "Esc / sağ tık: işlemi iptal",

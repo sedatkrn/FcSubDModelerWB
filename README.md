@@ -39,6 +39,8 @@ Catmull-Clark limit surface is on the roadmap.
 - **Knife (line)**: LightWave knife — draw a line and the model is cut **live** by the plane through it;
   then set the plane exactly (normal + offset)
 - Crease (sharp or semi-sharp edges) — makes the surface hit exact dimensions
+- Copy / cut / paste polygons (with their creases): paste in place into the same cage, into another SubD
+  object, or as a new object (e.g. copy the neck of a bottle to start its cap)
 - X symmetry for every tool
 - Move / rotate / stretch / size gizmo (ported from FC YBT Raytracer), Ctrl = mm / degree steps
 - Exact numeric input for every operation, plus selection center / size in mm
@@ -92,13 +94,14 @@ document; save the document as usual (Ctrl+S).
 | A | select all | L | select the loop under the cursor |
 | E | extrude | B | bevel (polygon mode) / edge bevel (edge mode) |
 | I | inset | C | crease / uncrease selected edges |
-| K | loop cut + slide | J | line knife (live plane cut) |
+| K | loop cut + slide (stays on) | J | line knife, live plane cut (stays on) |
 | T / G | move | R / H | rotate / stretch-size gizmo |
 | Y | X symmetry | X | ghost mode |
 | Del | delete faces | Ctrl+Z | undo |
+| Ctrl+C / Ctrl+X | copy / cut polygons | Ctrl+V | paste in place (object mode: as a new SubD object) |
 | F | save to the document | N | numeric panel |
 | Ctrl (while dragging) | mm / degree steps | Shift (while dragging) | fine control |
-| Esc / right click | cancel the running tool | Mouse wheel (edge bevel) | segments |
+| Esc / right click | cancel the running tool / turn the knife off | Mouse wheel (edge bevel) | segments |
 
 ## Language
 
