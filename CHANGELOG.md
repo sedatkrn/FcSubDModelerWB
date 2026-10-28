@@ -3,9 +3,10 @@
 ## Unreleased
 
 ### New tools
-- **Extrude > Each normal**: each selected face moves along its own normal by the distance (corners go
-  diagonal, even thickness) instead of the whole region along the averaged normal. The choice is remembered;
-  an axis lock turns it off.
+- **Extrude > Individual faces (own normals)**: each selected face is extruded on its own, with its own side
+  walls, along its own normal (Blender's Extrude Individual Faces), e.g. for knurled / ribbed rings on a
+  cylinder. Off: the region moves along the averaged normal as before. The choice is remembered; an axis lock
+  turns it off. It sits on its own row under the axis checks.
 - **Shell** (Modify): object mode shells the whole selected object, edit mode the selected polygons. Thickness,
   inside / outside / centered, *Detail filter* (details narrower than this width are skipped on the inner side:
   short inner edges such as support loops and narrow steps are merged, and a robust local quadric fit flattens

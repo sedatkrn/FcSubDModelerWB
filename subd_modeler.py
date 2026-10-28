@@ -517,34 +517,6 @@ class Cage:
                     best = t
         return p + n * best if best is not None else p
 
-    def even_dirs(self, region):
-        """Her yuz kendi normalinde (Extrude "Each normal"): bolgenin her noktasi icin (bevel_dirs ile ayni
-        sira) oyle bir yon ki komsu her secili yuz kendi normali boyunca ayni mesafe kayar (kosede capraz, esit
-        kalinlik). Normaller birbirine ters ya da cok dar acida ise ortalama normal."""
-        verts = sorted({v for fi in region for v in self.F[fi]})
-        idx = {v: k for k, v in enumerate(verts)}
-        ns = [[] for _ in verts]
-        for fi in region:
-            n = self.normal(fi)
-            ln = np.linalg.norm(n)
-            if ln < 1e-12:
-                continue
-            n = n / ln
-            for v in self.F[fi]:
-                if all(n.dot(m) < 0.999 for m in ns[idx[v]]):
-                    ns[idx[v]].append(n)
-        D = np.zeros((len(verts), 3))
-        for k, N in enumerate(ns):
-            if not N:
-                continue
-            A = np.array(N)
-            x = np.linalg.lstsq(A, np.ones(len(N)), rcond=None)[0]
-            if np.linalg.norm(x) > 4.0 or (A @ x).min() < 0.5:      # ters / neredeyse paralel normaller
-                m = A.sum(0)
-                x = m / np.linalg.norm(m) if np.linalg.norm(m) > 1e-9 else A[0]
-            D[k] = x
-        return D
-
     def bevel_dirs(self, region):
         """Bevel / Smooth Shift icin, bolgenin her noktasi (sirali, extrude ile ayni sira) icin iki yon:
         kaydirma (komsu secili yuzlerin ortalama normali) ve iceri alma (sinir noktalarinda yuz duzleminde
@@ -4064,7 +4036,8 @@ class SubDSession:
                 fields.append(("Segments", v["Segments"], "", 0, r("Segments")))
                 checks = [(n, n in axes, lambda on, n=n: self.extrude_axis(n, on)) for n in "XYZ"]
                 if a.get("face"):
-                    checks.append(("Each normal", bool(v.get("Each normal")), self.extrude_each_normal))
+                    checks.append(("Individual faces (own normals)", bool(v.get("Each normal")),
+                                   self.extrude_each_normal, True))
                 return "Extrude", fields, self.drag is None, checks, "Axis (none = normal)"
             if k == "bevel":
                 return ("Inset" if a["inset_only"] else "Bevel"), \
@@ -4483,16 +4456,30 @@ class SubDSession:
             n = sum(cage.normal(fi) for fi in self.sel)
             if np.linalg.norm(n) > 1e-9:
                 m_axis = n / np.linalg.norm(n)
-            # normaller birbirini goturuyorsa (or. butun yuzler) nokta basina Smooth Shift yonleri
-            nv = cage.even_dirs(region) if each else cage.bevel_dirs(region)[0] if m_axis is None else None
-            cage.extrude(region, segs, layers)
-            verts = sorted(layers)
-            if nv is not None:
-                dirs = nv
+            if each:                                       # her yuz ayri extrude, kendi normalinde (Blender
+                verts, rows, dirs = [], [], []             # Extrude Individual Faces): ortak nokta her yuzde ayri
+                for fi in sorted(region):
+                    n = cage.normal(fi)
+                    n = n / max(np.linalg.norm(n), 1e-12)
+                    L = {}
+                    cage.extrude({fi}, segs, L)
+                    for v in sorted(L):
+                        verts.append(v)
+                        rows.append(L[v][1:])
+                        dirs.append(n)
+                dirs = np.array(dirs).reshape(-1, 3)
             else:
-                dirs = np.tile(m_axis, (len(verts), 1))
-                if self.sym:                               # aynadaki taraf aynalanmis normalle
-                    dirs[[i for i, v in enumerate(verts) if v not in orig]] *= MIRROR
+                # normaller birbirini goturuyorsa (or. butun yuzler) nokta basina Smooth Shift yonleri
+                nv = cage.bevel_dirs(region)[0] if m_axis is None else None
+                cage.extrude(region, segs, layers)
+                verts = sorted(layers)
+                rows = [layers[v][1:] for v in verts]
+                if m_axis is None:
+                    dirs = nv
+                else:
+                    dirs = np.tile(m_axis, (len(verts), 1))
+                    if self.sym:                           # aynadaki taraf aynalanmis normalle
+                        dirs[[i for i, v in enumerate(verts) if v not in orig]] *= MIRROR
         else:
             edges = set(self.sel_e)
             if self.sym:
@@ -4510,6 +4497,7 @@ class SubDSession:
                 m_axis = m / np.linalg.norm(m)
             self.sel_e = {_edge(layers[a][-1], layers[b][-1]) for a, b in map(tuple, se0)
                           if a in layers and b in layers and len(layers[a]) > 1}
+            rows = [layers[v][1:] for v in verts]
         side = np.array([1 if v in orig else -1 for v in verts])
         plane = [i for i, v in enumerate(verts) if M.get(v) == v]
         if plane:
@@ -4517,7 +4505,7 @@ class SubDSession:
             dirs[plane, 0] = 0.0
         base = cage.V[verts].copy()
         return dict(kind="extrude", before=before, segs=segs, axes=axes, verts=verts, base=base,
-                    idx=np.array([layers[v][1:] for v in verts]).T, dirs=dirs, side=side, plane=plane,
+                    idx=np.array(rows).T, dirs=dirs, side=side, plane=plane,
                     m_axis=m_axis, c=base[side > 0].mean(0) if (side > 0).any() else base.mean(0))
 
     def _extrude_anchor(self, st):
@@ -6607,7 +6595,7 @@ class _ToolPanel(QtWidgets.QFrame):
         changed = key != self.key
         self.check_fns = [c[2] for c in checks]
         if (label, tuple(c[0] for c in checks)) != self.check_key:
-            self._build_checks(label, [c[0] for c in checks])
+            self._build_checks(label, [c[0] for c in checks], [len(c) > 3 and c[3] for c in checks])
         for cb, c in zip(self.checks, checks):
             if cb.isChecked() != bool(c[1]):
                 cb.blockSignals(True)
@@ -6663,7 +6651,8 @@ class _ToolPanel(QtWidgets.QFrame):
             self.setFixedHeight(self.layout().sizeHint().height())
         return changed
 
-    def _build_checks(self, label, names):
+    def _build_checks(self, label, names, own=()):
+        """own[i]: kutucuk etiketli satira degil, altinda kendi satirina (uzun adlar sigmiyordu)."""
         while self.check_lay.count():
             w = self.check_lay.takeAt(0).widget()
             if w is not None:
@@ -6676,11 +6665,16 @@ class _ToolPanel(QtWidgets.QFrame):
             self.check_lay.addWidget(lb, 0, 0)
             lb.show()
         self.check_lay.setColumnStretch(0, 1 if label else 0)
+        cols = 1 + sum(not (i < len(own) and own[i]) for i in range(len(names)))
+        row = 1
         for i, n in enumerate(names):
             cb = QtWidgets.QCheckBox(T(n))
             cb.setFocusPolicy(QtCore.Qt.NoFocus)           # kisayollar gorunumde kalsin
             cb.toggled.connect(lambda on, i=i: self._check(i, on))
-            if label:
+            if label and i < len(own) and own[i]:
+                self.check_lay.addWidget(cb, row, 0, 1, cols)
+                row += 1
+            elif label:
                 self.check_lay.addWidget(cb, 0, i + 1)
             else:
                 self.check_lay.addWidget(cb, i, 0)
