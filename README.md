@@ -45,7 +45,8 @@ Catmull-Clark limit surface is on the roadmap.
   object, or as a new object (e.g. copy the neck of a bottle to start its cap)
 - **From face**: select faces or closed edge loops of a Part / PartDesign object (in object mode FreeCAD's own
   selection works) and turn them into one cage: four-sided faces (flat or curved: cylinders, B-splines...) become
-  quad grids, flat faces with one or two boundaries become fans / quad strips, neighbouring faces are welded along
+  quad grids, flat faces with one or two boundaries become fans / quad strips, flat faces with several holes get a
+  quad ring around each hole and a quad-dominant fill between them, neighbouring faces are welded along
   their shared edges, sharp joins and corners stay creased. With *Exact Edge* the cage is solved so the SubD
   surface passes through all sample points (about 0.08 mm on a 4 mm thick filleted box)
 - **Make polygon** (P, LightWave Make Polygon / Blender F): a polygon from 3 or more selected points, a closed
@@ -138,7 +139,7 @@ bottom bar switches it (the modeler reopens with the same model). The setting is
 - Edge slide, more selection tools (face strips, grow / shrink)
 - Export / import of the raw cage with creases (OBJ / USD) for Blender round-trips
 - Odd segment counts for all-quad edge-bevel corners
-- From face: curved faces that are not four-sided, flat faces with several holes
+- From face: curved faces that are not four-sided
 
 ## License
 

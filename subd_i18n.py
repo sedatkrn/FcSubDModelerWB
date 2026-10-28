@@ -174,6 +174,9 @@ TR = {
     "smooth stripes as G2":
         "Yüzeye yansıyan şeritler: kırık şerit = kırık yüzey (G0), şeritte köşe = G1, yumuşak şerit = G2",
     "Solid (STEP)": "Katı (STEP)",
+    "Gizmo": "Gizmo",
+    "Default": "Varsayılan",
+    "Length of the gizmo arrows on screen (default %d px)": "Gizmo oklarının ekrandaki boyu (varsayılan %d px)",
     "Precision": "Hassasiyet",
     "Continuity": "Süreklilik",
     "Draft": "Taslak",

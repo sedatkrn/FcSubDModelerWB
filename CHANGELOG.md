@@ -27,8 +27,19 @@
   the whole model; a cut that does not go all the way around is not split into objects. Ctrl+Z also removes the
   new object.
 - The edited object is marked (bold, yellow) in the model tree.
+- **From face: flat faces with several holes** (e.g. a motor mounting plate): a quad ring around each hole, the
+  area between the outer boundary and the rings triangulated (ear clipping with hole bridges, Delaunay flips) and
+  merged into quads.
+- **Gizmo size** (Options > Gizmo): length of the gizmo arrows on screen in px (30-400, default 90), remembered.
+- Info and error messages are shown inside the 3D view, right of the tool column above the bottom bar (they were
+  cut off in the bottom bar); long messages wrap.
 
 ### Fixes
+- From face: hole walls (full cylinders with a seam) folded into a broken cage, alone or together with the plate:
+  closed edges (circles) now take their direction from each face's own wire, and the periodic parameter runs
+  continuously along each edge.
+- From face *Exact Edge*: only boundary points (and curved four-sided faces) are solved; interior points of flat
+  faces stay put, so irregular flat meshes no longer fold.
 - Tool panel checkboxes are shown when the panel is built (the Shell panel was squashed).
 - The tree marker no longer sticks to a second object after Knife splits rebuild the tree.
 - Undo: autosaves no longer become FreeCAD undo steps; a whole edit session is one step ("SubD edit"), so Ctrl+Z

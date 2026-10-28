@@ -1884,18 +1884,22 @@ def _edge_points(e, n):
     return np.array([tuple(v) for v in e.discretize(Number=n + 1)], float)
 
 
-def _chain(edges, counts):
+def _chain(edges, counts, rev=None):
     """Sirali kapali kenar zinciri: her kenarin ornegi ZINCIR yonunde ((n+1, 3) dizi, uclar dahil). Kenarin
-    parametre yonu zincirle ters olabilir (komsuluktan bulunur; Vertexes sirasina guvenilmez)."""
+    parametre yonu zincirle ters olabilir (komsuluktan bulunur; Vertexes sirasina guvenilmez). Kapali kenarda
+    (uclari ayni) komsuluk yonu vermez: rev[k] (bu yuzun telinde ters mi) ya da kenarin kendi Orientation'i."""
     ends = [(np.array(tuple(e.valueAt(e.FirstParameter))), np.array(tuple(e.valueAt(e.LastParameter))))
             for e in edges]
     nxt = ends[1 % len(edges)]                             # ilk kenarin sonu ikinci kenara degmeli
     fwd0 = min(np.linalg.norm(ends[0][1] - q) for q in nxt) <= min(np.linalg.norm(ends[0][0] - q) for q in nxt)
     prev = ends[0][0] if fwd0 else ends[0][1]
     out = []
-    for e, n, (p0, p1) in zip(edges, counts, ends):
+    for k, (e, n, (p0, p1)) in enumerate(zip(edges, counts, ends)):
         q = _edge_points(e, n)
-        if np.linalg.norm(p1 - prev) < np.linalg.norm(p0 - prev):
+        if np.linalg.norm(p1 - p0) < 1e-7:                 # kapali kenar (silindir agzindaki cember)
+            if (rev[k] if rev is not None else e.Orientation == "Reversed"):
+                q = q[::-1]
+        elif np.linalg.norm(p1 - prev) < np.linalg.norm(p0 - prev):
             q = q[::-1]
         out.append(q)
         prev = q[-1]
@@ -1932,9 +1936,9 @@ def _pair_order(eo, ei):
     return best[1]
 
 
-def _grid_patch(face, edges, counts):
+def _grid_patch(face, edges, counts, rev=None):
     """Dort kenarli yuz: kenar ornekleri arasinda UV'de Coons izgarasi, ic noktalar yuzeyin uzerinde. (V, F)"""
-    segs = _chain(edges, counts)
+    segs = _chain(edges, counts, rev)
     n0, n1 = len(segs[0]) - 1, len(segs[1]) - 1
     if len(segs[2]) - 1 != n0 or len(segs[3]) - 1 != n1:
         return None
@@ -1943,9 +1947,11 @@ def _grid_patch(face, edges, counts):
     uv = lambda P: np.array([tuple(S.parameter(App.Vector(*p))) for p in P], float)
     UB, UR, UT, UL = uv(B), uv(R), uv(Tp), uv(L)
     for k, per in enumerate((S.UPeriod() if S.isUPeriodic() else 0, S.VPeriod() if S.isVPeriodic() else 0)):
-        if per:                                            # periyodik yuzey (silindir): dikisin ayni tarafina al
-            for A in (UB, UR, UT, UL):
-                A[:, k] = UB[0, k] + (A[:, k] - UB[0, k] + per / 2) % per - per / 2
+        if per:                                            # periyodik yuzey (silindir): her kenar boyunca surekli
+            for A, ref in ((UB, None), (UL, UB[0]), (UR, UB[-1]), (UT, UL[-1])):   # (tam cember 0 -> 2pi),
+                A[:, k] = np.unwrap(A[:, k], period=per)   # baslangici komsu kosesiyle ayni turda
+                if ref is not None:
+                    A[:, k] += per * np.round((ref[k] - A[0, k]) / per)
     idx = lambda i, j: j * (n0 + 1) + i
     V = np.zeros(((n0 + 1) * (n1 + 1), 3))
     for j in range(n1 + 1):
@@ -1997,6 +2003,189 @@ def _planar_patch(face, wires):
     return np.vstack([Po, Pi]), [[i, (i + 1) % m, m + (i + 1) % m, m + i] for i in range(m)]
 
 
+def _area2(P):
+    """2B kapali cokgenin isaretli alani (saat yonu tersi > 0)."""
+    return 0.5 * float(np.sum(P[:, 0] * np.roll(P[:, 1], -1) - np.roll(P[:, 0], -1) * P[:, 1]))
+
+
+def _cross2(o, a, b):
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+
+def _seg_cross(p, q, a, b):
+    """pq ile ab kesisiyor mu (ortak uc noktasi sayilmaz)."""
+    d1, d2 = _cross2(a, b, p), _cross2(a, b, q)
+    d3, d4 = _cross2(p, q, a), _cross2(p, q, b)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)) and min(abs(d1), abs(d2), abs(d3), abs(d4)) > 1e-12
+
+
+def _offset2(P, d):
+    """Kapali 2B halkayi soluna (bolge tarafina) d kadar kaydir: kose normali komsu kenarlarin ortalamasi."""
+    t = np.roll(P, -1, 0) - P
+    t /= np.maximum(np.linalg.norm(t, axis=1), 1e-12)[:, None]
+    nl = np.stack([-t[:, 1], t[:, 0]], 1)                  # kenarin sol normali
+    nv = nl + np.roll(nl, 1, 0)
+    nv /= np.maximum(np.linalg.norm(nv, axis=1), 1e-12)[:, None]
+    cosh = np.maximum((nv * nl).sum(1), 0.5)               # sivri kosede asiri uzamasin
+    return P + nv * (d / cosh)[:, None]
+
+
+def _earcut(X, poly):
+    """Basit cokgenin (X noktalari, poly indeks listesi, saat yonu tersi; kopru noktalari iki kez gecebilir) kulak
+    kirpma ucgenleri."""
+    poly, tris = list(poly), []
+    while len(poly) > 3:
+        n, cut = len(poly), None
+        for k in range(n):
+            a, b, c = poly[k - 1], poly[k], poly[(k + 1) % n]
+            if _cross2(X[a], X[b], X[c]) <= 1e-12:
+                continue
+            if any(p not in (a, b, c) and _cross2(X[a], X[b], X[p]) >= 0 and _cross2(X[b], X[c], X[p]) >= 0
+                   and _cross2(X[c], X[a], X[p]) >= 0 for p in poly):
+                continue
+            cut = k
+            break
+        if cut is None:                                    # sayisal sorun: en disbukey koseyi kirp
+            cut = max(range(n), key=lambda k: _cross2(X[poly[k - 1]], X[poly[k]], X[poly[(k + 1) % n]]))
+        tris.append([poly[cut - 1], poly[cut], poly[(cut + 1) % n]])
+        del poly[cut]
+    tris.append(poly)
+    return tris
+
+
+def _flip_delaunay(X, tris):
+    """Iki ucgenin ortak kenarini, karsi acilar toplami 180 dereceyi asiyorsa ve dortgen disbukeyse cevir."""
+    def ang(o, a, b):
+        u, v = X[a] - X[o], X[b] - X[o]
+        return math.atan2(abs(u[0] * v[1] - u[1] * v[0]), u.dot(v))
+    for _ in range(50):
+        ef = {}
+        for ti, t in enumerate(tris):
+            for k in range(3):
+                ef.setdefault(frozenset((t[k], t[k - 2])), []).append(ti)
+        flipped, used = False, set()
+        for e, ts in ef.items():
+            if len(ts) != 2 or ts[0] in used or ts[1] in used:
+                continue
+            t1, t2 = tris[ts[0]], tris[ts[1]]
+            c = next(v for v in t1 if v not in e)
+            d = next(v for v in t2 if v not in e)
+            k = t1.index(c)
+            a, b = t1[(k + 1) % 3], t1[(k + 2) % 3]        # t1 = (c, a, b), t2 = (b, a, d) saat yonu tersi
+            if ang(c, a, b) + ang(d, b, a) <= math.pi + 1e-9:
+                continue
+            if _cross2(X[c], X[a], X[d]) <= 1e-12 or _cross2(X[d], X[b], X[c]) <= 1e-12:
+                continue
+            tris[ts[0]], tris[ts[1]] = [c, a, d], [d, b, c]
+            used.update(ts)
+            flipped = True
+        if not flipped:
+            break
+    return tris
+
+
+def _merge_quads(X, tris):
+    """Komsu ucgen ciftlerini, olusan dortgen disbukey ve acilari 90 dereceye yakinsa dortgene birlestir."""
+    ef = {}
+    for ti, t in enumerate(tris):
+        for k in range(3):
+            ef.setdefault(frozenset((t[k], t[k - 2])), []).append(ti)
+    cand = []
+    for e, ts in ef.items():
+        if len(ts) != 2:
+            continue
+        t1, t2 = tris[ts[0]], tris[ts[1]]
+        c = next(v for v in t1 if v not in e)
+        d = next(v for v in t2 if v not in e)
+        k = t1.index(c)
+        a, b = t1[(k + 1) % 3], t1[(k + 2) % 3]
+        q = [a, d, b, c]
+        dev = 0.0
+        for i in range(4):
+            o, p, r = X[q[i]], X[q[i - 1]], X[q[(i + 1) % 4]]
+            if _cross2(p, o, r) <= 1e-12:
+                dev = None
+                break
+            u, v = p - o, r - o
+            dev = max(dev, abs(math.degrees(math.atan2(abs(u[0] * v[1] - u[1] * v[0]), u.dot(v))) - 90))
+        if dev is not None and dev < 55:
+            cand.append((dev, ts[0], ts[1], q))
+    used, faces = set(), []
+    for dev, i, j, q in sorted(cand, key=lambda c: c[0]):
+        if i not in used and j not in used:
+            used.update((i, j))
+            faces.append(q)
+    return faces + [t for ti, t in enumerate(tris) if ti not in used]
+
+
+def _holes_patch(face, wires):
+    """Birden fazla delikli duz yuz: her deligin cevresine dortgen halka, dis sinir ile halkalar arasi kulak
+    kirpma + Delaunay cevirme ile ucgenlenip dortgenlere birlestirilir. (V, F) ya da None"""
+    c = np.array(tuple(face.CenterOfMass))
+    n = _face_normal(face, c)
+    ax = np.eye(3)[int(np.argmin(np.abs(n)))]
+    u = np.cross(n, ax)
+    u /= np.linalg.norm(u)
+    v = np.cross(n, u)
+    to2 = lambda P: np.stack([(P - c).dot(u), (P - c).dot(v)], 1)
+    loops3 = [np.vstack([q[:-1] for q in _chain(*w)]) for w in wires]
+    loops2 = [to2(P) for P in loops3]
+    for k in range(len(loops3)):                           # dis sinir saat yonu tersi, delikler saat yonu
+        if (_area2(loops2[k]) > 0) != (k == 0):
+            loops3[k], loops2[k] = loops3[k][::-1], loops2[k][::-1]
+    # delik halkalari: deligin boyutu, komsu sinirlara aciklik ve ornek araligina gore genislik
+    X2, X3, idx = [], [], []
+    for P2, P3 in zip(loops2, loops3):
+        idx.append(list(range(len(X2), len(X2) + len(P2))))
+        X2 += list(P2)
+        X3 += list(P3)
+    region = [idx[0]]
+    F = []
+    for k in range(1, len(loops2)):
+        P = loops2[k]
+        others = np.vstack([loops2[j] for j in range(len(loops2)) if j != k])
+        gap = min(np.linalg.norm(others - p, axis=1).min() for p in P)
+        r = np.linalg.norm(P - P.mean(0), axis=1).mean()
+        step = np.linalg.norm(np.roll(P, -1, 0) - P, axis=1).mean()
+        d = min(0.35 * r, 0.3 * gap, step)
+        if d <= 1e-9:
+            return None
+        O = _offset2(P, d)
+        oi = list(range(len(X2), len(X2) + len(O)))
+        X2 += list(O)
+        X3 += [c + p[0] * u + p[1] * v for p in O]
+        h, m = idx[k], len(O)
+        F += [[h[i], h[(i + 1) % m], oi[(i + 1) % m], oi[i]] for i in range(m)]
+        region.append(oi)
+    X = np.array(X2)
+    # delikleri kopruyle dis sinira bagla: en yakin, hicbir sinir kenarini kesmeyen nokta cifti
+    poly, holes = list(region[0]), region[1:]
+    while holes:
+        segs = [(poly[i], poly[(i + 1) % len(poly)]) for i in range(len(poly))]
+        for hl in holes:
+            segs += [(hl[i], hl[(i + 1) % len(hl)]) for i in range(len(hl))]
+        best = None
+        for hi, hl in enumerate(holes):
+            for b in hl:
+                for ai, a in enumerate(poly):
+                    dd = np.linalg.norm(X[a] - X[b])
+                    if best is not None and dd >= best[0]:
+                        continue
+                    if any(_seg_cross(X[a], X[b], X[s], X[t]) for s, t in segs):
+                        continue
+                    best = (dd, hi, b, ai)
+        if best is None:
+            return None
+        _, hi, b, ai = best
+        hl = holes.pop(hi)
+        k = hl.index(b)
+        ring = hl[k:] + hl[:k]
+        poly = poly[:ai + 1] + ring + [b, poly[ai]] + poly[ai + 1:]
+    tris = _flip_delaunay(X, _earcut(X, poly))
+    F += _merge_quads(X, tris)
+    return np.array(X3), F
+
+
 def _resample(P, m):
     """Kapali cokgeni yay uzunluguna gore m noktaya yeniden orneklendir."""
     seg = np.linalg.norm(np.roll(P, -1, 0) - P, axis=1)
@@ -2018,17 +2207,22 @@ def cage_from_faces(faces, arc_segs=4, max_len=0.0, exact=True):
             ekeys[k] = len(edges)
             edges.append(e)
         return ekeys[k]
-    info = []
+    def reversed_in(o, e):
+        """Yuzun kendi kenari o, ortak tablodaki e'ye gore bu yuzun telinde ters mi (kapali kenarlar icin)."""
+        same = np.dot(tuple(o.tangentAt(o.FirstParameter)), tuple(e.tangentAt(e.FirstParameter))) > 0
+        return (o.Orientation == "Reversed") == same
+    info, revs = [], []
     for f in faces:
         planar = f.isPlanar() if hasattr(f, "isPlanar") else f.Surface.TypeId == "Part::GeomPlane"
         ws = [f.OuterWire] + [w for w in f.Wires if not w.isSame(f.OuterWire)]
         wl = [[eid(e) for e in w.OrderedEdges] for w in ws]
+        revs.append([{i: reversed_in(o, edges[i]) for i, o in zip(w, ow.OrderedEdges)} for w, ow in zip(wl, ws)])
         if len(ws) == 1 and len(wl[0]) == 4:
             kind = "grid"
         elif planar and len(ws) <= 2:
             kind = "planar"
         elif planar:
-            return T("From face: faces with more than one hole are not supported yet")
+            kind = "holes"
         else:
             return T("From face: curved faces need exactly four edges")
         info.append((f, kind, wl))
@@ -2057,9 +2251,10 @@ def cage_from_faces(faces, arc_segs=4, max_len=0.0, exact=True):
     cnt = [best[find(i)] for i in range(len(edges))]
     # yamalar ve kaynak (ortak kenar noktalari ayni oldugundan konumla birlesir)
     Vs, Fs, off = [], [], 0
-    for f, kind, wl in info:
-        res = (_grid_patch(f, [edges[i] for i in wl[0]], [cnt[i] for i in wl[0]]) if kind == "grid" else
-               _planar_patch(f, [([edges[i] for i in w], [cnt[i] for i in w]) for w in wl]))
+    for (f, kind, wl), rv in zip(info, revs):
+        ws = [([edges[i] for i in w], [cnt[i] for i in w], [r[i] for i in w]) for w, r in zip(wl, rv)]
+        res = (_grid_patch(f, *ws[0]) if kind == "grid" else
+               _holes_patch(f, ws) if kind == "holes" else _planar_patch(f, ws))
         if res is None:
             return T("From face: this face could not be meshed")
         Vs.append(res[0])
@@ -2114,11 +2309,23 @@ def cage_from_faces(faces, arc_segs=4, max_len=0.0, exact=True):
                 C[inner[0]] = CREASE_HARD                  # 3 keskin kenar: kose noktasi yerinde kalir
     cage.C = C
     if exact:                                              # SubD limit yuzeyi ornek noktalardan gecsin
+        # duz yuzun ic noktalari duzeltilmez: limit yuzeyi zaten duzlemde; zorlanirsa duzensiz agda yuzler katlanir
+        fit = np.zeros(len(cage.V), bool)
+        for i, e in enumerate(edges):
+            for p in _edge_points(e, cnt[i]):
+                k = index.get(key(p))
+                if k is not None:
+                    fit[k] = True
+        off = 0
+        for (f, kind, wl), nv in zip(info, [len(x) for x in Vs]):
+            if kind == "grid":
+                fit[remap[off:off + nv]] = True
+            off += nv
         T0, P = cage.V.copy(), cage.V.copy()
         lv = 4 if len(P) < 600 else 3
         for _ in range(20):
             Sx, _ = subdivide(P, cage.F, lv, cage.C)
-            P = P + (T0 - Sx[:len(P)])
+            P = P + np.where(fit[:, None], T0 - Sx[:len(P)], 0.0)
         cage.V = P
     return cage
 
@@ -2222,7 +2429,7 @@ def _poly_index(faces):
 
 # ---------- Tasima gizmosu (FcYBTraytracerWB rig_gizmo.py'nin Tasi kismi) ----------
 
-GIZMO_PX = 90.0          # ok boyu, ekranda piksel (yakinlasip uzaklasinca sabit kalir)
+GIZMO_PX = 90.0          # varsayilan ok boyu, ekranda piksel (yakinlasip uzaklasinca sabit kalir); Options'ta ayarlanir
 PICK_PX = 8.0            # tutamagi yakalama uzakligi (px)
 BEVEL_WEIGHT = 0.4       # bevel / inset icin ek direnc (DRAG_GAIN ile carpilir: 0.2, Shift ile 0.06)
 DRAG_GAIN = 0.5         # direnc: tasima fare hareketinin bu oraninda (1 = imleci birebir izler)
@@ -2534,6 +2741,7 @@ class MoveGizmo(object):
         self.mode = "move"   # "move" | "rotate"
         self.center = None
         self.size = 1.0
+        self.px = min(max(_param().GetFloat("GizmoSize", GIZMO_PX), 30.0), 400.0)   # ok boyu (px)
         self.hover = None
         self.handles = {}
         self.root = coin.SoSwitch()
@@ -2594,7 +2802,7 @@ class MoveGizmo(object):
             return
         vv, W, H = _vv(self.view)
         p = self.center
-        size = vv.getWorldToScreenScale(coin.SbVec3f(p.x, p.y, p.z), GIZMO_PX / float(H))
+        size = vv.getWorldToScreenScale(coin.SbVec3f(p.x, p.y, p.z), self.px / float(H))
         if abs(size - self.size) > 1e-9 * max(size, 1.0):
             self.size = size
             self.scale.scaleFactor.setValue(size, size, size)
@@ -2618,8 +2826,9 @@ class MoveGizmo(object):
                         best, bd = ("rotate", i), dd
             return best
         c = _to_screen(vv, W, H, self.center)
+        k = max(self.px / GIZMO_PX, 0.6)                   # merkez kupun yakalama yaricapi gizmoyla buyur
         if self.mode == "scale":
-            if math.hypot(x - c[0], y - c[1]) < 12.0:
+            if math.hypot(x - c[0], y - c[1]) < 12.0 * k:
                 return ("size", 0)
             best, bd = None, PICK_PX
             for i in range(3):
@@ -2628,7 +2837,7 @@ class MoveGizmo(object):
                 if dd < bd:
                     best, bd = ("stretch", i), dd
             return best
-        if math.hypot(x - c[0], y - c[1]) < 10.0:      # oncelik: merkez kup, sonra kareler, sonra oklar
+        if math.hypot(x - c[0], y - c[1]) < 10.0 * k:  # oncelik: merkez kup, sonra kareler, sonra oklar
             return ("free", 0)
         for i in range(3):
             if self.handles[("plane", i)]._dim:
@@ -3267,6 +3476,7 @@ class SubDSession:
         lay.addWidget(self._box_group())
         lay.addWidget(self._surface_group())
         lay.addWidget(self._solid_group())
+        lay.addWidget(self._gizmo_group())
         keys = QtWidgets.QLabel(T(HELP))
         keys.setStyleSheet("color:#9a9a9a;")
         lay.addWidget(keys)
@@ -3410,6 +3620,30 @@ class SubDSession:
         self.precision_box.currentIndexChanged.connect(lambda i: self.set_solid_settings())
         self.continuity_box.currentIndexChanged.connect(lambda i: self.set_solid_settings())
         return g
+
+    def _gizmo_group(self):
+        """Gizmo boyu (ekranda piksel): Move / Rotate / Stretch gizmolarinin hepsi; kaydedilir."""
+        g = QtWidgets.QGroupBox(T("Gizmo"))
+        row = QtWidgets.QHBoxLayout(g)
+        row.addWidget(QtWidgets.QLabel(T("Size")))
+        self.gizmo_box = QtWidgets.QSpinBox()
+        self.gizmo_box.setRange(30, 400)
+        self.gizmo_box.setSingleStep(10)
+        self.gizmo_box.setSuffix(" px")
+        self.gizmo_box.setValue(int(round(self.gizmo.px)))
+        self.gizmo_box.setToolTip(T("Length of the gizmo arrows on screen (default %d px)") % GIZMO_PX)
+        self.gizmo_box.valueChanged.connect(self.set_gizmo_size)
+        row.addWidget(self.gizmo_box)
+        b = QtWidgets.QPushButton(T("Default"))
+        b.clicked.connect(lambda checked=False: self.gizmo_box.setValue(int(GIZMO_PX)))
+        row.addWidget(b)
+        row.addStretch()
+        return g
+
+    def set_gizmo_size(self, px):
+        self.gizmo.px = float(px)
+        _param().SetFloat("GizmoSize", float(px))
+        self.gizmo.update_scale()
 
     def _sync_surface_widgets(self):
         """Options'taki yuzey ayarlarini oturumun degerlerine getir (baska nesneye gecince)."""
@@ -6179,7 +6413,8 @@ QPushButton[tool="true"]:checked { background: #e8b923; border-color: #8a6a00; }
 QPushButton:disabled { color: #8a8a8a; background: #4c4c4c; }
 QLabel:disabled { color: #7a7a7a; }
 QLabel { color: #e0e0e0; background: transparent; }
-QLabel#lwInfo { color: #f59e0b; font-weight: bold; }
+QLabel#lwInfo { color: #f59e0b; font-weight: bold; background: rgba(40, 40, 40, 200); border-radius: 3px;
+                padding: 3px 8px; }
 """
 
 
@@ -6588,10 +6823,12 @@ class _Overlay(object):
         self.step_label.setMinimumWidth(
             self.step_label.fontMetrics().horizontalAdvance(T("Step: %g mm / %g°") % (10.5, 15.5)) + 8)
         row.addWidget(self.step_label)
-        row.addSpacing(10)
-        self.info_label = QtWidgets.QLabel()
+        row.addStretch(1)
+        # bilgi / hata mesaji alt cubukta sigmiyordu: gorunumun icinde, sol menunun saginda, alt cubugun ustunde
+        self.info_label = QtWidgets.QLabel(self.vp)
         self.info_label.setObjectName("lwInfo")
-        row.addWidget(self.info_label, 1)
+        self.info_label.setStyleSheet(OVERLAY_CSS)
+        self.info_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
         tog("Options", "n", s.toggle_options, lambda: s.dock.isVisible())
         lang = _lw_button(subd_i18n.language().upper(), "")    # arayuz dili: EN <-> TR
         lang.setToolTip(T("Switch the interface language (reopens the modeler)"))
@@ -6616,6 +6853,31 @@ class _Overlay(object):
         self.left.move(6, 6)
         # islem paneli: sol menunun sagi, alt cubugun hemen ustu
         self.panel.move(self.left.x() + self.left.width() + 8, h - self.bar.height() - self.panel.height() - 8)
+        self._place_info()
+
+    def _place_info(self):
+        """Mesaj etiketi: sol menunun saginda, alt cubugun (panel aciksa panelin) hemen ustunde; bos ise gizli."""
+        lab = self.info_label
+        if not lab.text():
+            lab.hide()
+            return
+        x = self.left.x() + self.left.width() + 8
+        maxw = max(200, self.vp.width() - x - 12)
+        lab.setMaximumWidth(maxw)
+        lab.setWordWrap(False)                             # sigiyorsa tek satir; sigmiyorsa satira bol
+        lab.adjustSize()
+        if lab.sizeHint().width() > maxw:
+            lab.setWordWrap(True)
+            lab.setFixedWidth(maxw)
+            lab.adjustSize()
+            lab.setMinimumWidth(0)
+            lab.setMaximumWidth(maxw)
+        bottom = self.vp.height() - self.bar.height() - 8
+        if self.panel.isVisible():
+            bottom = self.panel.y() - 6
+        lab.move(x, bottom - lab.height())
+        lab.show()
+        lab.raise_()
 
     def set_tab(self, tab):
         """Create / Modify sekmesi: sol sutunda yalniz o sekmenin bolumleri (LightWave sekmeleri gibi)."""
@@ -6686,13 +6948,16 @@ class _Overlay(object):
         count = nobj if is_obj else {"point": len(s.sel_v), "edge": len(s.sel_e), "face": len(s.sel)}[s.mode]
         self.sel_label.setText("Sel: %d" % count)
         self.step_label.setText(T("Step: %g mm / %g°") % (s.step_box.value(), s.angle_box.value()))
+        info_changed = self.info_label.text() != s.info
         self.info_label.setText(s.info)
         if self.panel.show_spec(s.panel_spec()):
             self.relayout()
+        elif info_changed:
+            self._place_info()
 
     def close(self):
         self.tabs.close()                                  # ana pencerede: gorunum silinse de kalir, once kaldir
-        for w in (self.left, self.bar, self.panel):        # gorunumun cocuklari: gorunumle silinmis olabilir
+        for w in (self.left, self.bar, self.panel, self.info_label):   # gorunumun cocuklari: gorunumle silinmis olabilir
             _quiet(w.hide)
             _quiet(w.deleteLater)
 
