@@ -1080,6 +1080,326 @@ class Cage:
                 self.F[fi] = [dup.get(v, v) for v in self.F[fi]]
         return sorted(side), closed
 
+    def limit_frame(self, rules=RULES, levels=2):
+        """Kafes noktalarinin SubD limit yuzeyindeki yerleri ve birim normalleri (levels adim bolup limit
+        kurali; Catmull-Clark'ta bir noktanin cocugu hep ayni indekstedir)."""
+        N = len(self.V)
+        V, F, C = self.V, self.F, self.C
+        for _ in range(levels):
+            V, F, C = catmull_clark(V, F, C, rules)
+        L = _limit(V, F, C, rules)
+        P = V[F]
+        fn = np.cross(P[:, 2] - P[:, 0], P[:, 3] - P[:, 1])
+        Nv = np.zeros_like(V)
+        for j in range(4):
+            np.add.at(Nv, F[:, j], fn)
+        ln = np.linalg.norm(Nv, axis=1, keepdims=True)
+        Nv = Nv / np.where(ln > 1e-12, ln, 1.0)
+        return L[:N], Nv[:N], (V, F, C, L)
+
+    def shell(self, region, thickness, mode=0, radius=0.0, fill=True, sharp=True, rules=RULES, flat=True):
+        """Kabuk (Blender Solidify gibi). region: kabuklanacak yuzler. Bolgenin kopyasi ters cevrilir ve her nokta
+        komsu yuzlerin acıyla agirlikli kafes normali boyunca kaydirilir (mode 0: iceri, 1: disari, 2: ortada = asil
+        yuzey yarim disari, kopya yarim iceri). Esit kalinlik: koselerde mesafe yuzlerin kalinligi tutacagi kadar
+        artar (en fazla 2 kat). Kafes ofseti kullanilir: limit yuzeyine oturtma turlari keskin / dar koselerde kafes
+        noktalarini dis kafesin ote yuzune itiyordu.
+        radius > 0: akilli suzgec (radius: atlanacak detay genisligi, mm). Her noktanin cevresindeki limit yuzeyine
+        oturtulan kuadrikten sapmasi (dar oluk, kucuk tumsek) kopyada duzeltilir; ana formun egriligi kalir. Modelin
+        acik kenarlari (delik agzi, acik alt kenar) suzgecten muaftir.
+        Kesisme korumasi: kopyanin bir kenari dis kafesi / kendini deliyorsa (ya da dis kafesin kenari kopyayi)
+        o noktalarin kaydirmasi adim adim kisaltilir.
+        fill: modelin acik kenarlarinda ic ve dis kabuk dortgen seritle birlesir (sharp: serit kenarlari keskin).
+        flat: acik kenar noktalari duvar boyunca degil yalniz duvara dik kaydirilir (tam kalinlik): Fill seridi
+        duvara dik ve duz olur, ic ve dis kenar yandan bakinca ayni hizada kalir (egri yuzeydeki delikte de).
+        Secim siniri (secili / secili olmayan yuz arasi) her zaman acik kalir: orayi kullanici orer (P, Bridge).
+        Donus: (kopya yuzleri, kopyanin secim sinirindaki acik kenarlari, kaydirmasi kisaltilan nokta sayisi) ya
+        da hata."""
+        region = sorted(set(region))
+        if not region:
+            return T("Shell: nothing to shell")
+        if thickness <= 0:
+            return T("Shell: thickness must be greater than 0")
+        N = len(self.V)
+        ef = self.edge_faces()
+        rset = set(region)
+        R = sorted({v for fi in region for v in self.F[fi]})
+        # asiri kalinlik (or. yanlis yazilan deger): parcanin en kucuk boyutunun dortte birinden kalin kabuk kafesi
+        # birbirine gecirir. Duz bolgede (secili duz yuzler) sifira yakin boyut sayilmaz.
+        ext = np.ptp(self.V[R], 0)
+        lim = 0.25 * ext[ext > 0.1 * ext.max()].min()
+        if thickness > lim:
+            return T("Shell: thickness %.2f mm is too large for this part (max %.2f mm)") % (thickness, lim)
+        ri = {v: k for k, v in enumerate(R)}
+        open_e = [e for e, fs in ef.items() if len(fs) == 1 and fs[0] in rset]          # modelin acik kenarlari
+        border = [e for e, fs in ef.items() if len(fs) == 2 and (fs[0] in rset) != (fs[1] in rset)]
+        # acik kenar noktalari suzgecten muaf; bir halka icerisi yarim
+        pinned = {v for e in open_e for v in e}
+        ring1 = {w for fi in region for f in [self.F[fi]] if pinned & set(f) for w in f} - pinned
+        pin = np.array([0.0 if v in pinned else 0.5 if v in ring1 else 1.0 for v in R])[:, None]
+        # kafes normalleri (yuz normalleri, kosedeki aciyla agirlikli) ve esit kalinlik carpani
+        Nv, cw, ws = np.zeros((len(R), 3)), np.zeros(len(R)), np.zeros(len(R))
+        fnorm = {fi: self.normal(fi) for fi in region}
+        for fi in region:
+            f = self.F[fi]
+            for i, v in enumerate(f):
+                e1, e2 = self.V[f[i - 1]] - self.V[v], self.V[f[(i + 1) % len(f)]] - self.V[v]
+                ang = math.acos(np.clip(e1 @ e2 / max(np.linalg.norm(e1) * np.linalg.norm(e2), 1e-12), -1, 1))
+                Nv[ri[v]] += ang * fnorm[fi]
+        Nv /= np.maximum(np.linalg.norm(Nv, axis=1, keepdims=True), 1e-12)
+        for fi in region:
+            f = self.F[fi]
+            for i, v in enumerate(f):
+                e1, e2 = self.V[f[i - 1]] - self.V[v], self.V[f[(i + 1) % len(f)]] - self.V[v]
+                ang = math.acos(np.clip(e1 @ e2 / max(np.linalg.norm(e1) * np.linalg.norm(e2), 1e-12), -1, 1))
+                cw[ri[v]] += ang * (Nv[ri[v]] @ fnorm[fi])
+                ws[ri[v]] += ang
+        k_even = 1.0 / np.clip(cw / np.maximum(ws, 1e-12), 0.5, 1.0)
+        delta = np.zeros((len(R), 3))                      # suzgecin kopyaya duzeltmesi
+        if radius > 1e-9:
+            L, Nrm, _ = self.limit_frame(rules)
+            Lr, Nr = L[R], Nrm[R]
+            Ls = Lr.copy()
+            # kafes seyrek olabilir (oluk noktalari radius icinde yalniz birbirini gorur): yuzeyden yogun ornek al,
+            # her noktanin radius cevresindeki yuzeye agirlikli duzlem oturt, nokta bu duzleme gore yerlessin
+            S, Sn = self._region_samples(region, rules, self._sample_levels(region, radius), normals=True)
+            grid = {}
+            for k, c in enumerate(map(tuple, np.floor(S / (3 * radius)).astype(int))):
+                grid.setdefault(c, []).append(k)
+            for k, (p, n) in enumerate(zip(Lr, Nr)):
+                c = np.floor(p / (3 * radius)).astype(int)
+                cand = [j for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+                        for j in grid.get((c[0] + dx, c[1] + dy, c[2] + dz), ())]
+                if not cand:
+                    continue
+                P, Q = S[cand], Sn[cand]
+                d = np.linalg.norm(P - p, axis=1)
+                w0 = np.exp(-(d / (1.5 * radius)) ** 2) * (d < 3 * radius) * (Q @ n > 0.5)   # ote yuz degil
+                if w0.sum() < 1e-12:
+                    continue
+                # yerel cerceve (n normal): z = ax^2 + bxy + cy^2 + dx + ey + f oturt. Kuadrik ana formun egriligini
+                # tasir (yuvarlatilmis kenar duzlesip duvar kalinlasmaz / incelmez); aykiri ornekler (dar oluk dibi,
+                # kucuk cikinti) Tukey agirligiyla ayiklanir. Sonuc: noktanin kuadrik uzerindeki yeri ve normali.
+                u = np.cross(n, [1.0, 0, 0] if abs(n[0]) < 0.9 else [0, 1.0, 0])
+                u /= np.linalg.norm(u)
+                v = np.cross(n, u)
+                D3 = P - p
+                X, Y, Z = D3 @ u, D3 @ v, D3 @ n
+                A = np.stack([X * X, X * Y, Y * Y, X, Y, np.ones_like(X)], 1)
+                w = w0
+                coef = None
+                for _ in range(5):
+                    sw = np.sqrt(w)
+                    if (w > 1e-6).sum() < 8:
+                        break
+                    coef = np.linalg.lstsq(A * sw[:, None], Z * sw, rcond=None)[0]
+                    res = np.abs(Z - A @ coef)
+                    sc = 1.4826 * np.median(res[w0 > 0.05 * w0.max()]) + 1e-4 * radius
+                    w = w0 * np.clip(1 - (res / (3 * sc)) ** 2, 0, 1) ** 2   # Tukey agirligi
+                if coef is None:
+                    continue
+                Ls[k] = p + coef[5] * n                    # kuadrigin noktadaki yeri: kucuk cukur / tumsek atlanir
+            delta = pin * (Ls - Lr)
+            dn = (delta * Nv).sum(1, keepdims=True)        # duzeltme yalniz normal yonunde: kafes kaymasin
+            delta = np.clip(dn, -0.5 * thickness, 0.5 * thickness) * Nv
+        t = thickness / 2.0 if mode == 2 else thickness
+        sgn = 1.0 if mode == 1 else -1.0
+        off = sgn * t * k_even[:, None] * Nv               # kopyanin kaydirmasi
+        if flat and open_e:
+            # duvar yonu d: acik kenar noktasindan duvara (acik olmayan kenarlarla komsulara) giden ortalama yon.
+            # Once kaydirmanin d bileseni atilir (kenar seridi duvara dik); halka duzlemselse ic kenar noktasi ic duvar
+            # boyunca halkanin duzlemine kaydirilir: egimli duvarda da ic ve dis kenar ayni hizada (ayni duzlemde)
+            oset = set(open_e)
+            walld = {}
+            for v in pinned:
+                nbs = {w for w in {x for fi in region for f in [self.F[fi]] if v in f
+                                   for x in (f[f.index(v) - 1], f[(f.index(v) + 1) % len(f)])}
+                       if _edge(v, w) not in oset}
+                if not nbs:
+                    continue
+                d = sum((self.V[w] - self.V[v]) / max(np.linalg.norm(self.V[w] - self.V[v]), 1e-12) for w in nbs)
+                if np.linalg.norm(d) < 1e-9:
+                    continue
+                d /= np.linalg.norm(d)
+                k = ri[v]
+                walld[v] = d
+                n_perp = Nv[k] - (Nv[k] @ d) * d
+                if np.linalg.norm(n_perp) > 1e-6:
+                    off[k] = sgn * t * n_perp / np.linalg.norm(n_perp)
+            for chain, closed in self.edge_chains(oset):
+                P = self.V[chain]
+                if len(chain) < 3:
+                    continue
+                ctr = P.mean(0)
+                pn = np.linalg.svd(P - ctr)[2][2]          # halkanin en uygun duzlemi
+                if np.abs((P - ctr) @ pn).max() > 0.05 * max(np.ptp(P, 0).max(), 1e-9):
+                    continue                               # duzlemsel degil: duvara dik kenar kalsin
+                for v in chain:
+                    d = walld.get(v)
+                    if d is None or abs(d @ pn) < 0.2:
+                        continue
+                    k = ri[v]
+                    q = self.V[v] + off[k]
+                    sl = -((q - ctr) @ pn) / (d @ pn)      # ic duvar boyunca duzleme
+                    if abs(sl) <= 2 * t:
+                        off[k] = off[k] + sl * d
+        base = self.V[R].copy()
+        if mode == 2:                                      # ortada: asil yuzey de yarim disari
+            self.V[R] = base + t * k_even[:, None] * Nv
+        # kopyada kisa kenarlari birlestir (akilli suzgec): destek halkasi seritleri, kalinliktan dar basamaklar ic
+        # tarafta kopyalanmaz. Yoksa keskin katlanmadaki kisa kenarlar kalinlik kadar kayinca kafesler kesisir.
+        # Acik kenar (delik agzi, acik alt kenar) ve secim siniri noktalari birlesmez: Fill ve orme bozulmasin.
+        pos0, off0 = base + delta, off
+        bverts = {x for e in border for x in e}
+        fixed = np.array([v in pinned or v in bverts for v in R])
+        par = list(range(len(R)))
+
+        def find(x):
+            while par[x] != x:
+                par[x] = par[par[x]]
+                x = par[x]
+            return x
+        thr = max(0.5 * radius, thickness) if radius > 1e-9 else 0.0
+        if thr > 0:
+            P0 = pos0 + off0
+            lo, hi = P0.copy(), P0.copy()
+            cand = sorted((np.linalg.norm(P0[ri[x]] - P0[ri[y]]), ri[x], ri[y]) for x, y in (tuple(e) for e in redges_of(self, region)))
+            for ln, x, y in cand:
+                if ln >= thr:
+                    break
+                rx, ry = find(x), find(y)
+                if rx == ry or (fixed[rx] and fixed[ry]):
+                    continue
+                l2, h2 = np.minimum(lo[rx], lo[ry]), np.maximum(hi[rx], hi[ry])
+                if np.linalg.norm(h2 - l2) > thr:          # kume buyumesin (sik bolge bir noktaya cokmesin)
+                    continue
+                if fixed[ry]:
+                    rx, ry = ry, rx
+                par[ry] = rx                               # sabit nokta kume temsilcisi olur
+                lo[rx], hi[rx] = l2, h2
+        roots = sorted({find(k) for k in range(len(R))})
+        rid = {r: j for j, r in enumerate(roots)}
+        grp = np.array([rid[find(k)] for k in range(len(R))])
+        cnt = np.bincount(grp, minlength=len(roots)).astype(float)[:, None]
+        cpos, coff = np.zeros((len(roots), 3)), np.zeros((len(roots), 3))
+        np.add.at(cpos, grp, pos0)
+        np.add.at(coff, grp, off0)
+        cpos, coff = cpos / cnt, coff / cnt
+        for r in roots:                                    # sabit uyeli kume: onun yerinde
+            if fixed[r]:
+                cpos[rid[r]], coff[rid[r]] = pos0[r], off0[r]
+        cp = {v: N + int(grp[ri[v]]) for v in R}
+        self.V = np.vstack([self.V, cpos + coff])
+        nf = len(self.F)
+        for fi in region:
+            g = []
+            for v in self.F[fi][::-1]:
+                w = cp[v]
+                if not g or g[-1] != w:
+                    g.append(w)
+            if len(g) > 1 and g[0] == g[-1]:
+                g.pop()
+            if len(g) >= 3:
+                self.F.append(g)
+        inner = list(range(nf, len(self.F)))
+        redges = redges_of(self, region)
+        for e, sh in list(self.C.items()):
+            if e in redges:
+                a2, b2 = (cp[v] for v in e)
+                if a2 != b2:
+                    self.C[_edge(a2, b2)] = sh
+        if fill:
+            for e in open_e:
+                f = self.F[ef[e][0]]
+                a, b = next((f[i], f[(i + 1) % len(f)]) for i in range(len(f)) if _edge(f[i], f[(i + 1) % len(f)]) == e)
+                strip = [b, a, cp[a], cp[b]] if cp[a] != cp[b] else [b, a, cp[a]]
+                self.F.append(strip)                       # dis yuzde a -> b: serit b -> a yonunde
+                if sharp:
+                    self.C[_edge(a, b)] = CREASE_HARD
+                    if cp[a] != cp[b]:
+                        self.C[_edge(cp[a], cp[b])] = CREASE_HARD
+        idx = np.arange(N, N + len(roots))
+        thin = self._shell_guard(region, inner, idx, cpos, coff)
+        thin += len(R) - len(roots)
+        open_inner = [_edge(cp[a], cp[b]) for a, b in (tuple(e) for e in border) if cp[a] != cp[b]]
+        if not fill:
+            open_inner += [_edge(cp[a], cp[b]) for a, b in (tuple(e) for e in open_e) if cp[a] != cp[b]]
+        return inner, open_inner, thin
+
+    def _shell_guard(self, region, inner, idx, base, off, rounds=12):
+        """Kopyanin kenari dis kafesi ya da kendini (komsu olmayan yuzlerini) deliyorsa, ya da dis kafesin kenari
+        kopyayi deliyorsa, ilgili kopya noktalarinin kaydirmasini kisalt (her turda %70, en az %15).
+        Kisaltilan nokta sayisini dondurur."""
+        fac = np.ones(len(idx))
+        pos = {int(v): k for k, v in enumerate(idx)}
+
+        def tris(faces, copy=False):
+            # kopya yuzler ters sirali: dis yuzle ayni kosegenden bolunsun diye son noktadan (dis f[0]'in kopyasi)
+            # baslat; yoksa duzlemsel olmayan dortgende iki kafes sifira yakin ofsette bile "kesisir"
+            T = []
+            for fi in faces:
+                f = self.F[fi]
+                if len(f) > 4:                         # icbukey n-gen yelpazesi sahte kesisme verir: atla
+                    continue
+                if copy:
+                    f = f[-1:] + f[:-1]
+                for k in range(1, len(f) - 1):
+                    T.append((f[0], f[k], f[k + 1]))
+            return np.array(T, int)
+
+        def edges(faces):
+            return np.array(sorted({tuple(sorted((f[i], f[(i + 1) % len(f)]))) for fi in faces for f in [self.F[fi]]
+                                    for i in range(len(f))}), int)
+        To, Ti = tris(region), tris(inner, True)
+        Eo, Ei = edges(region), edges(inner)
+        touched = set()
+        for _ in range(rounds):
+            bad = set()
+            for E, Tt, own in ((Ei, To, False), (Eo, Ti, True), (Ei, Ti, None)):
+                hit = _seg_tri_hits(self.V, E, Tt)
+                for (a, b), tri in hit:
+                    if own is False:                   # kopya kenari dis kafeste
+                        bad |= {a, b}
+                    elif own:                          # dis kenar kopya ucgeninde
+                        bad |= set(tri)
+                    else:                              # kopya kendini kesiyor
+                        bad |= {a, b} | set(tri)
+            bad = [pos[v] for v in bad if v in pos]
+            if not bad:
+                break
+            fac[bad] = np.maximum(fac[bad] * 0.7, 0.15)
+            touched |= set(bad)
+            self.V[idx] = base + off * fac[:, None]
+        return len(touched)
+
+    def _sample_levels(self, region, radius):
+        """Ornek araligi suzgec yaricapinin yarisindan kucuk olsun diye bolme seviyesi (2-4)."""
+        ln = np.mean([np.linalg.norm(self.V[f[i]] - self.V[f[i - 1]]) for fi in region for f in [self.F[fi]]
+                      for i in range(len(f))])
+        return int(min(max(np.ceil(np.log2(max(ln / (0.5 * radius), 1.0))), 2), 4))
+
+    def _region_samples(self, region, rules, levels=2, normals=False):
+        """Bolge yuzlerinin limit yuzeyinden yogun ornek noktalari (levels adim bolunmus kafesin limit yerleri);
+        normals: noktalarin birim normalleri de."""
+        V, F, C = self.V, self.F, self.C
+        deg = np.array([len(f) for f in F])
+        start = np.concatenate([[0], np.cumsum(deg)[:-1]])
+        ids = np.concatenate([start[fi] + np.arange(deg[fi]) for fi in region])   # 1. seviye cocuklari
+        V, F, C = catmull_clark(V, F, C, rules)
+        for _ in range(levels - 1):
+            V, F, C = catmull_clark(V, F, C, rules)
+            ids = (4 * ids[:, None] + np.arange(4)).ravel()
+        L = _limit(V, F, C, rules)
+        pts = np.unique(F[ids])
+        if not normals:
+            return L[pts]
+        P = V[F]
+        fn = np.cross(P[:, 2] - P[:, 0], P[:, 3] - P[:, 1])
+        Nv = np.zeros_like(V)
+        for j in range(4):
+            np.add.at(Nv, F[:, j], fn)
+        Nv = Nv[pts] / np.maximum(np.linalg.norm(Nv[pts], axis=1, keepdims=True), 1e-12)
+        return L[pts], Nv
+
     def subset(self, sel):
         """Secili yuzlerden yeni (bagimsiz) kafes: kullanilan noktalar yeniden numaralanir, iki ucu da kalan
         keskin kenarlar keskin kalir. Kopyala / yapistir icin."""
@@ -1920,6 +2240,7 @@ def _param():
     return App.ParamGet(subd_i18n.PARAM)
 
 
+_last_shell = {"Thickness": 2.0, "Detail filter": 6.0, "Mode": 0.0, "Fill": 1.0, "Sharp": 1.0, "Flat rim": 1.0}   # Shell paneli
 _knife_opts = {"split": False, "objects": False}   # Knife (line) secenekleri (ikisi kapali: yalniz keser)
 _last_cyl = {"Diameter": 100.0, "Height": 100.0, "Segments": 16.0, "Height Segments": 1.0}   # Cylinder paneli
 _clipboard = None                       # kopyalanan cokgenler (Cage, dunya koordinati); bkz. copy_faces
@@ -3430,6 +3751,10 @@ class SubDSession:
             err = self._hole(v)
             if err:
                 self.info = err
+        elif k == "shell":
+            err = self._shell(v, a["faces"])
+            if err:
+                self.info = err
         elif k == "fromface":
             c = self._face_cage(a["faces"], v)
             if isinstance(c, str):
@@ -3488,6 +3813,13 @@ class SubDSession:
                 return T("From face"), [("Arc Segments", v["Arc Segments"], "", 0, r("Arc Segments")),
                                         mm("Max Length"), ("Exact Edge", v["Exact Edge"], "", 0, r("Exact Edge"))], \
                     self.drag is None
+            if k == "shell":
+                mode = int(v["Mode"])
+                checks = [(n, mode == i, lambda on, n=n: self.shell_option(n, on)) for i, n in enumerate(self.SHELL_MODES)]
+                checks += [("Fill", bool(v["Fill"]), lambda on: self.shell_option("Fill", on)),
+                           ("Sharp", bool(v["Sharp"]), lambda on: self.shell_option("Sharp", on)),
+                           ("Flat rim", bool(v.get("Flat rim", 1.0)), lambda on: self.shell_option("Flat rim", on))]
+                return T("Shell"), [mm("Thickness"), mm("Detail filter")], self.drag is None, checks
             if k == "hole":
                 return T("Hole"), [mm("Radius"), ("Segments", v["Segments"], "", 0, r("Segments")), mm("Support")], \
                     self.drag is None
@@ -4243,6 +4575,7 @@ class SubDSession:
         self.splits.append((len(self.undo), o.Name, doc.UndoCount))   # bu kesim geri alinirsa nesne de silinir
         self.last_op = None                                # yeni nesne olustu: panelden yeniden kesilmez
         self.sel, self.sel_v, self.sel_e = set(), set(), set()
+        _later(lambda: _tree_mark(self.obj))               # agac yeni nesne icin satirlarini yeniden kurdu
         self.info = T("Knife: split into %s (%d polygons)") % (o.Label, len(sub.F))
         self.refresh()
 
@@ -4964,6 +5297,63 @@ class SubDSession:
     # --- Hole: secili yuzlerin (1, 2, 4...) ortasina daire delik; panel: Radius, Segments, Support ---
     HOLE = ("Radius", "Segments", "Support")
 
+    SHELL_MODES = ("Inside", "Outside", "Centered")
+
+    def shell(self):
+        """Modify > Shell: Object modunda secili nesnenin tamami, Edit modunda secili cokgenler (secim yoksa hepsi)
+        kabuklanir. Object modunda nesnenin kafesine girilir ki panelden kalinlik / suzgec ayarlanabilsin."""
+        if self.drag or self.grab:
+            return
+        if self.mode == "object":
+            objs = self.selected_objects()
+            if not objs:
+                self.info = T("Shell: select a SubD object or polygons")
+                self.refresh()
+                return
+            self.edit_mode = "face"
+            self.edit_object(objs[-1])
+            self.sel = set(range(len(self.cage.F)))
+        elif self.mode != "face":
+            self.set_mode("face")
+        region = set(self.sel) if self.sel else set(range(len(self.cage.F)))
+        self.drop_tool()
+        self.push()
+        op = self.new_op("shell", dict(_last_shell), faces=sorted(region))
+        err = self._shell(op["values"], op["args"]["faces"])
+        if err:
+            self.op = None
+            self.do_undo()
+            self.info = err
+        else:
+            self.last_op, self.op = op, None
+        self.refresh()
+
+    def _shell(self, v, faces):
+        v["Thickness"] = max(float(v["Thickness"]), 0.001)
+        v["Detail filter"] = max(float(v["Detail filter"]), 0.0)
+        res = self.cage.shell(faces, v["Thickness"], int(v["Mode"]), v["Detail filter"], bool(v["Fill"]),
+                              bool(v["Sharp"]), self.rules, bool(v.get("Flat rim", 1.0)))
+        if isinstance(res, str):
+            return res
+        _last_shell.update(v)                              # yalniz basarili degerler sonraki kabuga gecer
+        inner, open_inner, thin = res
+        self.sel, self.sel_v, self.sel_e = set(inner), set(), set(open_inner)
+        self.info = T("Shell: %d polygons, %d open edges to weave") % (len(inner), len(open_inner)) + \
+            (T("  |  %d inner points merged / shortened (fine details, crossings)") % thin if thin else "")
+        return None
+
+    def shell_option(self, name, on):
+        """Shell panelindeki kutucuk: yon (Inside / Outside / Centered tek secim), Fill, Sharp; islem yeniden yapilir."""
+        op = self.last_op
+        if op is None or op["kind"] != "shell":
+            return
+        v = op["values"]
+        if name in self.SHELL_MODES:
+            v["Mode"] = float(self.SHELL_MODES.index(name)) if on else 0.0
+        else:
+            v[name] = 1.0 if on else 0.0
+        self._reapply(op)
+
     def hole(self):
         if self.drag or self.grab or self.mode != "face":
             return
@@ -5595,38 +5985,78 @@ class SubDSession:
         _quiet(self.dock.deleteLater)
 
 
-_marked = []   # agacta isaretli satirlar: (satir, eski yazi tipi, eski zemin)
+_MARK_ROLE = int(QtCore.Qt.UserRole) + 1077   # isaretli agac satirinin gorunmez etiketi
 
 
 def _tree_mark(obj):
     """Model agacinda duzenlenen nesneyi isaretle (kalin, sari zemin); None: isareti kaldir. FreeCAD agaci
-    QTreeWidget'tir; satir nesnenin etiketiyle, belgenin altinda aranir (yalniz yazi tipi / zemin degisir)."""
-    for item, font, bg in _marked:
-        try:
-            item.setFont(0, font)
-            item.setBackground(0, bg)
-        except Exception:                                  # agac yeniden kuruldu: satir silinmis
-            pass
-    del _marked[:]
-    if not _alive(obj):
-        return
-
+    QTreeWidget'tir; satir nesnenin etiketiyle, belgenin altinda aranir (yalniz yazi tipi / zemin degisir).
+    Satir referansi tutulmaz: agac nesne eklenince satirlarini yeniden kurar (eski referans silinmis olur ve
+    isaret kalkmazdi); isaretli satirlar gorunmez etiketle bulunur."""
     def walk(item, under_doc):
-        under_doc = under_doc or item.text(0) == obj.Document.Label
-        if under_doc and item.text(0) == obj.Label:
-            _marked.append((item, item.font(0), item.background(0)))
+        if item.data(0, _MARK_ROLE):                       # eski isareti kaldir
             f = item.font(0)
-            f.setBold(True)
+            f.setBold(False)
             item.setFont(0, f)
-            item.setBackground(0, QtGui.QBrush(QtGui.QColor(232, 185, 35, 120)))
+            item.setBackground(0, QtGui.QBrush())
+            item.setData(0, _MARK_ROLE, None)
+        if obj is not None:
+            under_doc = under_doc or item.text(0) == obj.Document.Label
+            if under_doc and item.text(0) == obj.Label:
+                f = item.font(0)
+                f.setBold(True)
+                item.setFont(0, f)
+                item.setBackground(0, QtGui.QBrush(QtGui.QColor(232, 185, 35, 120)))
+                item.setData(0, _MARK_ROLE, True)
         for i in range(item.childCount()):
             walk(item.child(i), under_doc)
+    if obj is not None and not _alive(obj):
+        obj = None
     try:
         for tw in Gui.getMainWindow().findChildren(QtWidgets.QTreeWidget):
             for i in range(tw.topLevelItemCount()):
                 walk(tw.topLevelItem(i), False)
     except Exception:
         pass
+
+
+def redges_of(cage, region):
+    """Bolge yuzlerinin kenarlari."""
+    return {_edge(f[i], f[(i + 1) % len(f)]) for fi in region for f in [cage.F[fi]] for i in range(len(f))}
+
+
+def _seg_tri_hits(V, E, T):
+    """E kenarlarindan T ucgenlerini (ortak noktasi olmayanlari) kesenler: [((a, b), (t0, t1, t2)), ...]."""
+    out = []
+    if not len(E) or not len(T):
+        return out
+    A, B = V[E[:, 0]], V[E[:, 1]]
+    P = V[T]
+    tmin, tmax = P.min(1), P.max(1)
+    smin, smax = np.minimum(A, B), np.maximum(A, B)
+    e1, e2 = P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]
+    for k in range(len(E)):
+        cand = np.nonzero(((tmin <= smax[k]) & (tmax >= smin[k])).all(1))[0]
+        if not len(cand):
+            continue
+        a, b = E[k]
+        cand = cand[~((T[cand] == a) | (T[cand] == b)).any(1)]
+        if not len(cand):
+            continue
+        d = B[k] - A[k]
+        q = np.cross(d, e2[cand])
+        det = (e1[cand] * q).sum(1)
+        ok = np.abs(det) > 1e-12
+        inv = 1.0 / np.where(ok, det, 1.0)
+        sv = A[k] - P[cand, 0]
+        u = (sv * q).sum(1) * inv
+        r = np.cross(sv, e1[cand])
+        v = (r * d).sum(1) * inv
+        t = (e2[cand] * r).sum(1) * inv
+        h = ok & (u > 1e-6) & (v > 1e-6) & (u + v < 1 - 1e-6) & (t > 1e-6) & (t < 1 - 1e-6)
+        for j in cand[h]:
+            out.append(((int(a), int(b)), tuple(int(x) for x in T[j])))
+    return out
 
 
 def _alive(o):
@@ -5945,7 +6375,9 @@ class _ToolPanel(QtWidgets.QFrame):
                 w.deleteLater()
         self.checks = []
         if label:
-            self.check_lay.addWidget(QtWidgets.QLabel(T(label)), 0, 0)
+            lb = QtWidgets.QLabel(T(label))
+            self.check_lay.addWidget(lb, 0, 0)
+            lb.show()
         self.check_lay.setColumnStretch(0, 1 if label else 0)
         for i, n in enumerate(names):
             cb = QtWidgets.QCheckBox(T(n))
@@ -5955,7 +6387,8 @@ class _ToolPanel(QtWidgets.QFrame):
                 self.check_lay.addWidget(cb, 0, i + 1)
             else:
                 self.check_lay.addWidget(cb, i, 0)
-            self.checks.append(cb)
+            cb.show()                                      # gorunur panele eklenen cocuk kendiliginden gorunmez;
+            self.checks.append(cb)                         # gorunmezse panel yuksekligine girmez (panel ezilirdi)
         self.check_key = (label, tuple(names))
 
     def _check(self, i, on):
@@ -6115,6 +6548,7 @@ class _Overlay(object):
         btn("Rotate", "R", lambda: s.set_gizmo("rotate"), toggle=lambda: s.gizmo.mode == "rotate")
         btn("Stretch / Size", "H", lambda: s.set_gizmo("scale"), toggle=lambda: s.gizmo.mode == "scale")
         btn("Crease", "C", s.crease_selected, sel=True, mode="edit")
+        btn("Shell", "", s.shell)                     # Object: secili nesne; Edit: secili cokgenler (yoksa hepsi)
         # kafeste: secili cokgenler (secim yoksa hepsi) ayni kafese aynalanir; Object modunda: secili nesnelerin kopyasi
         menu_btn("Mirror", [("Mirror X", lambda: s.mirror_polygons(0)), ("Mirror Y", lambda: s.mirror_polygons(1)),
                             ("Mirror Z", lambda: s.mirror_polygons(2))])

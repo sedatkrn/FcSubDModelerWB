@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### New tools
+- **Shell** (Modify): object mode shells the whole selected object, edit mode the selected polygons. Thickness,
+  inside / outside / centered, *Detail filter* (details narrower than this width are skipped on the inner side:
+  short inner edges such as support loops and narrow steps are merged, and a robust local quadric fit flattens
+  small dents without losing the main curvature), *Fill* joins inner and outer at open edges (holes, open rims),
+  *Sharp* creases those rims, *Flat rim* keeps each filled rim in the plane of its opening (inner and outer edge
+  line up, also on sloped walls). Solidify-style cage offset with even thickness and a crossing guard (no inner
+  cage poking through at sharp, narrow corners); an excessive thickness (more than a quarter of the part's
+  smallest size) is refused with a message. Selection borders stay open and are selected for weaving with P /
+  Bridge.
 - **Cylinder / Topo cylinder** (Create > Cylinder menu): diameter / height / segments / height segments in the
   panel. Cylinder has triangle-fan caps; Topo cylinder has all-quad caps (grid plus a ring, segments a multiple of 4).
 - **SubD surface options** (Options panel): separate edit / final subdivision level, open edge rule (Edge and
@@ -20,6 +29,8 @@
 - The edited object is marked (bold, yellow) in the model tree.
 
 ### Fixes
+- Tool panel checkboxes are shown when the panel is built (the Shell panel was squashed).
+- The tree marker no longer sticks to a second object after Knife splits rebuild the tree.
 - Undo: autosaves no longer become FreeCAD undo steps; a whole edit session is one step ("SubD edit"), so Ctrl+Z
   in object mode undoes the last edit instead of an intermediate autosave. FreeCAD Undo / Redo while editing
   reloads the cage.

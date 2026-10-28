@@ -67,6 +67,7 @@ Catmull-Clark limit surface is on the roadmap.
 - Work with several SubD objects: click / Shift+click / box select them (or select them in the tree)
 - Move and rotate with the gizmo (stored in FreeCAD's standard `Placement`), stretch / size the cage
 - Exact position, rotation and size in the viewport panel
+- Shell (Modify): whole object or selected polygons, inside / outside / centered, detail filter for a smooth inner side, fill / sharp / flat rims
 - SubD options: edit / final level, open edge rule, smooth triangles, zebra stripes; solid precision presets and G0 / G1 / G2 continuity (regular patches exported exactly)
 - New box with a Box panel (width / depth / height and X / Y / Z segments, rebuilt as you type), new cylinder or all-quad topo cylinder (diameter / height / segments), duplicate (D), mirror across X / Y / Z, delete, solids for all selected objects
 - O (or Tab) on a selected object edits its cage; the other objects stay visible as reference
