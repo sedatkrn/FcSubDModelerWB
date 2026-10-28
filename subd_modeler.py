@@ -517,6 +517,34 @@ class Cage:
                     best = t
         return p + n * best if best is not None else p
 
+    def even_dirs(self, region):
+        """Her yuz kendi normalinde (Extrude "Each normal"): bolgenin her noktasi icin (bevel_dirs ile ayni
+        sira) oyle bir yon ki komsu her secili yuz kendi normali boyunca ayni mesafe kayar (kosede capraz, esit
+        kalinlik). Normaller birbirine ters ya da cok dar acida ise ortalama normal."""
+        verts = sorted({v for fi in region for v in self.F[fi]})
+        idx = {v: k for k, v in enumerate(verts)}
+        ns = [[] for _ in verts]
+        for fi in region:
+            n = self.normal(fi)
+            ln = np.linalg.norm(n)
+            if ln < 1e-12:
+                continue
+            n = n / ln
+            for v in self.F[fi]:
+                if all(n.dot(m) < 0.999 for m in ns[idx[v]]):
+                    ns[idx[v]].append(n)
+        D = np.zeros((len(verts), 3))
+        for k, N in enumerate(ns):
+            if not N:
+                continue
+            A = np.array(N)
+            x = np.linalg.lstsq(A, np.ones(len(N)), rcond=None)[0]
+            if np.linalg.norm(x) > 4.0 or (A @ x).min() < 0.5:      # ters / neredeyse paralel normaller
+                m = A.sum(0)
+                x = m / np.linalg.norm(m) if np.linalg.norm(m) > 1e-9 else A[0]
+            D[k] = x
+        return D
+
     def bevel_dirs(self, region):
         """Bevel / Smooth Shift icin, bolgenin her noktasi (sirali, extrude ile ayni sira) icin iki yon:
         kaydirma (komsu secili yuzlerin ortalama normali) ve iceri alma (sinir noktalarinda yuz duzleminde
@@ -2919,6 +2947,7 @@ class SubDSession:
         self.op = None       # surmekte olan islem (panelde canli degerler)
         self.ebevel_segs = 1  # kenar bevel segment sayisi (son kullanilan)
         self.extrude_segs = 1        # extrude dilim sayisi (son kullanilan)
+        self.extrude_each = False    # extrude: her yuz kendi normalinde (son kullanilan)
         self.box_vals = dict(_last_box)  # Box paneli: son kullanilan degerler (modelleyici kapansa da)
         self.cyl_vals = dict(_last_cyl)  # Cylinder paneli (iki topoloji ortak)
         self.bridge_vals = {"Number of Cuts": 0.0, "Twist": 0.0, "Smoothness": 0.0, "Profile Factor": 0.0}
@@ -3962,7 +3991,7 @@ class SubDSession:
             segs = min(max(int(round(v["Segments"])), 1), 64)
             v["Segments"] = float(segs)
             self.extrude_segs = segs
-            st = self._extrude_build(op["before"], segs, a["axes"])
+            st = self._extrude_build(op["before"], segs, a["axes"], bool(v.get("Each normal")))
             if st is not None:
                 st["op"] = op
                 self.extrude_set(st, v)
@@ -4034,6 +4063,8 @@ class SubDSession:
                 fields = [mm(n) for n in "XYZ" if n in axes] if axes else [mm("Distance")]
                 fields.append(("Segments", v["Segments"], "", 0, r("Segments")))
                 checks = [(n, n in axes, lambda on, n=n: self.extrude_axis(n, on)) for n in "XYZ"]
+                if a.get("face"):
+                    checks.append(("Each normal", bool(v.get("Each normal")), self.extrude_each_normal))
                 return "Extrude", fields, self.drag is None, checks, "Axis (none = normal)"
             if k == "bevel":
                 return ("Inset" if a["inset_only"] else "Bevel"), \
@@ -4420,9 +4451,11 @@ class SubDSession:
         self.drop_tool()
         self.push()
         axes = set()                                       # her extrude normalle baslar; eksen panelden secilir
-        op = self.new_op("extrude", dict(Distance=0.0, X=0.0, Y=0.0, Z=0.0, Segments=float(self.extrude_segs)),
-                         axes=axes, dw=np.zeros(3))
-        st = self._extrude_build(op["before"], self.extrude_segs, axes)
+        each = self.extrude_each and self.mode == "face"   # son secim hatirlanir (eksen her seferinde bos baslar)
+        op = self.new_op("extrude", dict(Distance=0.0, X=0.0, Y=0.0, Z=0.0, Segments=float(self.extrude_segs),
+                                         **{"Each normal": float(each)}), axes=axes, dw=np.zeros(3),
+                         face=self.mode == "face")
+        st = self._extrude_build(op["before"], self.extrude_segs, axes, each)
         if st is None:
             self.op = None
             self.do_undo()
@@ -4435,9 +4468,9 @@ class SubDSession:
         self.gizmo.place(None)
         self.extrude_set(st, op["values"])
 
-    def _extrude_build(self, before, segs, axes):
+    def _extrude_build(self, before, segs, axes, each=False):
         """Durumu extrude oncesine dondurur ve extrude topolojisini kurar (yeni katlar tabanda); noktalari
-        extrude_set yerlestirir. Acik kenar yoksa None."""
+        extrude_set yerlestirir. Acik kenar yoksa None. each: her yuz kendi normalinde (esit kalinlik)."""
         c, s0, sv0, se0 = before
         self.cage, self.sel, self.sel_v, self.sel_e = c.copy(), set(s0), set(sv0), set(se0)
         cage = self.cage
@@ -4451,10 +4484,10 @@ class SubDSession:
             if np.linalg.norm(n) > 1e-9:
                 m_axis = n / np.linalg.norm(n)
             # normaller birbirini goturuyorsa (or. butun yuzler) nokta basina Smooth Shift yonleri
-            nv = cage.bevel_dirs(region)[0] if m_axis is None else None
+            nv = cage.even_dirs(region) if each else cage.bevel_dirs(region)[0] if m_axis is None else None
             cage.extrude(region, segs, layers)
             verts = sorted(layers)
-            if m_axis is None:
+            if nv is not None:
                 dirs = nv
             else:
                 dirs = np.tile(m_axis, (len(verts), 1))
@@ -4565,7 +4598,7 @@ class SubDSession:
             return
         self.extrude_segs = segs
         g["op"]["values"]["Segments"] = float(segs)
-        st = self._extrude_build(g["before"], segs, g["axes"])
+        st = self._extrude_build(g["before"], segs, g["axes"], bool(g["op"]["values"].get("Each normal")))
         for k in ("op", "lazy", "n", "p0", "m0", "v0", "wpp"):
             st[k] = g[k]
         self.grab = st
@@ -4589,6 +4622,8 @@ class SubDSession:
             (axes.add if on else axes.discard)(a)
         if axes == was:
             return
+        if axes:                                           # eksen kilidi tek yon: "Each normal" kalkar
+            v["Each normal"] = 0.0
         for j, n in enumerate("XYZ"):                      # o anki yer degistirmeden yeni degerler
             v[n] = float(dw[j]) if n in axes else 0.0
         if not axes:                                       # eksenden normale: mesafe = yer degistirmenin normal bileseni
@@ -4597,6 +4632,33 @@ class SubDSession:
         if g is not None:
             self._extrude_anchor(g)
             self.extrude_set(g, v)
+        else:
+            self._reapply(op)
+
+    def extrude_each_normal(self, on):
+        """Extrude panelindeki "Each normal": isaretliyse secili her yuz kendi normalinde kayar (kosede esit
+        kalinlik), degilse bolge ortalama normalde. Eksen kilidini kaldirir; mesafe korunur, secim hatirlanir."""
+        g = self.grab if self.grab is not None and self.grab.get("kind") == "extrude" else None
+        op = g["op"] if g is not None else self.last_op
+        if op is None or op["kind"] != "extrude" or self.drag or not op["args"].get("face"):
+            return
+        v, axes = op["values"], op["args"]["axes"]
+        if bool(v.get("Each normal")) == on and not axes:
+            return
+        self.extrude_each = on
+        v["Each normal"] = float(on)
+        if axes:                                           # eksenden normale: mesafe = yer degistirmenin normal bileseni
+            m, dw = op["args"].get("m"), op["args"]["dw"]
+            v["Distance"] = float(dw.dot(m)) if m is not None else float(np.linalg.norm(dw))
+            axes.clear()
+            for n in "XYZ":
+                v[n] = 0.0
+        if g is not None:
+            st = self._extrude_build(g["before"], g["segs"], axes, on)
+            st.update(op=op, lazy=g.get("lazy"))
+            self.grab = st
+            self._extrude_anchor(st)                       # olcu buradan yeniden baslar (eksen degisimi gibi)
+            self.extrude_set(st, v)
         else:
             self._reapply(op)
 

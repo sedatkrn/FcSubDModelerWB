@@ -261,6 +261,7 @@ TR = {
         "Knife: kesmek için kenarlara tıkla (K / Esc / sağ tık: kapat)",
     "Distance %.3f mm": "Mesafe %.3f mm",
     "Axis (none = normal)": "Eksen (boş = normal)",
+    "Each normal": "Kendi normali",
     "Extrude: select open (boundary) edges": "Extrude: açık (sınır) kenarları seçin",
     "Extrude  %.3f mm   %d segments": "Extrude  %.3f mm   %d segment",
     "Extrude  %s mm   %d segments": "Extrude  %s mm   %d segment",
