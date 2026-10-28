@@ -48,6 +48,9 @@ TR = {
     # --- viewport tool column ---
     "Create": "Oluştur",
     "Box": "Kutu",
+    "Cylinder": "Silindir",
+    "Topo cylinder": "Topo silindir",
+    "Cylinder: size / segments in the panel": "Silindir: ölçü / segment panelde",
     "Select": "Seçim",
     "Select all": "Tümünü seç",
     "Deselect": "Seçimi bırak",
@@ -152,6 +155,52 @@ TR = {
     "Segments Z": "Segment Z",
     "Box: size / segments in the panel": "Kutu: ölçü / segment panelde",
     "Segments": "Segment",
+    "SubD surface": "SubD yüzeyi",
+    "Edit level": "Düzenleme seviyesi",
+    "Final level": "Son seviye",
+    "Subdivision level shown while editing (lower = faster)":
+        "Düzenlerken gösterilen bölme seviyesi (düşük = hızlı)",
+    "Subdivision level of the SubD object in the document": "Belgedeki SubD nesnesinin bölme seviyesi",
+    "Open edges": "Açık kenarlar",
+    "Edge and corner": "Kenar ve köşe",
+    "Edge only": "Yalnız kenar",
+    "Open edges: Edge and corner = one-face corners stay sharp, Edge only = they round too":
+        "Açık kenarlar: Kenar ve köşe = tek yüzlü köşeler sivri kalır, Yalnız kenar = onlar da yuvarlanır",
+    "Smooth triangles": "Üçgen yumuşatma",
+    "Loop-like weights next to triangles: smoother triangle fans (e.g. cylinder caps)":
+        "Üçgenlerin yanında Loop benzeri ağırlıklar: üçgen yelpazeler (ör. silindir kapakları) daha düzgün",
+    "Zebra stripes": "Zebra şeritleri",
+    "Reflection stripes on the surface: kinks show as broken stripes (G0), corners in the stripes as G1, "
+    "smooth stripes as G2":
+        "Yüzeye yansıyan şeritler: kırık şerit = kırık yüzey (G0), şeritte köşe = G1, yumuşak şerit = G2",
+    "Solid (STEP)": "Katı (STEP)",
+    "Precision": "Hassasiyet",
+    "Continuity": "Süreklilik",
+    "Draft": "Taslak",
+    "Normal": "Normal",
+    "Fine": "Hassas",
+    "Draft / Normal / Fine: samples per patch, G2 refine levels and sewing tolerance":
+        "Taslak / Normal / Hassas: yama başına örnek, G2 inceltme seviyesi ve dikiş toleransı",
+    "G0: fast, every patch fitted (tiny kinks between patches)":
+        "G0: hızlı, her yama yaklaşık oturtulur (yamalar arasında çok küçük kırıklar)",
+    "G1: regular patches exact, the rest fitted to the limit surface":
+        "G1: düzgün yamalar birebir, diğerleri limit yüzeye oturtulur",
+    "G2: as G1, irregular patches refined into more exact ones (curvature continuous except at 3 / 5+ edge "
+    "points, where SubD itself is G1)":
+        "G2: G1 gibi, düzensiz yamalar inceltilip daha çok birebir yamaya bölünür (eğrilik sürekli; yalnız "
+        "3 / 5+ kenarlı noktalarda SubD'nin kendisi de G1'dir)",
+    "Solid: %s, %s": "Katı: %s, %s",
+    "SubD edit %s": "SubD düzenleme %s",
+    "Document undo: cage reloaded": "Belge geri alındı: kafes yeniden yüklendi",
+    "Nothing to undo in this edit (O: object mode, Ctrl+Z undoes whole edits)":
+        "Bu düzenlemede geri alınacak bir şey yok (O: Object modu, orada Ctrl+Z bütün düzenlemeyi geri alır)",
+    "Knife: the cut does not go all the way around, the model cannot be split into objects":
+        "Knife: kesim modelin çevresini tam dolaşmıyor, iki nesneye ayrılamaz",
+    "Split in two": "İkiye ayır",
+    "Split into two objects": "İki objeye ayır",
+    "Knife: split into %s (%d polygons)": "Knife: %s nesnesine ayrıldı (%d poligon)",
+    "Diameter": "Çap",
+    "Height Segments": "Yükseklik segment",
     "Position": "Konum",
     "Offset": "Konum",
     # --- Options dock ---

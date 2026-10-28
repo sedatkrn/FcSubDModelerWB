@@ -51,7 +51,30 @@ class _MakeSolid:
         obj.Document.commitTransaction()
 
 
-COMMANDS = ["SubD_Modeler", "SubD_MakeSolid"]
+class _Zebra:
+    """Zebra seritleri (basili kalan dugme): modelleyicinin puruzsuz yuzeyinde yuzey surekliligi analizi."""
+
+    def GetResources(self):
+        return {"Pixmap": os.path.join(ICONS, "subd_zebra.svg"),
+                "MenuText": T("Zebra stripes"),
+                "ToolTip": T("Reflection stripes on the surface: kinks show as broken stripes (G0), corners in the "
+                             "stripes as G1, smooth stripes as G2"),
+                "Checkable": False}
+
+    def IsActive(self):
+        import sys
+        m = sys.modules.get("subd_modeler")
+        return m is not None and m._session is not None
+
+    def Activated(self, checked=None):
+        import subd_modeler
+        s = subd_modeler._session
+        if s is not None and (checked is None or bool(checked) != s.zebra):
+            s.toggle_zebra()
+
+
+COMMANDS = ["SubD_Modeler", "SubD_MakeSolid", "SubD_Zebra"]
 
 Gui.addCommand("SubD_Modeler", _OpenModeler())
 Gui.addCommand("SubD_MakeSolid", _MakeSolid())
+Gui.addCommand("SubD_Zebra", _Zebra())
