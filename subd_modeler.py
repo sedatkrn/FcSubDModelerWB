@@ -20,7 +20,10 @@
 #
 # Code comments are mostly in Turkish (the author's language); the user interface is English by default
 # with a Turkish option (subd_i18n.py).
+import copy
+import json
 import math
+import time
 
 import numpy as np
 import FreeCAD as App
@@ -167,6 +170,7 @@ class Cage:
         self.V = np.zeros((0, 3)) if V is None else V
         self.F = [] if F is None else F
         self.C = {} if C is None else C   # keskin kenarlar: frozenset((a, b)) -> keskinlik
+        self.rails = []                   # Rail bridge kilavuzlari (rail_* fonksiyonlari; nokta indeksleriyle)
 
     @staticmethod
     def cube(size=20.0):
@@ -244,7 +248,9 @@ class Cage:
         return Cage(np.array(V, float), F)
 
     def copy(self):
-        return Cage(self.V.copy(), [list(f) for f in self.F], dict(self.C))
+        c = Cage(self.V.copy(), [list(f) for f in self.F], dict(self.C))
+        c.rails = copy.deepcopy(self.rails)
+        return c
 
     def edges(self):
         return {_edge(f[i], f[(i + 1) % len(f)]) for f in self.F for i in range(len(f))}
@@ -1448,6 +1454,47 @@ class Cage:
             self.C[_edge(*(v + n for v in e))] = s
         return list(range(nf, len(self.F)))
 
+    def reduce_points(self, verts, degrees):
+        """LightWave Reduce Points: cokgen kenarlari boyunca neredeyse duz giden ara noktalari (gelen ve giden
+        kenar arasindaki sapma < degrees) cokgenlerden cikarir. Yalniz iki kenarli noktalar (bir kenarin
+        ortasindaki nokta) alinir; boylece komsu cokgenler ayni kenari paylasmaya devam eder (catlak yok). Ucgen
+        altina inen cokgen olmaz. Kenar keskinligi yeni kenara gecer. Cikarilan nokta sayisini dondurur."""
+        limit = math.cos(math.radians(max(degrees, 0.0)))
+        vf = {}
+        for fi, f in enumerate(self.F):
+            for v in f:
+                vf.setdefault(v, []).append(fi)
+        removed = 0
+        for v in sorted(verts):
+            faces = vf.get(v, [])
+            if not faces:
+                continue
+            nb, ok = set(), True
+            for fi in faces:
+                f = self.F[fi]
+                if len(f) <= 3 or f.count(v) != 1:
+                    ok = False
+                    break
+                i = f.index(v)
+                nb.update((f[i - 1], f[(i + 1) % len(f)]))
+            if not ok or len(nb) != 2:
+                continue
+            a, b = nb
+            d1, d2 = self.V[v] - self.V[a], self.V[b] - self.V[v]
+            l1, l2 = np.linalg.norm(d1), np.linalg.norm(d2)
+            if l1 < 1e-12 or l2 < 1e-12 or d1.dot(d2) / (l1 * l2) < limit:
+                continue
+            for fi in faces:
+                self.F[fi].remove(v)
+            ea, eb = _edge(a, v), _edge(v, b)
+            if ea in self.C and eb in self.C:              # iki yarisi da keskinse birlesik kenar da keskin
+                self.C[_edge(a, b)] = max(self.C[ea], self.C[eb])
+            self.C.pop(ea, None)
+            self.C.pop(eb, None)
+            vf[v] = []
+            removed += 1
+        return removed
+
     def delete(self, sel):
         self.F = [f for i, f in enumerate(self.F) if i not in sel]
         used = sorted({v for f in self.F for v in f})
@@ -1457,7 +1504,286 @@ class Cage:
         alive = self.edges()
         self.C = {_edge(*(remap[v] for v in e)): s for e, s in self.C.items()
                   if all(v in remap for v in e) and _edge(*(remap[v] for v in e)) in alive}
+        self.rails = [r for r in (_rail_remap(r, remap) for r in self.rails) if r is not None]
 
+
+# ---------- Rail bridge (kilavuzlu kopru) ----------
+# Iki uc halka (A, B; tek uclu kullanimda yalniz A) arasinda bir kilavuz egri: A merkezi, ara noktalar (her
+# birinde bir halka) ve B merkezi / serbest uc. Egri dugumlerden gecen Hermite parcalaridir; A'dan (ve B'ye)
+# halka normali yonunde, yani poligona dik cikar. Her ara halka egriye diktir: cerceve A'dan baslayip egri boyunca
+# burulmadan tasinir; halka sekli A'dan B'ye kademeli gecer (tek uclu: A'nin sekli). Kilavuz kafesle saklanir
+# (Cage.rails, belgede Rails ozelligi): sonradan cift tiklayip yeniden duzenlenir. Kayit (sozluk, yerel koordinat):
+#   a, b: uc halka nokta indeksleri (b None: tek uclu) | rings: ara halkalar (tek uclu: son halka serbest uc)
+#   pts, sc: her halkanin merkezi ve olcegi | ta, tb: A'dan cikis, B'ye giris yonu | closed: halkalar kapali mi
+#   cap, capq: tek uclu ucun butun noktalari ve A cercevesindeki konumlari (uc kapagi kati tasinir)
+
+def _rail_remap(r, remap):
+    """Cage.delete sonrasi nokta indekslerini yeni numaralara cevir (kayit yerinde guncellenir: elinde tutan
+    duzenleme ayni kaydi gormeye devam eder); noktasi silinen kilavuz kopar (None)."""
+    try:
+        m = lambda L: [remap[v] for v in L]
+        new = dict(a=m(r["a"]), b=m(r["b"]) if r.get("b") is not None else None, rings=[m(x) for x in r["rings"]],
+                   cap=m(r["cap"]) if r.get("cap") is not None else None)
+    except KeyError:
+        return None
+    r.update(new)
+    return r
+
+
+def rail_full(r):
+    """Uctan uca halka listesi: A, ara halkalar, B."""
+    return [r["a"]] + r["rings"] + ([r["b"]] if r.get("b") is not None else [])
+
+
+def rail_ok(cage, r):
+    """Kilavuzun halkalari kafeste hala ardisik kenarlarla bagli mi (loop cut, silme vb. bozmadiysa)."""
+    full = rail_full(r)
+    n = len(r["a"])
+    if any(len(x) != n for x in full) or any(v >= len(cage.V) for x in full for v in x):
+        return False
+    if len(r["pts"]) != len(r["rings"]) or len(r["sc"]) != len(r["rings"]):
+        return False
+    E = cage.edges()
+    return all(_edge(X[j], Y[j]) in E for X, Y in zip(full, full[1:]) for j in range(n))
+
+
+def _rotate_to(a, b):
+    """a birim yonunu b'ye en kisa yoldan ceviren donme matrisi."""
+    v = np.cross(a, b)
+    c = float(np.dot(a, b))
+    if c < -0.999999:                                      # ters yon: a'ya dik bir eksen etrafinda 180 derece
+        ax = np.cross(a, [1.0, 0, 0])
+        if np.linalg.norm(ax) < 1e-6:
+            ax = np.cross(a, [0, 1.0, 0])
+        ax /= np.linalg.norm(ax)
+        return 2 * np.outer(ax, ax) - np.eye(3)
+    K = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + K + K @ K / (1.0 + c)
+
+
+def _ring_frame(P, hint):
+    """Halka cercevesi: merkez, u (merkezden ilk noktaya), v, n (hint yonune bakan halka normali)."""
+    c = P.mean(0)
+    n = np.zeros(3)
+    for i in range(len(P)):                                # Newell normali
+        n += np.cross(P[i] - c, P[(i + 1) % len(P)] - c)
+    hint = np.asarray(hint, float)
+    if np.linalg.norm(n) < 1e-9:
+        n = hint
+    n = n / np.linalg.norm(n)
+    if n.dot(hint) < 0:
+        n = -n
+    u = P[0] - c
+    u = u - u.dot(n) * n
+    if np.linalg.norm(u) < 1e-9:
+        u = np.cross(n, [1.0, 0, 0]) if abs(n[0]) < 0.9 else np.cross(n, [0, 1.0, 0])
+    u = u / np.linalg.norm(u)
+    return c, u, np.cross(n, u), n
+
+
+def _hermite(P0, P1, m0, m1, t):
+    t2, t3 = t * t, t * t * t
+    return (2 * t3 - 3 * t2 + 1) * P0 + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * P1 + (t3 - t2) * m1
+
+
+def rail_nodes(cage, r):
+    """Kilavuz dugumleri (yerel), dugum tegetleri (Hermite) ve A / B cerceveleri."""
+    fa = _ring_frame(cage.V[r["a"]], r["ta"])
+    N = [fa[0]] + [np.asarray(p, float) for p in r["pts"]]
+    fb = None
+    if r.get("b") is not None:
+        fb = _ring_frame(cage.V[r["b"]], r["tb"])
+        N.append(fb[0])
+    N = np.array(N)
+    M = np.zeros_like(N)
+    for i in range(1, len(N) - 1):
+        M[i] = (N[i + 1] - N[i - 1]) / 2
+    M[0] = fa[3] * np.linalg.norm(N[1] - N[0])             # A'ya dik cikis
+    M[-1] = fb[3] * np.linalg.norm(N[-1] - N[-2]) if fb is not None else N[-1] - N[-2]
+    return N, M, fa, fb
+
+
+def rail_curve(N, M, per=16):
+    """Egri cizgisi (yerel noktalar), parca basina per adim."""
+    pts = [N[0]]
+    for i in range(len(N) - 1):
+        for k in range(1, per + 1):
+            pts.append(_hermite(N[i], N[i + 1], M[i], M[i + 1], k / per))
+    return np.array(pts)
+
+
+def rail_place(cage, r):
+    """Halkalari (ve tek uclu ucun kapagini) kilavuza gore yerlestir: her halka kendi dugumunde egriye dik."""
+    N, M, fa, fb = rail_nodes(cage, r)
+    cA, u, v, t = fa
+    qa = (cage.V[r["a"]] - cA) @ np.array([u, v, t]).T     # A'nin sekli kendi cercevesinde
+    frames = [(u, v, t)]
+    for i in range(1, len(N)):                             # burulmasiz tasima: tegetten tegete en kisa donme
+        ti = M[i] / max(np.linalg.norm(M[i]), 1e-12)
+        ui = _rotate_to(frames[-1][2], ti) @ frames[-1][0]
+        ui = ui - ui.dot(ti) * ti
+        ui /= max(np.linalg.norm(ui), 1e-12)
+        frames.append((ui, np.cross(ti, ui), ti))
+    L = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(N, axis=0), axis=1))])
+    s = L / L[-1] if L[-1] > 1e-12 else np.linspace(0, 1, len(N))
+    qb = None
+    if fb is not None:                                     # B'nin sekli, oraya tasinan cercevede
+        qb = (cage.V[r["b"]] - fb[0]) @ np.array(frames[-1]).T
+    for i, ring in enumerate(r["rings"], 1):
+        q = qa if qb is None else (1 - s[i]) * qa + s[i] * qb
+        cage.V[ring] = N[i] + r["sc"][i - 1] * (q @ np.array(frames[i]))
+    if r.get("b") is None and r.get("cap"):                # tek uclu: uc kapagi kati tasinir
+        cage.V[r["cap"]] = N[-1] + r["sc"][-1] * (np.array(r["capq"]) @ np.array(frames[-1]))
+
+
+def _rail_cols(cage, X, Y):
+    """X ve Y halkalari arasindaki dortgenler (her birinde iki X, iki Y noktasi)."""
+    xs, ys = set(X), set(Y)
+    return [fi for fi, f in enumerate(cage.F)
+            if len(f) == 4 and sum(v in xs for v in f) == 2 and sum(v in ys for v in f) == 2]
+
+
+def rail_insert(cage, r, i):
+    """Uctan uca listede i ile i + 1 halkalari arasina yeni halka: aradaki dortgenler ikiye bolunur, yeni
+    halkanin dugumu o parcanin ortasinda. Basarisizsa False."""
+    full = rail_full(r)
+    if not 0 <= i < len(full) - 1:
+        return False
+    X, Y = full[i], full[i + 1]
+    cols = _rail_cols(cage, X, Y)
+    n = len(X)
+    if len(cols) != (n if r["closed"] else n - 1):
+        return False
+    N, M, _, _ = rail_nodes(cage, r)
+    mid = _hermite(N[i], N[i + 1], M[i], M[i + 1], 0.5)
+    base = len(cage.V)
+    cage.V = np.vstack([cage.V, (cage.V[X] + cage.V[Y]) / 2])
+    mx = {X[j]: base + j for j in range(n)}
+    my = {Y[j]: base + j for j in range(n)}
+    for fi in cols:
+        f = cage.F[fi]
+        cage.F[fi] = [my.get(v, v) for v in f]             # X tarafi: Y yerine yeni halka
+        cage.F.append([mx.get(v, v) for v in f])           # Y tarafi: X yerine yeni halka
+    for j in range(n):                                     # boyuna keskin kenarlar ikiye bolunur
+        e = _edge(X[j], Y[j])
+        if e in cage.C:
+            sh = cage.C.pop(e)
+            cage.C[_edge(X[j], base + j)] = sh
+            cage.C[_edge(base + j, Y[j])] = sh
+    sc = (r["sc"][i - 1] if i > 0 else 1.0) + (r["sc"][i] if i < len(r["sc"]) else 1.0)
+    r["rings"].insert(i, list(range(base, base + n)))
+    r["pts"].insert(i, [float(x) for x in mid])
+    r["sc"].insert(i, sc / 2)
+    return True
+
+
+def rail_remove(cage, r, i):
+    """Uctan uca listede i. ara halkayi kaldir: iki yanindaki dortgenler birlesir, noktalari silinir.
+    Tek uclu kullanimda serbest uc kaldirilamaz. Basarisizsa False."""
+    full = rail_full(r)
+    if not 0 < i < len(full) - 1:
+        return False
+    X, Y, Z = full[i - 1], full[i], full[i + 1]
+    before, after = _rail_cols(cage, X, Y), _rail_cols(cage, Y, Z)
+    if len(before) != len(after) or not before:
+        return False
+    yx = dict(zip(Y, X))
+    for fi in after:
+        cage.F[fi] = [yx.get(v, v) for v in cage.F[fi]]
+    for j in range(len(X)):
+        sa, sb = cage.C.pop(_edge(X[j], Y[j]), None), cage.C.pop(_edge(Y[j], Z[j]), None)
+        if sa is not None and sb is not None:
+            cage.C[_edge(X[j], Z[j])] = max(sa, sb)
+    drop = set(before)
+    cage.F = [f for fi, f in enumerate(cage.F) if fi not in drop]
+    del r["rings"][i - 1], r["pts"][i - 1], r["sc"][i - 1]
+    cage.delete(set())                                     # bosta kalan halka noktalari (indeksler kayar)
+    return True
+
+
+def rail_resample(cage, r, k):
+    """Ara halka sayisini k yap (tek uclu: serbest uc haric): en uzun parcaya ekleyerek / en kisa araliktaki
+    halkayi kaldirarak; sonra ara dugumler eski egri boyunca esit araliga dizilir (egrinin sekli korunur)."""
+    one = r.get("b") is None
+    N, M, _, _ = rail_nodes(cage, r)
+    old = rail_curve(N, M, 32)
+    sc_old = [1.0] + list(r["sc"]) + ([] if one else [1.0])
+    count = lambda: len(r["rings"]) - (1 if one else 0)
+    while count() < k:
+        N, _, _, _ = rail_nodes(cage, r)
+        span = int(np.argmax(np.linalg.norm(np.diff(N, axis=0), axis=1)))
+        if not rail_insert(cage, r, span):
+            return False
+    while count() > k:
+        N, _, _, _ = rail_nodes(cage, r)
+        gaps = np.linalg.norm(np.diff(N, axis=0), axis=1)
+        i = min(range(1, len(N) - 1), key=lambda j: gaps[j - 1] + gaps[j])   # A, B / serbest uc kalir
+        if not rail_remove(cage, r, i):
+            return False
+    seg = np.linalg.norm(np.diff(old, axis=0), axis=1)
+    acc = np.concatenate([[0.0], np.cumsum(seg)])
+    total = acc[-1]
+    n_in = count()
+    stops = n_in + 1                                       # A ... (k ara) ... B / serbest uc
+    for j in range(1, n_in + 1):
+        d = total * j / stops
+        m = min(int(np.searchsorted(acc, d)), len(acc) - 1)
+        m0 = max(m - 1, 0)
+        w = (d - acc[m0]) / max(acc[m] - acc[m0], 1e-12)
+        r["pts"][j - 1] = [float(x) for x in old[m0] + w * (old[m] - old[m0])]
+        f = j / stops * (len(sc_old) - 1)                  # olcek eski dugum olcekleri arasinda
+        a = min(int(f), len(sc_old) - 2)
+        r["sc"][j - 1] = float(sc_old[a] + (f - a) * (sc_old[a + 1] - sc_old[a]))
+    return True
+
+
+def rail_bridge2(cage, A, B, closed, dA, dB, flip, region, k):
+    """Iki uclu Rail bridge: A ile B arasina k ara halkali serit (Bridge gibi; bolge yuzleri silinir) ve
+    kilavuz. Baslangic egrisi A'ya ve B'ye dik giren yumusak egri. Kilavuz kaydini dondurur."""
+    ta, tb = dA.sum(0), -dB.sum(0)                         # A'dan cikis, B'ye giris yonu
+    ta = ta / max(np.linalg.norm(ta), 1e-12)
+    tb = tb / max(np.linalg.norm(tb), 1e-12)
+    n, base = len(A), len(cage.V)
+    cage.bridge(A, B, closed, k, 0.0, 0.0, None, None, flip)
+    r = dict(a=list(A), b=list(B), rings=[list(range(base + j * n, base + (j + 1) * n)) for j in range(k)],
+             pts=[], sc=[1.0] * k, ta=[float(x) for x in ta], tb=[float(x) for x in tb], closed=bool(closed),
+             cap=None, capq=None)
+    cA, cB = cage.V[A].mean(0), cage.V[B].mean(0)
+    L = np.linalg.norm(cB - cA)
+    curve = np.array([_hermite(cA, cB, ta * L, tb * L, t) for t in np.linspace(0, 1, 129)])
+    acc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(curve, axis=0), axis=1))])
+    for j in range(1, k + 1):                              # ara dugumler egri boyunca esit aralikli
+        m = min(int(np.searchsorted(acc, acc[-1] * j / (k + 1))), len(acc) - 1)
+        r["pts"].append([float(x) for x in curve[m]])
+    cage.rails.append(r)
+    if region:
+        cage.delete(region)                                # kilavuz indeksleri delete ile yeni numaralara gecer
+    r = cage.rails[-1]
+    rail_place(cage, r)
+    return r
+
+
+def rail_bridge1(cage, region, A, k, length=None):
+    """Tek uclu Rail bridge: secili bolge (siniri A halkasi) k ara halka ve serbest uc halkasiyla uzar; bolgenin
+    yuzleri ucta kapak olur (extrude gibi). Baslangicta uc, A'nin normali yonunde length kadar ileride."""
+    P = cage.V[A]
+    n0 = sum(cage.normal(fi) for fi in region)
+    cA, u, v, t = _ring_frame(P, n0 if np.linalg.norm(n0) > 1e-12 else [0, 0, 1.0])
+    if length is None:
+        length = 4.0 * float(np.linalg.norm(P - cA, axis=1).mean())
+    layers = {}
+    verts = sorted({x for fi in region for x in cage.F[fi]})
+    capq = (cage.V[verts] - cA) @ np.array([u, v, t]).T
+    cage.extrude(set(region), k + 1, layers)
+    r = dict(a=list(A), b=None, rings=[[layers[x][j] for x in A] for j in range(1, k + 2)],
+             pts=[[float(c) for c in cA + t * length * j / (k + 1)] for j in range(1, k + 2)],
+             sc=[1.0] * (k + 1), ta=[float(c) for c in t], tb=None, closed=True,
+             cap=[layers[x][-1] for x in verts], capq=capq.tolist())
+    cage.rails.append(r)
+    cage.delete(set())                                     # ic noktalarin ara katlari bosta kalir
+    r = cage.rails[-1]
+    rail_place(cage, r)
+    return r
 
 # ---------- Belgedeki SubD nesnesi ----------
 # Kafes belgede Mesh::FeaturePython nesnesinde saklanir: CagePoints (noktalar) + CageFaces (indeksler, -1
@@ -1832,6 +2158,13 @@ def cage_to_obj(cage, obj):
     edges = list(cage.C.items())
     obj.CageCreases = [int(v) for e, _ in edges for v in sorted(e)]
     obj.CageSharpness = [float(s) for _, s in edges]
+    if cage.rails or "Rails" in obj.PropertiesList:
+        if "Rails" not in obj.PropertiesList:
+            obj.addProperty("App::PropertyString", "Rails", "SubD", "Rail bridge guide curves (JSON)")
+            obj.setEditorMode("Rails", 2)
+        txt = json.dumps(cage.rails) if cage.rails else ""
+        if obj.Rails != txt:
+            obj.Rails = txt
 
 
 def cage_from_obj(obj):
@@ -1848,7 +2181,13 @@ def cage_from_obj(obj):
         pairs = obj.CageCreases
         for k, s in enumerate(obj.CageSharpness):
             C[_edge(pairs[2 * k], pairs[2 * k + 1])] = s
-    return Cage(V, F, C)
+    cage = Cage(V, F, C)
+    if "Rails" in obj.PropertiesList and obj.Rails:
+        try:
+            cage.rails = json.loads(obj.Rails)
+        except ValueError:
+            cage.rails = []
+    return cage
 
 
 # ---------- Part / PartDesign yuzeylerinden kafes (From face) ----------
@@ -2449,6 +2788,7 @@ def _param():
 
 _last_shell = {"Thickness": 2.0, "Detail filter": 6.0, "Mode": 0.0, "Fill": 1.0, "Sharp": 1.0, "Flat rim": 1.0}   # Shell paneli
 _knife_opts = {"split": False, "objects": False}   # Knife (line) secenekleri (ikisi kapali: yalniz keser)
+_last_reduce = {"Degrees": 5.0, "Delete points": 1.0}   # Reduce points paneli
 _last_cyl = {"Diameter": 100.0, "Height": 100.0, "Segments": 16.0, "Height Segments": 1.0}   # Cylinder paneli
 _clipboard = None                       # kopyalanan cokgenler (Cage, dunya koordinati); bkz. copy_faces
 PLANE_EDGE = 0.2        # duzlem normali ile bakis arasindaki |cos| bundan kucukse kare yandan gorunuyor sayilir
@@ -2920,9 +3260,16 @@ class SubDSession:
         self.ebevel_segs = 1  # kenar bevel segment sayisi (son kullanilan)
         self.extrude_segs = 1        # extrude dilim sayisi (son kullanilan)
         self.extrude_each = False    # extrude: her yuz kendi normalinde (son kullanilan)
+        self.rail = None             # Rail bridge duzenleniyor: dict(i=kilavuz, sel=ara nokta, span=parca)
+        self.rail_segs = 4           # Rail bridge baslangic ara halka sayisi (son kullanilan)
+        self.rail_falloff = False    # Rail bridge: secili nokta tasinirken komsulari da azalarak gelsin
+        self.rail_range = 2          # ... kac komsuya kadar (her iki yanda)
+        self.rail_soft = 2.0         # ... dusus egrisi: agirlik 1 - x^p (1 dogrusal, 2 parabolik, buyuk = daha yumusak)
+        self._last_click = None      # cift tiklama (kilavuzu yeniden duzenleme)
         self.box_vals = dict(_last_box)  # Box paneli: son kullanilan degerler (modelleyici kapansa da)
         self.cyl_vals = dict(_last_cyl)  # Cylinder paneli (iki topoloji ortak)
-        self.bridge_vals = {"Number of Cuts": 0.0, "Twist": 0.0, "Smoothness": 0.0, "Profile Factor": 0.0}
+        self.bridge_vals = {"Number of Cuts": 0.0, "Twist": 0.0, "Smoothness": 0.0, "Profile Factor": 0.0,
+                            "Auto direction": 1.0}
         self.last_op = None  # biten son islem (panelden degerle yeniden uygulanabilir)
         self.box = None      # bos alana basildi: surukleme kutu secimi olur
         self.rubber = None   # secim kutusu cizimi (QRubberBand)
@@ -2952,6 +3299,8 @@ class SubDSession:
         for w in self.key_targets:
             w.installEventFilter(self.key_filter)
         self.overlay = _Overlay(self)
+        self.wheel_guard = _WheelGuard(gv.viewport())
+        QtWidgets.QApplication.instance().installEventFilter(self.wheel_guard)
         self.geo_switch.whichChild = -1 if object_mode else 0
         self.refresh()
         if not object_mode:
@@ -3024,6 +3373,7 @@ class SubDSession:
         self.mode = "object"
         self.geo_switch.whichChild = -1
         self.op = self.last_op = None
+        self.rail = None
         self.undo, self.splits = [], []
         self.set_object_selection([self.obj] if self.obj is not None else [])
         self.refresh()
@@ -3045,6 +3395,7 @@ class SubDSession:
         self._sync_surface_widgets()
         self.undo, self.op, self.last_op = [], None, None
         self.splits = []
+        self.rail = None
         self.sel, self.sel_v, self.sel_e = set(), set(), set()
         self.dirty = False
         self.set_placement(o.Placement)
@@ -3461,6 +3812,33 @@ class SubDSession:
                   lines((0.85, 0.20, 0.85), 3.0, self.crease_lines),
                   lines((1.0, 0.45, 0.0), 3.0, self.sel_lines)):
             geo.addChild(n)
+        # Rail bridge kilavuzlari: egri borunun icinden gecer, ustte cizilir (SoAnnotation). Soluk: duzenlenmeyen
+        # kilavuzlar (cift tiklayinca duzenlenir); parlak: duzenlenen, ara noktalari tutamak, secili parca turuncu.
+        self.rail_dcoord, self.rail_dlines = coin.SoCoordinate3(), coin.SoIndexedLineSet()
+        self.rail_coord, self.rail_lines = coin.SoCoordinate3(), coin.SoIndexedLineSet()
+        self.rail_span = coin.SoIndexedLineSet()
+        self.rail_hcoord, self.rail_hset = coin.SoCoordinate3(), coin.SoPointSet()
+        self.rail_scoord, self.rail_sset = coin.SoCoordinate3(), coin.SoPointSet()
+
+        def draw(color, width, coord, node, point=False):
+            lm = coin.SoLightModel()
+            lm.model = coin.SoLightModel.BASE_COLOR
+            bc = coin.SoBaseColor()
+            bc.rgb = color
+            ds = coin.SoDrawStyle()
+            if point:
+                ds.pointSize = width
+            else:
+                ds.lineWidth = width
+            return _sep(lm, bc, ds, coord, node)
+        ann = coin.SoAnnotation()
+        for n in (draw((0.62, 0.55, 0.30), 1.5, self.rail_dcoord, self.rail_dlines),
+                  draw((0.98, 0.80, 0.15), 2.5, self.rail_coord, self.rail_lines),
+                  draw((1.0, 0.45, 0.0), 4.0, self.rail_coord, self.rail_span),
+                  draw((0.98, 0.80, 0.15), 9, self.rail_hcoord, self.rail_hset, True),
+                  draw((1.0, 0.30, 0.0), 13, self.rail_scoord, self.rail_sset, True)):
+            ann.addChild(n)
+        geo.addChild(ann)
         self.root.addChild(self.geo_switch)
         self.root.addChild(self.gizmo.root)
         self.parent = _scene_parent(self.view)
@@ -3772,6 +4150,7 @@ class SubDSession:
         self.c_switch.whichChild = -1 if self.smooth else 0
         verts = self.selected_verts() if not self.grab else []
         self.gizmo.place(App.Vector(*self.l2w(V[verts].mean(0))) if verts else None)
+        self._rail_draw()
         self._update_measure(fast)
         if self.overlay is not None:
             self.overlay.sync()
@@ -3982,6 +4361,8 @@ class SubDSession:
             err = self._bridge(v)
             if err:
                 self.info = err
+        elif k == "reduce":
+            self._reduce(v, a["verts"])
         elif k == "hole":
             err = self._hole(v)
             if err:
@@ -4016,6 +4397,10 @@ class SubDSession:
         """Viewport'taki arac panelinin icerigi: (baslik, [(ad, deger, birim, ondalik, geri cagri)], duzenlenebilir)."""
         if self.mode == "object":
             return self.object_panel_spec()
+        if self.rail is not None:
+            spec = self._rail_panel()
+            if spec is not None:
+                return spec
         live = bool(self.grab or self.drag)
         op = self.op if live else self.last_op
         if self.armed == "line" and not live and (op is None or op["kind"] != "plane"):
@@ -4058,12 +4443,15 @@ class SubDSession:
                            ("Sharp", bool(v["Sharp"]), lambda on: self.shell_option("Sharp", on)),
                            ("Flat rim", bool(v.get("Flat rim", 1.0)), lambda on: self.shell_option("Flat rim", on))]
                 return T("Shell"), [mm("Thickness"), mm("Detail filter")], self.drag is None, checks
+            if k == "reduce":
+                return T("Reduce points"), [("Degrees", v["Degrees"], "°", 2, r("Degrees"))], self.drag is None, \
+                    [("Delete points", bool(v["Delete points"]), self.reduce_option)]
             if k == "hole":
                 return T("Hole"), [mm("Radius"), ("Segments", v["Segments"], "", 0, r("Segments")), mm("Support")], \
                     self.drag is None
             if k == "bridge":
                 return T("Bridge"), [(n, v[n], "", d, r(n)) for n, d in zip(self.BRIDGE, (0, 0, 2, 2))], \
-                    self.drag is None
+                    self.drag is None, [("Auto direction", bool(v.get("Auto direction", 1.0)), self.bridge_option)]
             if k == "box":
                 return T("Box"), [mm(n) for n in self.BOX_SIZE] + \
                     [(n, v[n], "", 0, r(n)) for n in self.BOX_SEGS], self.drag is None
@@ -4128,6 +4516,41 @@ class SubDSession:
             return {_edge(f[i], f[(i + 1) % len(f)]) for f in (self.cage.F[fi] for fi in self.sel)
                     for i in range(len(f))}
         return {e for e in self.cage.edges() if e <= self.sel_v}
+
+    def reduce_points(self):
+        """Modify > Reduce points (LightWave): secili noktalar / kenarlar / cokgenler (secim yoksa butun kafes)
+        uzerinde, kenar boyunca neredeyse duz giden ara noktalari cikarir. Panel: Degrees (sapma siniri),
+        Delete points (bosta kalan noktalar silinsin; kapaliysa kafeste tek nokta olarak kalir)."""
+        if self.mode == "object" or self.drag or self.grab:
+            return
+        verts = set(self.selected_verts()) or set(range(len(self.cage.V)))
+        if self.sym:
+            M = self.mirror_map()
+            verts |= {M[v] for v in list(verts) if M.get(v) is not None}
+        self.drop_tool()
+        self.push()
+        op = self.new_op("reduce", {"Degrees": _last_reduce["Degrees"], "Delete points": _last_reduce["Delete points"]},
+                         verts=sorted(verts))
+        self._apply_op(op)
+        self.last_op, self.op = op, None
+        self.refresh()
+
+    def _reduce(self, v, verts):
+        v["Degrees"] = min(max(float(v["Degrees"]), 0.0), 90.0)
+        _last_reduce.update(v)
+        n = self.cage.reduce_points(verts, v["Degrees"])
+        if n and v["Delete points"]:
+            self.cage.delete(set())                        # bosta kalan noktalar gider (indeksler kayar)
+        self.sel, self.sel_v, self.sel_e = (set(), set(), set()) if n else (self.sel, self.sel_v, self.sel_e)
+        self.info = T("Reduce points: %d removed") % n
+        self.dirty = True
+
+    def reduce_option(self, on):
+        op = self.last_op
+        if op is None or op["kind"] != "reduce":
+            return
+        op["values"]["Delete points"] = 1.0 if on else 0.0
+        self._reapply(op)
 
     def crease_selected(self):
         """Secili kenarlara panel keskinligini verir; hepsi zaten o keskinlikteyse keskinligi kaldirir."""
@@ -4260,6 +4683,7 @@ class SubDSession:
         self.levels, self.rules = o.Levels, obj_rules(o)
         self._sync_surface_widgets()
         self.undo, self.splits, self.op, self.last_op = [], [], None, None
+        self.rail = None
         self.sel, self.sel_v, self.sel_e = set(), set(), set()
         self.dirty = False
         self.set_placement(o.Placement)
@@ -4281,6 +4705,11 @@ class SubDSession:
             self.grab = None
             self.op = self.last_op = None
             self.dirty = True                              # kafes kaydedilmis olabilir (or. Knife ayirma): yeniden yaz
+            r = self._rail()
+            if r is None:                                  # kilavuzun olusturulmasi geri alindi
+                self.rail = None
+            elif self.rail["sel"] is not None and self.rail["sel"] >= len(r["pts"]):
+                self.rail["sel"] = None
             self._undo_splits()
             self.refresh()
 
@@ -4320,6 +4749,7 @@ class SubDSession:
             return
         self.mode = mode
         self.last_op = None
+        self.rail = None
         self.refresh()
 
     def toggle_ghost(self):
@@ -4976,6 +5406,7 @@ class SubDSession:
         self.refresh()
 
     def drop_tool(self):
+        self.rail = None                                   # baska arac basladi: kilavuz duzenleme biter
         if self.armed:
             self.armed = None
             self.info = ""
@@ -5343,12 +5774,53 @@ class SubDSession:
             self.last_op, self.op = op, None
         self.refresh()
 
+    def bridge_option(self, on):
+        """Bridge panelindeki "Auto direction": ada (bagimsiz) yuz uclarinin yonu oteki uca cevrilsin mi."""
+        op = self.last_op
+        if op is None or op["kind"] != "bridge":
+            return
+        op["values"]["Auto direction"] = 1.0 if on else 0.0
+        self._reapply(op)
+
+    def flip_faces(self):
+        """Modify > Flip (Shift+F, LightWave Flip): secili cokgenlerin (secim yoksa hepsinin) yonunu, yani
+        normalini cevirir. Kenar keskinlikleri ayni kalir."""
+        if self.mode == "object" or self.drag or self.grab or not self.cage.F:
+            return
+        faces = self.selected_faces() or set(range(len(self.cage.F)))
+        if self.sym:
+            faces = self.mirror_faces(faces, self.mirror_map())
+        self.drop_tool()
+        self.push()
+        self.last_op = None
+        for fi in faces:
+            self.cage.F[fi] = self.cage.F[fi][::-1]
+        self.info = T("Flip: %d polygons") % len(faces)
+        self.refresh()
+
     def _bridge(self, v):
         """Bridge'i uygular; olmazsa hata metni dondurur (kafes degismez)."""
         cage = self.cage
         v["Number of Cuts"] = float(min(max(int(round(v["Number of Cuts"])), 0), 64))
         v["Twist"] = float(int(round(v["Twist"])))
         self.bridge_vals = dict(v)
+        prep = self._bridge_prep(int(v["Twist"]), bool(v.get("Auto direction", 1.0)))
+        if isinstance(prep, str):
+            return prep
+        A, B, ca, dA, dB, flip, region = prep
+        new = cage.bridge(A, B, ca, int(v["Number of Cuts"]), max(v["Smoothness"], 0.0), v["Profile Factor"],
+                          dA, dB, flip)
+        if region:
+            cage.delete(region)                            # yeni yuzler sonda: indeksleri silinenler kadar kayar
+            new = [fi - len(region) for fi in new]
+        self.sel, self.sel_v, self.sel_e = set(new) if self.mode == "face" else set(), set(), set()
+        self.info = T("Bridge: %d polygons") % len(new)
+        return None
+
+    def _bridge_ends(self):
+        """Secimin acik sinir zincirleri: yuz modunda secili bolgenin siniri, kenar modunda secili acik kenarlar.
+        (zincirler, kenar -> yuzler, bolge) ya da hata metni."""
+        cage = self.cage
         ef = cage.edge_faces()
         region = set(self.sel) if self.mode == "face" else set()
         if region:                                         # bolge siniri: bolgede tek yuzu olan kenarlar
@@ -5357,7 +5829,16 @@ class SubDSession:
             edges = set(self.sel_e)
             if any(len(ef.get(e, ())) != 1 for e in edges):
                 return T("Bridge: select open (boundary) edges")
-        chains = cage.edge_chains(edges)
+        return cage.edge_chains(edges), ef, region, edges
+
+    def _bridge_prep(self, twist=0, auto=True):
+        """Bridge / Rail bridge icin iki ucun eslenmesi: (A, B, kapali, dA, dB, flip, bolge) ya da hata metni.
+        dA / dB: uclarda yuzeyden disari birim yonler; flip: yeni seridin yuz sirasi."""
+        cage = self.cage
+        res = self._bridge_ends()
+        if isinstance(res, str):
+            return res
+        chains, ef, region, edges = res
         err = T("Bridge: select two loops (edges or face regions) with the same number of edges")
         if not chains or len(chains) != 2:
             return err
@@ -5377,7 +5858,7 @@ class SubDSession:
                     if best is None or d < best[0]:
                         best = (d, order[k:] + order[:k])
             B = best[1]
-            t = int(v["Twist"]) % n
+            t = int(twist) % n
             B = B[t:] + B[:t]
         elif (np.linalg.norm(PA[0] - PB[0]) + np.linalg.norm(PA[-1] - PB[-1]) >
               np.linalg.norm(PA[0] - PB[-1]) + np.linalg.norm(PA[-1] - PB[0])):
@@ -5393,21 +5874,297 @@ class SubDSession:
             out = cage._outward(cage._open_directed(edges))
         dA = np.array([out.get(x, np.zeros(3)) for x in A])
         dB = np.array([out.get(x, np.zeros(3)) for x in B])
-        # yuz yonu: A[0] -> A[1] kenarinda kalan komsu yuz ayni yonde gidiyorsa yeni yuzler ters sirali
-        e0 = _edge(A[0], A[1])
+        # ada (hicbir yere bagli olmayan, or. yapistirilmis) yuz bolgesinin normali keyfi: Auto direction ile
+        # oteki uca donuk alinir (yoksa egri arkasindan dolanir). Yuzeye gomulu uclarin yonune dokunulmaz.
+        island = lambda C: bool(region) and all(len(ef.get(_edge(C[i], C[(i + 1) % len(C)]), ())) == 1
+                                                for i in range(len(C) if ca else len(C) - 1))
+        isA, isB = island(A), island(B)
+        if auto:
+            gap = PB.mean(0) - PA.mean(0)
+            if isA and dA.sum(0).dot(gap) < 0:
+                dA = -dA
+            if isB and dB.sum(0).dot(gap) > 0:
+                dB = -dB
+        # yuz yonu gomulu uctaki komsu yuzden (ada yuzun yonu keyfi): kalan komsu yuz kenari ayni yonde
+        # geciyorsa serit ters sirali. Serit A kenarini A[0] -> A[1], B kenarini B[1] -> B[0] yonunde gecer.
+        C = B if isA and not isB else A
+        e0 = _edge(C[0], C[1])
         fs = ef.get(e0, ())
         keep = [f for f in fs if f not in region]
         f = cage.F[(keep or fs)[0]]
-        same = any(f[i] == A[0] and f[(i + 1) % len(f)] == A[1] for i in range(len(f)))
+        same = any(f[i] == C[0] and f[(i + 1) % len(f)] == C[1] for i in range(len(f)))
         flip = same if keep else not same                  # silinen yuzun yerini alan seridin yonu onunla ayni
-        new = cage.bridge(A, B, ca, int(v["Number of Cuts"]), max(v["Smoothness"], 0.0), v["Profile Factor"],
-                          dA, dB, flip)
-        if region:
-            cage.delete(region)                            # yeni yuzler sonda: indeksleri silinenler kadar kayar
-            new = [fi - len(region) for fi in new]
-        self.sel, self.sel_v, self.sel_e = set(new) if self.mode == "face" else set(), set(), set()
-        self.info = T("Bridge: %d polygons") % len(new)
-        return None
+        if C is B:
+            flip = not flip
+        return A, B, ca, dA, dB, flip, region
+
+    # --- Rail bridge (kilavuzlu kopru): kilavuz egri, egriye dik halkalar; ara noktalar tasinir / eklenir ---
+    # Kilavuz kafeste saklanir (Cage.rails): geri alma ve belgeye kayit kendiliginden. Duzenlerken tiklama ara
+    # noktayi (tutamak) ya da egri parcasini secer; gizmo / panel secili noktayi tasir, I parcaya halka ekler, Del
+    # noktayi siler, Enter biter. Sonradan kilavuza cift tiklayinca yeniden duzenlenir.
+
+    def rail_bridge(self):
+        """Polygon > Rail bridge: iki secili bolge / acik kenar halkasi arasinda ya da tek bolgeden uzayan,
+        kilavuz egrili boru; egri secili poligona dik cikar."""
+        if self.drag or self.grab or self.mode not in ("edge", "face"):
+            return
+        res = self._bridge_ends()
+        if isinstance(res, str):
+            self.info = res
+            self.refresh()
+            return
+        chains, _, region, _ = res
+        if len(chains) == 2:
+            prep = self._bridge_prep(0, True)
+            if isinstance(prep, str):
+                self.info = prep
+                self.refresh()
+                return
+            self.drop_tool()
+            self.push()
+            rail_bridge2(self.cage, *prep, self.rail_segs)
+        elif len(chains) == 1 and chains[0][1] and region:
+            self.drop_tool()
+            self.push()
+            rail_bridge1(self.cage, region, chains[0][0], self.rail_segs)
+        else:
+            self.info = T("Rail bridge: select two polygon regions or edge loops, or one region to extend")
+            self.refresh()
+            return
+        self.sel, self.sel_v, self.sel_e = set(), set(), set()
+        self.last_op = None
+        self.rail = dict(i=len(self.cage.rails) - 1, sel=None, span=None)
+        self.info = T("Rail bridge: click a point and move it, I: add segment, Del: delete point, Enter: done")
+        self.refresh()
+
+    def _rail(self):
+        """Duzenlenen kilavuz kaydi (yoksa None)."""
+        if self.rail is None or self.rail["i"] >= len(self.cage.rails):
+            return None
+        return self.cage.rails[self.rail["i"]]
+
+    def _rail_handles(self, r, N):
+        """Tasinabilir dugumler (yerel): ara noktalar; tek uclu kullanimda serbest uc da."""
+        return N[1:] if r.get("b") is None else N[1:-1]
+
+    def _rail_draw(self):
+        dim, act = [], None
+        if self.mode != "object":
+            for ri, r in enumerate(self.cage.rails):
+                if not rail_ok(self.cage, r):
+                    continue
+                N, M, _, _ = rail_nodes(self.cage, r)
+                C = rail_curve(N, M)
+                if self.rail is not None and ri == self.rail["i"]:
+                    act = (r, N, C)
+                else:
+                    dim.append(C)
+        idx, o = [], 0
+        for C in dim:
+            idx += list(range(o, o + len(C))) + [-1]
+            o += len(C)
+        _set_coords(self.rail_dcoord, np.vstack(dim) if dim else np.zeros((1, 3)))
+        _set_index(self.rail_dlines, idx)
+        H, S, span, C = np.zeros((0, 3)), np.zeros((0, 3)), [], np.zeros((1, 3))
+        if act is not None:
+            r, N, C = act
+            H = self._rail_handles(r, N)
+            h, sp = self.rail["sel"], self.rail["span"]
+            if h is not None and h < len(H):
+                S = H[h:h + 1]
+            if sp is not None and sp < len(N) - 1:
+                span = list(range(sp * 16, sp * 16 + 17)) + [-1]
+        _set_coords(self.rail_coord, C)
+        _set_index(self.rail_lines, list(range(len(C))) + [-1] if act is not None else [])
+        _set_index(self.rail_span, span)
+        _set_coords(self.rail_hcoord, H if len(H) else np.zeros((1, 3)))
+        self.rail_hset.numPoints = len(H)
+        _set_coords(self.rail_scoord, S if len(S) else np.zeros((1, 3)))
+        self.rail_sset.numPoints = len(S)
+        if self.rail is not None and not self.grab:        # gizmo secili kilavuz noktasinda
+            self.gizmo.place(App.Vector(*self.l2w(S[0])) if len(S) else None)
+
+    def _rail_curve_dist(self, C, pos):
+        """Ekranda pos'un egriye (yerel noktalar) en yakin uzakligi (piksel) ve en yakin noktanin sirasi."""
+        Q = self.project(C)
+        p = np.array(pos[:2], float)
+        best = (1e18, 0)
+        for k in range(len(Q) - 1):
+            a, b = Q[k], Q[k + 1]
+            ab = b - a
+            t = min(max((p - a).dot(ab) / max(ab.dot(ab), 1e-12), 0.0), 1.0)
+            d = float(np.linalg.norm(a + t * ab - p))
+            if d < best[0]:
+                best = (d, k)
+        return best
+
+    def rail_pick(self, pos, radius=8.0):
+        """Imlecin altindaki kilavuz (cift tiklama): sira numarasi ya da None."""
+        best = None
+        for ri, r in enumerate(self.cage.rails):
+            if not rail_ok(self.cage, r):
+                continue
+            N, M, _, _ = rail_nodes(self.cage, r)
+            d, _ = self._rail_curve_dist(rail_curve(N, M), pos)
+            if d < radius and (best is None or d < best[0]):
+                best = (d, ri)
+        return None if best is None else best[1]
+
+    def rail_edit(self, ri):
+        """Kaydedilmis kilavuzu yeniden duzenlemeye al (cift tiklama)."""
+        r = self.cage.rails[ri]
+        if not rail_ok(self.cage, r):
+            self.info = T("Rail bridge: the tube was changed, its guide curve can no longer be edited")
+            self.refresh()
+            return
+        self.drop_tool()
+        self.sel, self.sel_v, self.sel_e = set(), set(), set()
+        self.last_op = None
+        self.rail = dict(i=ri, sel=None, span=None)
+        self.info = T("Rail bridge: click a point and move it, I: add segment, Del: delete point, Enter: done")
+        self.refresh()
+
+    def rail_click(self, pos):
+        """Kilavuz duzenlenirken tiklama: ara nokta (tutamak) ya da egri parcasi secilir; bosluk secimi kaldirir."""
+        r = self._rail()
+        if r is None:
+            self.rail = None
+            self.refresh()
+            return
+        N, M, _, _ = rail_nodes(self.cage, r)
+        H = self._rail_handles(r, N)
+        self.rail["sel"] = self.rail["span"] = None
+        if len(H):
+            d = np.linalg.norm(self.project(H) - np.array(pos[:2], float), axis=1)
+            h = int(np.argmin(d))
+            if d[h] < 12.0:
+                self.rail["sel"] = h
+                self.refresh()
+                return
+        d, k = self._rail_curve_dist(rail_curve(N, M), pos)
+        if d < 8.0:
+            self.rail["span"] = min(k // 16, len(N) - 2)   # rail_curve: parca basina 16 adim
+        self.refresh()
+
+    def _rail_change(self, fn, msg=None):
+        """Kilavuzda bir degisiklik: geri alma kaydi, uygula, halkalari yerlestir. fn False donerse geri alinir."""
+        r = self._rail()
+        if r is None or self.drag or self.grab:
+            return False
+        self.push()
+        if fn(r) is False:
+            self.undo.pop()
+            if msg:
+                self.info = msg
+            self.refresh()
+            return False
+        rail_place(self.cage, r)
+        self.refresh()
+        return True
+
+    def rail_add(self):
+        """Secili parcaya (yoksa secili noktadan sonraki, o da yoksa en uzun parcaya) ara halka ekle (I)."""
+        r = self._rail()
+        if r is None:
+            return
+        N, _, _, _ = rail_nodes(self.cage, r)
+        sp, h = self.rail["span"], self.rail["sel"]
+        if sp is None and h is not None:
+            sp = min(h + 1, len(N) - 2)                    # secili noktadan sonraki parca (uc noktada: onceki)
+        if sp is None:
+            sp = int(np.argmax(np.linalg.norm(np.diff(N, axis=0), axis=1)))
+        if self._rail_change(lambda r: rail_insert(self.cage, r, sp),
+                             T("Rail bridge: the tube was changed, its guide curve can no longer be edited")):
+            self.rail["sel"], self.rail["span"] = sp, None  # yeni nokta secili: hemen tasinabilir
+
+    def rail_delete(self):
+        """Secili ara noktayi ve halkasini sil (Del); tek uclu kullanimda serbest uc silinmez."""
+        r = self._rail()
+        if r is None or self.rail["sel"] is None:
+            return
+        h = self.rail["sel"]
+        if self._rail_change(lambda r: rail_remove(self.cage, r, h + 1),
+                             T("Rail bridge: this point cannot be deleted")):
+            self.rail["sel"] = None
+
+    def rail_segments(self, val):
+        """Panel: ara halka sayisi; noktalar egri boyunca esit araliga dizilir (egrinin sekli korunur)."""
+        k = min(max(int(round(val)), 0), 64)
+        self.rail_segs = max(k, 1)
+        self._rail_change(lambda r: rail_resample(self.cage, r, k))
+        if self.rail is not None:
+            self.rail["sel"] = self.rail["span"] = None
+
+    def rail_coord(self, axis, val):
+        """Panel: secili ara noktanin dunya X / Y / Z konumu (mm)."""
+        h = self.rail["sel"] if self.rail is not None else None
+        if h is None:
+            return
+
+        def set_(r):
+            p = np.array(r["pts"][h], float)
+            w = self.l2w(p)
+            w[axis] = val
+            P = np.array(r["pts"], float) + np.outer(self._rail_weights(r), self.w2l(w) - p)
+            r["pts"] = P.tolist()
+        self._rail_change(set_)
+
+    def _rail_weights(self, r):
+        """Secili nokta tasinirken her ara noktanin ne kadar gelecegi: secili 1; Move neighbors aciksa Range kadar
+        komsu 1 - x^Softness ile azalarak (x: uzaklik / (Range + 1)), digerleri 0. Uc halkalar (A, B) hic oynamaz."""
+        h = self.rail["sel"]
+        n = len(r["pts"])
+        w = np.zeros(n)
+        if h is None or h >= n:
+            return w
+        k = max(int(self.rail_range), 0) if self.rail_falloff else 0
+        for j in range(max(h - k, 0), min(h + k, n - 1) + 1):
+            w[j] = 1.0 - (abs(j - h) / (k + 1.0)) ** max(self.rail_soft, 0.1)
+        return w
+
+    def rail_falloff_option(self, on):
+        self.rail_falloff = bool(on)
+        self.refresh()
+
+    def rail_soft_set(self, val):
+        self.rail_soft = min(max(float(val), 0.1), 10.0)
+        self.refresh()
+
+    def rail_range_set(self, val):
+        self.rail_range = min(max(int(round(val)), 1), 32)
+        self.refresh()
+
+    def rail_scale(self, val):
+        """Panel: secili noktadaki halkanin olcegi (1 = uc halkalarin boyu)."""
+        h = self.rail["sel"] if self.rail is not None else None
+        if h is None:
+            return
+        self._rail_change(lambda r: r["sc"].__setitem__(h, max(float(val), 0.01)))
+
+    def rail_finish(self):
+        self.rail = None
+        self.info = ""
+        self.refresh()
+
+    def _rail_panel(self):
+        r = self._rail()
+        if r is None:
+            self.rail = None
+            return None
+        k = len(r["rings"]) - (1 if r.get("b") is None else 0)
+        fields = [("Segments", float(k), "", 0, self.rail_segments)]
+        h = self.rail["sel"]
+        if h is not None and h < len(r["pts"]):
+            w = self.l2w(np.array(r["pts"][h], float))
+            fields += [(a, float(w[j]), " mm", 3, (lambda val, j=j: self.rail_coord(j, val))) for j, a in enumerate("XYZ")]
+            fields.append(("Scale", float(r["sc"][h]), " x", 3, self.rail_scale))
+        if self.rail_falloff:
+            fields.append(("Range", float(self.rail_range), "", 0, self.rail_range_set))
+            fields.append(("Softness", float(self.rail_soft), "", 2, self.rail_soft_set))
+        checks = [("Move neighbors", self.rail_falloff, self.rail_falloff_option)]
+        buttons = [("Add segment (I)", self.rail_add), ("Delete point (Del)", self.rail_delete),
+                   ("Done (Enter)", self.rail_finish)]
+        return T("Rail bridge"), fields, self.drag is None, checks, None, buttons
 
     # --- From face: FreeCAD'de secili Part / PartDesign yuzeylerinden / kenar halkasindan kafes (cage_from_faces) ---
     # Object modunda yeni SubD nesnesi olur (dunya koordinati), kafeste duzenlerken ayni kafese eklenir. Panel:
@@ -5871,6 +6628,18 @@ class SubDSession:
                              free_n=_view_dir(self.view, c0), acc=0.0, vec=App.Vector())
             self.drag["ref"] = self.drag["ref0"] = self.drag_measure(pos)
             return
+        if self.rail is not None:                          # kilavuzun secili ara noktasi tasinir
+            r = self._rail()
+            if r is None or self.rail["sel"] is None or key[0] not in ("move", "plane", "free"):
+                return
+            self.push()
+            p = np.array(r["pts"][self.rail["sel"]], float)
+            c0 = App.Vector(*self.l2w(p))
+            self.op = dict(kind="railpoint", values=dict(X=0.0, Y=0.0, Z=0.0), args={}, before=None)
+            self.drag = dict(key=key, rail=np.array(r["pts"], float), c0=c0, c=p, free_n=_view_dir(self.view, c0),
+                             acc=0.0, vec=App.Vector(), anchor=None)
+            self.drag["ref"] = self.drag["ref0"] = self.drag_measure(pos)
+            return
         verts = self.selected_verts()
         if not verts:
             return
@@ -5985,6 +6754,14 @@ class SubDSession:
         self.info = "Δ  X %.3f   Y %.3f   Z %.3f mm" % tuple(d) + (
             "   " + T("Snap: %s") % T(hit[1]) if hit is not None else "")
         self.op["values"].update(X=float(d[0]), Y=float(d[1]), Z=float(d[2]))
+        if g.get("rail") is not None:
+            r = self._rail()
+            if r is not None:
+                P = g["rail"] + np.outer(self._rail_weights(r), self.w2l_dir(np.asarray(d, float)))
+                r["pts"] = P.tolist()
+                rail_place(self.cage, r)
+                self.refresh(fast=True)
+            return
         if self.mode == "object":
             self.objects_move(g, d)
         else:
@@ -6000,6 +6777,10 @@ class SubDSession:
             doc = g["objs"][0].Document
             doc.recompute()
             doc.commitTransaction()
+            self.op = None
+            self.refresh()
+            return
+        if g.get("rail") is not None:                      # kilavuz noktasi: panel kilavuzu gostermeye devam eder
             self.op = None
             self.refresh()
             return
@@ -6053,6 +6834,20 @@ class SubDSession:
             cb.setHandled()                                # secime ve gezinmeye gitmesin
             self.drag_begin(key, pos)
             return
+        if self.rail is not None:                          # kilavuz duzenleniyor: tiklama nokta / parca secer
+            cb.setHandled()
+            _later(lambda: self.rail_click(pos))
+            return
+        if self.mode != "object":                          # kilavuza cift tiklama: yeniden duzenle
+            now, last = time.monotonic(), self._last_click
+            self._last_click = (now, pos)
+            if last is not None and now - last[0] < 0.4 and abs(pos[0] - last[1][0]) + abs(pos[1] - last[1][1]) < 8:
+                ri = self.rail_pick(pos)
+                if ri is not None:
+                    cb.setHandled()
+                    self._last_click = None
+                    _later(lambda: self.rail_edit(ri))
+                    return
         if (self.mode == "object" and self.object_pick(pos) is None
                 and self.view.getObjectInfo((int(pos[0]), int(pos[1])))):
             return     # SubD olmayan sekil (Part / PartDesign): FreeCAD kendisi secsin (yuzey -> From face)
@@ -6185,6 +6980,18 @@ class SubDSession:
         if k == "o":                                       # Edit -> Object modu (Tab LightWave gibi SubPatch)
             self.enter_object_mode()
             return
+        if self.rail is not None and not ctrl:             # kilavuz duzenlenirken
+            if k == "i":
+                self.rail_add()
+                return
+            if k in ("delete", "backspace"):
+                self.rail_delete()
+                return
+            if k in ("return", "enter", "escape"):
+                self.rail_finish()
+                return
+            if k not in ("t", "x", "s", "tab", "n", "y"):   # baska bir arac / mod: kilavuz duzenleme biter
+                self.rail_finish()
         if ctrl:                                           # LightWave: ^G nokta, ^H cokgen
             {"z": self.do_undo, "g": lambda: self.set_mode("point"), "h": lambda: self.set_mode("face"),
              "c": self.copy_faces, "x": lambda: self.copy_faces(cut=True), "v": self.paste_faces}[k]()
@@ -6209,6 +7016,8 @@ class SubDSession:
             self.delete()
         elif k == "f":
             self.save()
+        elif k == "F":                                     # Shift+F: LightWave Flip
+            self.flip_faces()
         elif k in ("1", "2", "3"):
             self.set_mode({"1": "point", "2": "edge", "3": "face"}[k])
         elif k == "y":
@@ -6257,6 +7066,7 @@ class SubDSession:
         _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoLocation2Event.getClassTypeId(), self._cb_mov))
         for w in self.key_targets:
             _quiet(lambda w=w: w.removeEventFilter(self.key_filter))
+        _quiet(lambda: QtWidgets.QApplication.instance().removeEventFilter(self.wheel_guard))
         _quiet(lambda: self.parent.removeChild(self.root))
         if self.overlay is not None:
             _quiet(self.overlay.close)
@@ -6435,6 +7245,8 @@ class _KeyFilter(QtCore.QObject):
             return False
         k = _KEYS.get(ev.key())
         ctrl = bool(ev.modifiers() & QtCore.Qt.ControlModifier)
+        if k == "f" and ev.modifiers() & QtCore.Qt.ShiftModifier:
+            k = "F"                                        # Shift+F: Flip (F: kaydet)
         extr = g is not None and g.get("kind") == "extrude"   # extrude surerken Z = eksen (Ctrl+Z degil)
         if k is None or (ctrl and k not in _CTRL_KEYS) or (not ctrl and k in _CTRL_ONLY and not (extr and k == "z")):
             return False
@@ -6522,15 +7334,43 @@ class _LineOverlay(QtWidgets.QWidget):
         p.end()
 
 
+class _WheelGuard(QtCore.QObject):
+    """Gorunumdeki panelin sayi kutularinda fare tekerlegi (uygulama duzeyinde, FreeCAD'in filtrelerinden ve 3B
+    gorunumden once): imlec kutunun ustundeyse her tik degeri bir adim degistirir ve olay tuketilir. Kutuya
+    birakinca FreeCAD odaksiz kutunun tekerlegini yutuyor, olay gorunume gidip zoom yapiyordu (bazen ikisi
+    birden). Odak gorunumde kalir (kisayollar calisir)."""
+
+    def __init__(self, viewport):
+        super().__init__()
+        self.vp = viewport
+        self.last = None
+
+    def eventFilter(self, obj, ev):
+        if ev.type() != QtCore.QEvent.Wheel:
+            return False
+        w = QtWidgets.QApplication.widgetAt(QtGui.QCursor.pos())
+        while w is not None and not isinstance(w, QtWidgets.QAbstractSpinBox):
+            w = w.parentWidget()
+        if w is None or not self.vp.isAncestorOf(w):
+            return False
+        key = (ev.timestamp(), ev.angleDelta().y())
+        if key == self.last:                               # ayni tik ikinci kez (ust widget'a iletilen): yalniz tuket
+            return True
+        self.last = key
+        if w.isEnabled():
+            acc = (w.property("wheel_acc") or 0) + ev.angleDelta().y()   # hassas tekerlek: 120 = bir adim
+            steps = int(acc / 120)
+            w.setProperty("wheel_acc", acc - steps * 120)
+            if steps:
+                w.stepBy(steps)
+        return True
+
+
 class _ClickFocus(QtCore.QObject):
     """Viewport icindeki kutuya tiklaninca klavye odagi kutuya gecmiyor (3B gorunum geri aliyor): yazilan
     rakamlar gorunume gidip 1/2/3 mod degistiriyordu. Tiklamada odagi acikca kutuya ver, degeri sec."""
 
     def eventFilter(self, obj, ev):
-        if ev.type() == QtCore.QEvent.Wheel and isinstance(obj, QtWidgets.QAbstractSpinBox):
-            if not obj.hasFocus():                         # odaksiz kutu tekerlegi yok sayiyor: once odakla
-                obj.setFocus(QtCore.Qt.MouseFocusReason)
-            return False
         if ev.type() == QtCore.QEvent.MouseButtonPress and isinstance(obj, QtWidgets.QLineEdit):
             box = obj.parent()
             def grab():
@@ -6575,6 +7415,14 @@ class _ToolPanel(QtWidgets.QFrame):
         self.grid.setHorizontalSpacing(6)
         self.grid.setVerticalSpacing(2)
         lay.addLayout(self.grid)
+        # istege bagli dugmeler: spec'in 6. ogesi [(ad, fn())], alanlarin altinda (Rail bridge: segment ekle...)
+        self.btn_bar = QtWidgets.QWidget()
+        self.btn_lay = QtWidgets.QGridLayout(self.btn_bar)
+        self.btn_lay.setContentsMargins(0, 2, 0, 0)
+        self.btn_lay.setSpacing(3)
+        self.btn_key, self.btn_fns = (), []
+        lay.addWidget(self.btn_bar)
+        self.btn_bar.hide()
         self.key = None
         self.rows = []
         self._focus_filter = _ClickFocus(self)
@@ -6591,8 +7439,12 @@ class _ToolPanel(QtWidgets.QFrame):
         title, fields, editable = spec[:3]
         checks = spec[3] if len(spec) > 3 else []
         label = spec[4] if len(spec) > 4 else None
-        key = (title, tuple(f[0] for f in fields), tuple(c[0] for c in checks), label)
+        buttons = spec[5] if len(spec) > 5 else []
+        key = (title, tuple(f[0] for f in fields), tuple(c[0] for c in checks), label, tuple(b[0] for b in buttons))
         changed = key != self.key
+        self.btn_fns = [b[1] for b in buttons]
+        if tuple(b[0] for b in buttons) != self.btn_key:
+            self._build_buttons([b[0] for b in buttons])
         self.check_fns = [c[2] for c in checks]
         if (label, tuple(c[0] for c in checks)) != self.check_key:
             self._build_checks(label, [c[0] for c in checks], [len(c) > 3 and c[3] for c in checks])
@@ -6626,7 +7478,7 @@ class _ToolPanel(QtWidgets.QFrame):
                 box.editingFinished.connect(lambda b=box, i=r: self._commit(i, b))
                 box.valueChanged.connect(lambda val, b=box, i=r: self._commit(i, b))
                 box.lineEdit().installEventFilter(self._focus_filter)
-                box.installEventFilter(self._focus_filter)          # tekerlek: odaklanip adim degissin
+                box.installEventFilter(self._focus_filter)          # tekerlek: _WheelGuard (zoom yok)
                 self.grid.addWidget(lb, r, 0)
                 self.grid.addWidget(box, r, 1)
                 lb.show()                                  # gorunur panele eklenen cocuk kendiliginden gorunmez;
@@ -6650,6 +7502,27 @@ class _ToolPanel(QtWidgets.QFrame):
             self.layout().activate()
             self.setFixedHeight(self.layout().sizeHint().height())
         return changed
+
+    def _build_buttons(self, names):
+        while self.btn_lay.count():
+            w = self.btn_lay.takeAt(0).widget()
+            if w is not None:
+                w.hide()
+                w.setParent(None)
+                w.deleteLater()
+        for i, n in enumerate(names):
+            b = QtWidgets.QPushButton(T(n))
+            b.setFocusPolicy(QtCore.Qt.NoFocus)            # kisayollar gorunumde kalsin
+            b.clicked.connect(lambda checked=False, i=i: self._button(i))
+            self.btn_lay.addWidget(b, i // 2, i % 2)
+            b.show()
+        self.btn_key = tuple(names)
+        self.btn_bar.setVisible(bool(names))
+
+    def _button(self, i):
+        if i < len(self.btn_fns):
+            fn = self.btn_fns[i]
+            _later(lambda: (fn(), self.s.refresh()))
 
     def _build_checks(self, label, names, own=()):
         """own[i]: kutucuk etiketli satira degil, altinda kendi satirina (uzun adlar sigmiyordu)."""
@@ -6826,7 +7699,7 @@ class _Overlay(object):
         btn("Inset", "I", lambda: s.bevel(inset_only=True, lazy=True), sel=True, mode="edit")
         btn("Knife (loop)", "K", lambda: s.toggle_tool("knife"), mode="edit", tool="knife")
         btn("Knife (line)", "J", lambda: s.toggle_tool("line"), mode="edit", tool="line")
-        btn("Bridge", "", s.bridge, sel=True, mode="edit")
+        menu_btn("Bridge", [("Bridge", s.bridge), ("Rail bridge", s.rail_bridge)])
         btn("Hole", "", s.hole, sel=True, mode="edit")
         btn("Delete", "Del", lambda: s.object_delete() if obj() else s.delete(), sel=True)
         head("Clipboard")
@@ -6839,6 +7712,8 @@ class _Overlay(object):
         btn("Rotate", "R", lambda: s.set_gizmo("rotate"), toggle=lambda: s.gizmo.mode == "rotate")
         btn("Stretch / Size", "H", lambda: s.set_gizmo("scale"), toggle=lambda: s.gizmo.mode == "scale")
         btn("Crease", "C", s.crease_selected, sel=True, mode="edit")
+        btn("Reduce points", "", s.reduce_points, mode="edit")   # secim yoksa butun kafes
+        btn("Flip", "⇧F", s.flip_faces, mode="edit")             # secim yoksa butun cokgenler
         btn("Shell", "", s.shell)                     # Object: secili nesne; Edit: secili cokgenler (yoksa hepsi)
         # kafeste: secili cokgenler (secim yoksa hepsi) ayni kafese aynalanir; Object modunda: secili nesnelerin kopyasi
         menu_btn("Mirror", [("Mirror X", lambda: s.mirror_polygons(0)), ("Mirror Y", lambda: s.mirror_polygons(1)),

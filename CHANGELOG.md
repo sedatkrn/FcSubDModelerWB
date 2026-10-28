@@ -3,6 +3,26 @@
 ## Unreleased
 
 ### New tools
+- **Rail bridge** (Polygon): a tube along a live guide curve. Select two polygon regions / edge loops (or one
+  region to extend from); the curve leaves each end perpendicular to its polygon and every ring in between
+  stays perpendicular to the curve, carried along without twist, its shape blending from one end to the
+  other. While editing, click a point and move it with the gizmo or the panel's X / Y / Z, set its ring
+  *Scale*, *Segments* re-spaces the rings along the curve, I adds a ring in the clicked span, Del removes the
+  selected one, Enter finishes. The guide is stored with the cage (undo, saved in the document): double-click
+  the curve later to edit it again. If the tube is cut or rebuilt by hand, the guide detaches with a message.
+  *Move neighbors* (with *Range* and *Softness*: weight 1 - x^Softness, 1 linear, 2 parabolic, higher softer)
+  lets the points on both sides follow the moved one; the end rings never move. Bridge and Rail bridge share one drop-down button.
+- Tool panel: optional button row under the fields.
+- **Flip** (Modify, Shift+F; LightWave Flip): reverses the selected polygons (all when nothing is selected),
+  so their normals point the other way. F stays Save.
+- **Bridge > Auto direction** (on by default): an end made of free (pasted, unattached) polygons is turned to
+  face the other end, so a smooth bridge no longer wraps around behind a copied polygon. Ends embedded in a
+  surface keep their direction (handles over a surface still work); the strip takes its winding from the
+  embedded end.
+- **Reduce points** (Modify, LightWave Construct > Reduce): removes in-between points along polygon edges whose
+  bend is below *Degrees* (default 5°), on the selection or the whole cage. Only points on a single edge line
+  are taken, so neighbouring polygons stay joined; polygons never drop below triangles; creases carry over to
+  the merged edge. *Delete points* removes the freed points from the cage.
 - **Extrude > Individual faces (own normals)**: each selected face is extruded on its own, with its own side
   walls, along its own normal (Blender's Extrude Individual Faces), e.g. for knurled / ribbed rings on a
   cylinder. Off: the region moves along the averaged normal as before. The choice is remembered; an axis lock

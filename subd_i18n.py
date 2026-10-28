@@ -116,6 +116,28 @@ TR = {
     "Hole: radius too large for the selected faces (max %.2f mm)":
         "Delik: yarıçap seçili yüzlere sığmıyor (en çok %.2f mm)",
     "Hole: radius %.2f mm, %d segments": "Delik: yarıçap %.2f mm, %d segment",
+    "Reduce points": "Nokta azalt",
+    "Rail bridge": "Kılavuzlu köprü",
+    "Rail bridge: select two polygon regions or edge loops, or one region to extend":
+        "Kılavuzlu köprü: iki çokgen bölgesi / kenar halkası ya da uzatmak için tek bölge seçin",
+    "Rail bridge: click a point and move it, I: add segment, Del: delete point, Enter: done":
+        "Kılavuzlu köprü: noktaya tıklayıp taşıyın, I: segment ekle, Del: nokta sil, Enter: bitti",
+    "Rail bridge: the tube was changed, its guide curve can no longer be edited":
+        "Kılavuzlu köprü: boru değiştirilmiş, kılavuz eğrisi artık düzenlenemiyor",
+    "Rail bridge: this point cannot be deleted": "Kılavuzlu köprü: bu nokta silinemez",
+    "Add segment (I)": "Segment ekle (I)",
+    "Delete point (Del)": "Nokta sil (Del)",
+    "Done (Enter)": "Bitti (Enter)",
+    "Move neighbors": "Komşular da gelsin",
+    "Range": "Etki aralığı",
+    "Softness": "Yumuşaklık",
+    "Scale": "Ölçek",
+    "Flip": "Çevir",
+    "Flip: %d polygons": "Çevir: %d çokgen",
+    "Auto direction": "Otomatik yön",
+    "Reduce points: %d removed": "Nokta azalt: %d nokta çıkarıldı",
+    "Degrees": "Derece",
+    "Delete points": "Noktaları sil",
     "Bridge": "Köprü",
     "Number of Cuts": "Kesim sayısı",
     "Twist": "Burgu",
