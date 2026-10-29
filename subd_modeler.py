@@ -1587,7 +1587,8 @@ def _hermite(P0, P1, m0, m1, t):
 
 
 def rail_nodes(cage, r):
-    """Kilavuz dugumleri (yerel), dugum tegetleri (Hermite) ve A / B cerceveleri."""
+    """Kilavuz dugumleri (yerel), dugum tegetleri (Hermite) ve A / B cerceveleri. Tension (kayitta, 0..1):
+    tegetler (1 - tension) ile kisalir; 0 yumusak egri, buyudukce noktalar arasi daha duz / gergin."""
     fa = _ring_frame(cage.V[r["a"]], r["ta"])
     N = [fa[0]] + [np.asarray(p, float) for p in r["pts"]]
     fb = None
@@ -1600,15 +1601,29 @@ def rail_nodes(cage, r):
         M[i] = (N[i + 1] - N[i - 1]) / 2
     M[0] = fa[3] * np.linalg.norm(N[1] - N[0])             # A'ya dik cikis
     M[-1] = fb[3] * np.linalg.norm(N[-1] - N[-2]) if fb is not None else N[-1] - N[-2]
+    M *= max(1.0 - min(max(float(r.get("tension", 0.0)), 0.0), 1.0), 0.02)   # yon ayni kalir (halka cerceveleri)
     return N, M, fa, fb
+
+
+def rail_seg(N, M, i):
+    """i. parcanin Hermite tegetleri. Ara dugumun tegeti iki komsusundan (Catmull-Rom); aralar esit degilse
+    parcanin kendi boyuna gore olceklenir: yoksa uzun araliktan sonraki kisa parcada egri tasip gobek yapardi."""
+    l = np.linalg.norm(np.diff(N, axis=0), axis=1)
+    m0, m1 = M[i], M[i + 1]
+    if 0 < i:
+        m0 = m0 * (2 * l[i] / max(l[i - 1] + l[i], 1e-12))
+    if i + 1 < len(N) - 1:
+        m1 = m1 * (2 * l[i] / max(l[i] + l[i + 1], 1e-12))
+    return m0, m1
 
 
 def rail_curve(N, M, per=16):
     """Egri cizgisi (yerel noktalar), parca basina per adim."""
     pts = [N[0]]
     for i in range(len(N) - 1):
+        m0, m1 = rail_seg(N, M, i)
         for k in range(1, per + 1):
-            pts.append(_hermite(N[i], N[i + 1], M[i], M[i + 1], k / per))
+            pts.append(_hermite(N[i], N[i + 1], m0, m1, k / per))
     return np.array(pts)
 
 
@@ -1749,7 +1764,7 @@ def rail_insert(cage, r, i):
     if len(cols) != (n if r["closed"] else n - 1):
         return False
     N, M, _, _ = rail_nodes(cage, r)
-    mid = _hermite(N[i], N[i + 1], M[i], M[i + 1], 0.5)
+    mid = _hermite(N[i], N[i + 1], *rail_seg(N, M, i), 0.5)
     base = len(cage.V)
     cage.V = np.vstack([cage.V, (cage.V[X] + cage.V[Y]) / 2])
     mx = {X[j]: base + j for j in range(n)}
@@ -6470,6 +6485,11 @@ class SubDSession:
         self.rail_falloff = bool(on)
         self.refresh()
 
+    def rail_tension_set(self, val):
+        """Panel: egrinin gerginligi (0 yumusak .. 1 noktalar arasi duz), bu kilavuzda saklanir."""
+        v = min(max(float(val), 0.0), 1.0)
+        self._rail_change(lambda r: r.__setitem__("tension", v))
+
     def rail_elastic_set(self, val):
         self.rail_elastic = min(max(float(val), 0.0), 1.0)
         self.refresh()
@@ -6492,7 +6512,8 @@ class SubDSession:
             self.rail = None
             return None
         k = len(r["rings"]) - (1 if r.get("b") is None else 0)
-        fields = [("Segments", float(k), "", 0, self.rail_segments)]
+        fields = [("Segments", float(k), "", 0, self.rail_segments),
+                  ("Tension", float(r.get("tension", 0.0)), "", 2, self.rail_tension_set)]
         h = self.rail["sel"]
         if h is not None and h < len(r["pts"]):
             w = self.l2w(np.array(r["pts"][h], float))

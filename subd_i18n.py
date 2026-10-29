@@ -145,6 +145,7 @@ TR = {
     "Done (Enter)": "Bitti (Enter)",
     "Move neighbors": "Komşular da gelsin",
     "Elasticity": "Esneklik",
+    "Tension": "Gerginlik",
     "Align": "Hizala",
     "Align horizontally: the selected points get the same height on screen":
         "Yatay hizala: seçili noktalar ekranda aynı yüksekliğe gelir",
