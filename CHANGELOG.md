@@ -15,8 +15,14 @@
   *Scale*, *Segments* re-spaces the rings along the curve, I adds a ring in the clicked span, Del removes the
   selected one, Enter finishes. The guide is stored with the cage (undo, saved in the document): double-click
   the curve later to edit it again. If the tube is cut or rebuilt by hand, the guide detaches with a message.
-  *Move neighbors* (with *Range* and *Softness*: weight 1 - x^Softness, 1 linear, 2 parabolic, higher softer)
-  lets the points on both sides follow the moved one; the end rings never move. Bridge and Rail bridge share one drop-down button.
+  *Move neighbors* makes the guide act like a cable: the whole guide follows the moved point, bends smoothly
+  (leaving the end rings perpendicular), keeps its segment lengths, pulls straight and stretches evenly when
+  pulled further than its length. A free tail lies like a cable on a table: pulling a middle point raises a
+  bulge there while the free end barely moves, until the tail is pulled taut and drags along. *Elasticity*
+  (default 0.1) sets how easily the
+  segments stretch: 0 chain, 1 rubber band. The end rings never move. Bridge and Rail bridge share one
+  drop-down button.
+- Rail bridge: the panel's X / Y / Z fields of the selected guide point now work (the method was shadowed by a drawing node).
 - Tool panel: optional button row under the fields.
 - **Flip** (Modify, Shift+F; LightWave Flip): reverses the selected polygons (all when nothing is selected),
   so their normals point the other way. F stays Save.

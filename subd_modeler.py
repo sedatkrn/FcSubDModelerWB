@@ -1636,6 +1636,100 @@ def rail_place(cage, r):
         cage.V[r["cap"]] = N[-1] + r["sc"][-1] * (np.array(r["capq"]) @ np.array(frames[-1]))
 
 
+def rail_cable(N, h, d, fixed_b, elastic, ta, tb=None, iters=30, friction=12.0, bend=6.0):
+    """Kilavuzu kablo gibi cek: N dugumler (0: A, hep sabit; son: B, fixed_b ise sabit), h cekilen dugum, d
+    tasima; ta / tb: A'dan cikis, B'ye giris yonu (uclarda hayali dugum: kablo dik cikar). Serbest dugumler
+    bukulme enerjisi + boy degisimi cezasiyla en aza indirilir (Levenberg-Marquardt): aradaki kivrimlar acilir /
+    gevser, gerilince dumduz olup esit uzar. friction: tek uclu rail'de cekilen noktanin ardindaki serbest kuyruk
+    masadaki kablo gibi eski yerinde kalmaya direnir: ortadan cekilince orada bombe olur, serbest uc az oynar, hat
+    gerilince surukleyerek gelir (ucu itip cekerken ve iki uclu rail'de kuyruk yok). elastic: boy sertligi, 0 zincir (boylar korunur) .. 1 lastik (kolay uzar / kisalir). Yeni dugumler."""
+    N = np.asarray(N, float)
+    n = len(N)
+    L = np.linalg.norm(np.diff(N, axis=0), axis=1)
+    s = np.concatenate([[0.0], np.cumsum(L)])
+    ta = np.asarray(ta, float)
+    t = N[h] + d
+    # baslangic: tasima yay uzunluguna gore sabit uca dogru azalarak; boyundan kisa kalan bolum yana bombe
+    # yapar (dumduz sikisan kablo dengede kalir, bukulmezdi): yon surukleme ya da egrinin eski seklinden
+    w = np.clip(s / max(s[h], 1e-12), 0.0, 1.0)
+    w[h:] = (s[-1] - s[h:]) / max(s[-1] - s[h], 1e-12)    # tek uclu kuyruk da serbest uca dogru azalir
+    w[h] = 1.0
+    X = N + np.outer(w, d)
+    for a, b in ((0, h), (h, n - 1)) if fixed_b else ((0, h),):
+        c = X[b] - X[a]
+        D, Ls = np.linalg.norm(c), s[b] - s[a]
+        if b - a < 2 or D >= Ls or D < 1e-12:
+            continue
+        k = c / D
+        for v in [d] + list(N[a:b + 1] - N[a]) + list(np.eye(3)):
+            v = v - v.dot(k) * k
+            if np.linalg.norm(v) > 1e-6 * max(Ls, 1.0):
+                X[a:b + 1] += np.outer(np.sin(np.pi * (s[a:b + 1] - s[a]) / Ls),
+                                       v / np.linalg.norm(v) * 0.5 * math.sqrt(Ls * Ls - D * D))
+                break
+    X[0], X[h] = N[0], t
+    if fixed_b:
+        X[-1] = N[-1]
+    Y = np.vstack([[N[0] - ta * L[0]], X] + ([[N[-1] + np.asarray(tb, float) * L[-1]]] if fixed_b else []))
+    m = len(Y)
+    free = np.ones(m, bool)
+    free[[0, 1, h + 1]] = False
+    if fixed_b:
+        free[[m - 2, m - 1]] = False
+    cols = np.repeat(free, 3)
+    Y0 = Y.copy()
+    Y0[1:n + 1] = N                                        # surtunme: kuyruk dugumlerinin eski yeri
+    fw = np.zeros(m)
+    if not fixed_b:
+        fw[h + 2:n + 1] = friction
+    fw = np.repeat(fw, 3)[cols]
+    Jf = np.diag(fw)
+    sk = 10.0 ** (1.5 - 3.0 * min(max(float(elastic), 0.0), 1.0))   # boy cezasi: 30 (zincir) .. 0.03 (lastik)
+    nl = len(L)
+    Jb = np.zeros((3 * (m - 2), 3 * m))                    # bukulme satirlari sabit (dogrusal)
+    for j in range(1, m - 1):
+        for q, c in ((j - 1, 1.0), (j, -2.0), (j + 1, 1.0)):
+            Jb[3 * (j - 1):3 * j, 3 * q:3 * q + 3] += bend * c * np.eye(3)
+    Jb = Jb[:, cols]
+    ri = np.repeat(np.arange(nl), 3)
+    ca = 3 * (np.arange(nl) + 1)[:, None] + np.arange(3)   # parca i: Y[i + 1] -> Y[i + 2]
+
+    def resid(Y):
+        v = Y[2:] - Y[1:-1] if not fixed_b else Y[2:-1] - Y[1:-2]   # gercek parcalar (hayali uclar haric)
+        l = np.linalg.norm(v, axis=1)
+        return np.concatenate([sk * (l - L), bend * (Y[:-2] - 2 * Y[1:-1] + Y[2:]).ravel(),
+                               fw * (Y[free] - Y0[free]).ravel()]), v, l
+
+    def jac(v, l):
+        Jl = np.zeros((nl, 3 * m))
+        u = (sk * v / np.maximum(l, 1e-12)[:, None]).ravel()
+        Jl[ri, ca.ravel()] = -u
+        Jl[ri, (ca + 3).ravel()] = u
+        return np.vstack([Jl[:, cols], Jb, Jf])
+    lam = 1e-2
+    r, v, l = resid(Y)
+    cost = r.dot(r)
+    for _ in range(iters):
+        J = jac(v, l)
+        A = J.T @ J
+        g = J.T @ r
+        while True:
+            step = np.linalg.solve(A + lam * np.diag(np.diag(A) + 1e-9), -g)
+            Y2 = Y.copy()
+            Y2[free] += step.reshape(-1, 3)
+            r2, v2, l2 = resid(Y2)
+            c2 = r2.dot(r2)
+            if c2 < cost or lam > 1e8:
+                break
+            lam *= 4
+        if c2 >= cost:
+            break
+        Y, r, v, l, cost, lam = Y2, r2, v2, l2, c2, max(lam / 3, 1e-6)
+        if np.abs(step).max() < 1e-6:
+            break
+    return Y[1:n + 1]
+
+
 def _rail_cols(cage, X, Y):
     """X ve Y halkalari arasindaki dortgenler (her birinde iki X, iki Y noktasi)."""
     xs, ys = set(X), set(Y)
@@ -3363,9 +3457,8 @@ class SubDSession:
         self.extrude_each = False    # extrude: her yuz kendi normalinde (son kullanilan)
         self.rail = None             # Rail bridge duzenleniyor: dict(i=kilavuz, sel=ara nokta, span=parca)
         self.rail_segs = 4           # Rail bridge baslangic ara halka sayisi (son kullanilan)
-        self.rail_falloff = False    # Rail bridge: secili nokta tasinirken komsulari da azalarak gelsin
-        self.rail_range = 2          # ... kac komsuya kadar (her iki yanda)
-        self.rail_soft = 2.0         # ... dusus egrisi: agirlik 1 - x^p (1 dogrusal, 2 parabolik, buyuk = daha yumusak)
+        self.rail_falloff = False    # Rail bridge: secili nokta tasinirken kilavuz kablo gibi gelsin (rail_cable)
+        self.rail_elastic = 0.1      # ... esneklik: 0 zincir (boylar korunur), 1 lastik; 0.1 kablo
         self._last_click = None      # cift tiklama (kilavuzu yeniden duzenleme)
         self.box_vals = dict(_last_box)  # Box paneli: son kullanilan degerler (modelleyici kapansa da)
         self.cyl_vals = dict(_last_cyl)  # Cylinder paneli (iki topoloji ortak)
@@ -6201,7 +6294,7 @@ class SubDSession:
         if self.rail is not None:
             self.rail["sel"] = self.rail["span"] = None
 
-    def rail_coord(self, axis, val):
+    def rail_point_set(self, axis, val):
         """Panel: secili ara noktanin dunya X / Y / Z konumu (mm)."""
         h = self.rail["sel"] if self.rail is not None else None
         if h is None:
@@ -6211,33 +6304,31 @@ class SubDSession:
             p = np.array(r["pts"][h], float)
             w = self.l2w(p)
             w[axis] = val
-            P = np.array(r["pts"], float) + np.outer(self._rail_weights(r), self.w2l(w) - p)
-            r["pts"] = P.tolist()
+            r["pts"] = self._rail_move(r, r["pts"], self.w2l(w) - p).tolist()
         self._rail_change(set_)
 
-    def _rail_weights(self, r):
-        """Secili nokta tasinirken her ara noktanin ne kadar gelecegi: secili 1; Move neighbors aciksa Range kadar
-        komsu 1 - x^Softness ile azalarak (x: uzaklik / (Range + 1)), digerleri 0. Uc halkalar (A, B) hic oynamaz."""
+    def _rail_move(self, r, pts, d):
+        """Secili ara nokta d (yerel) kadar tasininca butun ara noktalar: Move neighbors kapaliysa yalniz o nokta,
+        aciksa kilavuz kablo gibi davranir (rail_cable, Elasticity). Uc halkalar (A, B) hic oynamaz."""
+        P = np.array(pts, float)
         h = self.rail["sel"]
-        n = len(r["pts"])
-        w = np.zeros(n)
-        if h is None or h >= n:
-            return w
-        k = max(int(self.rail_range), 0) if self.rail_falloff else 0
-        for j in range(max(h - k, 0), min(h + k, n - 1) + 1):
-            w[j] = 1.0 - (abs(j - h) / (k + 1.0)) ** max(self.rail_soft, 0.1)
-        return w
+        if h is None or h >= len(P):
+            return P
+        if not self.rail_falloff:
+            P[h] += d
+            return P
+        N, _, fa, fb = rail_nodes(self.cage, r)
+        N = N.copy()
+        N[1:1 + len(P)] = P                                # surukleme baslangicindaki dugumler
+        return rail_cable(N, h + 1, d, fb is not None, self.rail_elastic, fa[3],
+                          fb[3] if fb is not None else None)[1:1 + len(P)]
 
     def rail_falloff_option(self, on):
         self.rail_falloff = bool(on)
         self.refresh()
 
-    def rail_soft_set(self, val):
-        self.rail_soft = min(max(float(val), 0.1), 10.0)
-        self.refresh()
-
-    def rail_range_set(self, val):
-        self.rail_range = min(max(int(round(val)), 1), 32)
+    def rail_elastic_set(self, val):
+        self.rail_elastic = min(max(float(val), 0.0), 1.0)
         self.refresh()
 
     def rail_scale(self, val):
@@ -6262,11 +6353,10 @@ class SubDSession:
         h = self.rail["sel"]
         if h is not None and h < len(r["pts"]):
             w = self.l2w(np.array(r["pts"][h], float))
-            fields += [(a, float(w[j]), " mm", 3, (lambda val, j=j: self.rail_coord(j, val))) for j, a in enumerate("XYZ")]
+            fields += [(a, float(w[j]), " mm", 3, (lambda val, j=j: self.rail_point_set(j, val))) for j, a in enumerate("XYZ")]
             fields.append(("Scale", float(r["sc"][h]), " x", 3, self.rail_scale))
         if self.rail_falloff:
-            fields.append(("Range", float(self.rail_range), "", 0, self.rail_range_set))
-            fields.append(("Softness", float(self.rail_soft), "", 2, self.rail_soft_set))
+            fields.append(("Elasticity", float(self.rail_elastic), "", 2, self.rail_elastic_set))
         checks = [("Move neighbors", self.rail_falloff, self.rail_falloff_option)]
         buttons = [("Add segment (I)", self.rail_add), ("Delete point (Del)", self.rail_delete),
                    ("Done (Enter)", self.rail_finish)]
@@ -6916,8 +7006,7 @@ class SubDSession:
         if g.get("rail") is not None:
             r = self._rail()
             if r is not None:
-                P = g["rail"] + np.outer(self._rail_weights(r), self.w2l_dir(np.asarray(d, float)))
-                r["pts"] = P.tolist()
+                r["pts"] = self._rail_move(r, g["rail"], self.w2l_dir(np.asarray(d, float))).tolist()
                 rail_place(self.cage, r)
                 self.refresh(fast=True)
             return
