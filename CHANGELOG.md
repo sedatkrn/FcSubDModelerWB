@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Rail Pipe / Rail Groove now live in the **Pimp My PartDesign** add-in (github.com/sedatkrn/partdesign_addins).
+  When it is installed, this workbench no longer adds its own Rail Pipe buttons to PartDesign's toolbar (no
+  duplicates); old documents keep opening, and the add-in links their Rail Pipe objects to itself.
 ### New tools
 - Rail Pipe: a profile face that belongs to no solid (SubShapeBinder of a face, a lone face) no longer sends
   the pipe out of its back side: like a sketch, it leaves towards the other profile. A binder or sketch that
