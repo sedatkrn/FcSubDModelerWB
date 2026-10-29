@@ -89,7 +89,8 @@ Catmull-Clark limit surface is on the roadmap.
   second profile, or to a free end; in an empty Body the pipe is the first solid. The
   curve leaves (and enters) the faces perpendicular, passes through *GuidePoints* and follows the same rules as
   the modeler's guide (*Tension*, no bulge on uneven spacing); *EndScale* sizes a free end, *Reversed* flips
-  the start direction. Double-click the feature to edit the guide on screen: click a yellow point and move it with
+  the start direction. Double-click the feature to edit the guide on screen (shown like Pad / Pocket editing: the previous solid
+  plus a green / red translucent preview): click a yellow point and move it with
   the modeler's Move gizmo (arrows: along X / Y / Z, squares: in a plane, cube: in the screen plane) or drag
   the point itself (the white end points belong to the profiles); click the curve to pick a span and *Add
   point* puts a point exactly there; delete points, *Move neighbors* makes the guide follow like a cable

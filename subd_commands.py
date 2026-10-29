@@ -100,8 +100,10 @@ class _RailPipe:
             if subd_railpipe._is_sketch(so.Object):       # sketch: kenarina tiklanmis ya da agacta secili
                 if all(p[0] is not so.Object for p in prof):
                     prof.append((so.Object, None))
-            else:
+            elif so.SubElementNames:
                 prof += [(so.Object, sub) for sub in so.SubElementNames if sub.startswith("Face")]
+            elif hasattr(so.Object, "Shape") and len(so.Object.Shape.Faces) == 1:
+                prof.append((so.Object, "Face1"))           # agacta secilen tek yuzlu nesne (or. Binder)
         if not 1 <= len(prof) <= 2:
             App.Console.PrintWarning(T("Rail Pipe: select one or two flat faces or closed sketches of a "
                                        "PartDesign Body.\n"))

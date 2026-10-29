@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### New tools
+- Rail Pipe: a profile face that belongs to no solid (SubShapeBinder of a face, a lone face) no longer sends
+  the pipe out of its back side: like a sketch, it leaves towards the other profile. A binder or sketch that
+  lies on the Body's surface is treated like the Body's own face (outward, end carried into the body, so the
+  fuse no longer splits or comes out empty). A single-face object picked in the tree is accepted.
 - **Rail Pipe / Rail Groove** (toolbar, also in PartDesign's Modeling Features toolbar): PartDesign features in
   a Body. From one flat face or closed sketch to a second one or a free end (an empty Body works too), the start
   profile is swept (OCCT pipe shell) along a guide curve built like the modeler's
@@ -10,15 +14,18 @@
   out of the Body. Properties: *GuidePoints*, *Tension*, *EndScale* (free end), *Reversed*. Double-click edits the guide on
   screen: the selected point gets the modeler's Move gizmo (axis arrows, plane squares, free cube) or is
   dragged directly (live curve, the pipe recomputes as you drag; a missed button release no longer leaves the
-  point stuck to the mouse), click the curve to pick a span (*Add point* inserts exactly where you clicked), delete points, *Move
-  neighbors*
+  point stuck to the mouse), while editing, the Body shows as with Pad / Pocket: the previous solid as usual and the added (green) or cut
+  (red) shape as FreeCAD's own translucent preview; click the curve to pick a span (*Add point* inserts exactly
+  where you clicked), delete points, *Move neighbors*
   (cable, with *Elasticity*), X / Y / Z of the selected point; OK is one undo step, Cancel reverts. The ends are
   carried a little past the faces so no coincident faces are left for the boolean, and the sweep falls back
   through several frame / continuity modes until it gives a valid solid. The cross-section is oriented by an
   auxiliary spine built from our own rotation-minimizing frame (OCCT's CorrectedFrenet let the seam and edge
-  lines wobble a few degrees around the tube); while dragging on screen a fast preview sweep is used and the
-  smooth one on release. The boolean result is checked too (a sweep that looks clean can still break the
-  fuse / cut), falling back to the next sweep mode. Works without the GUI (freecadcmd).
+  lines wobble a few degrees around the tube); while dragging on screen only the pipe is swept (fast mode, no
+  boolean / refine / orientation test, coarse preview mesh: ~0.05 s per step) and the smooth one is computed on
+  release. The boolean result is checked by volume (fuse: body + pipe - common, cut: body - common;
+  a sweep that looks clean could lose the pipe in the boolean), falling back to the next sweep mode; the slow
+  BOP check (up to 25 s on sharp bends) is not used. Works without the GUI (freecadcmd).
 - **From face** is now a drop-down with three commands. *Face*: as before. *Edge*: every chain of selected
   edges becomes one polygon, flat or not; ends that meet within 0.01 mm (also across objects) are joined, an
   open chain is closed with a straight edge (split by *Max Length*), separate chains stay separate polygons.
