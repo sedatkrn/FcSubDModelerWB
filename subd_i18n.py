@@ -145,6 +145,26 @@ TR = {
     "Done (Enter)": "Bitti (Enter)",
     "Move neighbors": "Komşular da gelsin",
     "Elasticity": "Esneklik",
+    "Align": "Hizala",
+    "Align horizontally: the selected points get the same height on screen":
+        "Yatay hizala: seçili noktalar ekranda aynı yüksekliğe gelir",
+    "Align vertically: the selected points line up one above the other on screen":
+        "Dikey hizala: seçili noktalar ekranda alt alta dizilir",
+    "Align: select two or more points": "Hizala: iki ya da daha fazla nokta seçin",
+    "Align: select two or more separate polygons or edges":
+        "Hizala: birbirinden ayrı iki ya da daha fazla poligon veya kenar seçin",
+    "Align horizontally: selected points (polygons, edges: their centers) get the same height on screen":
+        "Yatay hizala: seçili noktalar (poligon ve kenarlarda merkezleri) ekranda aynı yüksekliğe gelir",
+    "Align vertically: selected points (polygons, edges: their centers) line up one above the other on screen":
+        "Dikey hizala: seçili noktalar (poligon ve kenarlarda merkezleri) ekranda alt alta dizilir",
+    "Align: Shift-click two or more guide points (the end points too)":
+        "Hizala: Shift ile iki ya da daha fazla kılavuz noktası seçin (uç noktalar da olur)",
+    "Align horizontally (Shift-click guide points, the end points too)":
+        "Yatay hizala (kılavuz noktalarını Shift ile seçin, uç noktalar da olur)",
+    "Align vertically (Shift-click guide points, the end points too)":
+        "Dikey hizala (kılavuz noktalarını Shift ile seçin, uç noktalar da olur)",
+    "Align horizontally: %s":"Yatay hizalandı: %s",
+    "Align vertically: %s": "Dikey hizalandı: %s",
     "Scale": "Ölçek",
     "Flip": "Çevir",
     "Flip: %d polygons": "Çevir: %d çokgen",

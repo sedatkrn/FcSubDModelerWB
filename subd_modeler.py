@@ -4045,6 +4045,7 @@ class SubDSession:
         self.status = QtWidgets.QLabel()
         # Araclar ve modlar gorunumdeki menulerde; bu Options paneli olculer, ayarlar ve kisayol listesi
         lay.addWidget(self._measure_box())
+        lay.addWidget(self._align_group())
         lay.addWidget(self._bevel_group())
         lay.addWidget(self._box_group())
         lay.addWidget(self._surface_group())
@@ -4112,6 +4113,125 @@ class SubDSession:
         self.dims_label = QtWidgets.QLabel()
         grid.addWidget(self.dims_label, 5, 0, 1, 4)
         return g
+
+    @staticmethod
+    def _align_icon(vertical):
+        """Hizalama dugmesinin simgesi: bir cizgi uzerine dizilmis uc nokta (yatay ya da dikey); onbellekte."""
+        if vertical in _align_icons:
+            return _align_icons[vertical]
+        pm = QtGui.QPixmap(20, 20)
+        pm.fill(QtCore.Qt.transparent)
+        p = QtGui.QPainter(pm)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        p.setPen(QtGui.QPen(QtGui.QColor("#9a9a9a"), 1.5, QtCore.Qt.DashLine))
+        p.drawLine(QtCore.QPointF(10, 2), QtCore.QPointF(10, 18)) if vertical else \
+            p.drawLine(QtCore.QPointF(2, 10), QtCore.QPointF(18, 10))
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QColor("#f5c518"))
+        for k in (4.5, 10, 15.5):
+            p.drawEllipse(QtCore.QPointF(10, k) if vertical else QtCore.QPointF(k, 10), 2.6, 2.6)
+        p.end()
+        _align_icons[vertical] = QtGui.QIcon(pm)
+        return _align_icons[vertical]
+
+    def _align_group(self):
+        """Secili noktalari yatay / dikey hizala: kucuk kare simgeli dugmeler (align_points)."""
+        g = QtWidgets.QGroupBox(T("Align"))
+        row = QtWidgets.QHBoxLayout(g)
+        for vertical, tip in ((False, "Align horizontally: the selected points get the same height on screen"),
+                              (True, "Align vertically: the selected points line up one above the other on "
+                                     "screen")):
+            b = QtWidgets.QToolButton()
+            b.setIcon(self._align_icon(vertical))
+            b.setIconSize(QtCore.QSize(20, 20))
+            b.setFixedSize(28, 28)
+            b.setToolTip(T(tip))
+            b.clicked.connect(lambda checked=False, v=vertical: self.align_points(v))
+            row.addWidget(b)
+        row.addStretch()
+        return g
+
+    def align_points(self, vertical):
+        """Secili (en az iki) noktayi ekranda yatay ya da dikey hizala: ekranin dikey (yatay hizada) ya da yatay
+        (dikey hizada) yonune en yakin dunya ekseninde hepsi ortalamaya gelir (o eksende olcek 0)."""
+        if self.drag or self.grab:
+            return
+        cam = self.view.getCameraNode().orientation.getValue()
+        up = np.array(cam.multVec(coin.SbVec3f(0, 1, 0)).getValue())
+        right = np.array(cam.multVec(coin.SbVec3f(1, 0, 0)).getValue())
+        axis = int(np.argmax(np.abs(right if vertical else up)))
+        msg = (T("Align vertically: %s") if vertical else T("Align horizontally: %s")) % "XYZ"[axis]
+        if self.rail is not None:                          # kilavuz duzenleniyor: secili kilavuz dugumleri
+            self._rail_align(axis, msg)
+            return
+        if self.mode in ("face", "edge"):
+            self._align_centers(axis, msg)
+            return
+        verts = self.selected_verts()
+        if len(verts) < 2:
+            self.info = T("Align: select two or more points")
+            self.refresh()
+            return
+        P = self.l2w(self.cage.V[verts])
+        k = np.ones(3)
+        k[axis] = 0.0
+        self.push()
+        self.last_op = None
+        self.apply_scale(self.move_state(verts), self.w2l(P.mean(0)), k)
+        self.info = msg
+        self.refresh()
+
+    def _align_centers(self, axis, msg):
+        """Poligon / kenar modunda: secili poligonlarin (kenarlarin) merkezlerini hizala. Birbirine degen secili
+        elemanlar tek parca sayilir (ortak noktalar yirtilmasin); her parca bozulmadan tasinir, merkezi (noktalarinin
+        ortalamasi) parcalarin ortalamasina gelir."""
+        items = ([set(self.cage.F[fi]) for fi in self.sel] if self.mode == "face" else [set(e) for e in self.sel_e])
+        groups = []
+        for it in items:                                   # ortak noktasi olanlari birlestir
+            hit = [g for g in groups if g & it]
+            for g in hit:
+                groups.remove(g)
+                it |= g
+            groups.append(it)
+        if len(groups) < 2:
+            self.info = T("Align: select two or more separate polygons or edges")
+            self.refresh()
+            return
+        centers = [self.l2w(self.cage.V[sorted(g)]).mean(0)[axis] for g in groups]
+        val = float(np.mean(centers))
+        self.push()
+        self.last_op = None
+        for g, c in zip(groups, centers):
+            d = np.zeros(3)
+            d[axis] = val - c
+            self.apply_move(self.move_state(sorted(g)), self.w2l_dir(d))
+        self.info = msg
+        self.refresh()
+
+    def _rail_align(self, axis, msg):
+        """Secili kilavuz dugumlerini (Shift ile, A / B dahil) dunya ekseninde ayni degere getir: secimde A ya da
+        B varsa (sabit uclar) onun degeri, yoksa ortalama. Halkalar yeniden yerlesir."""
+        r = self._rail()
+        if r is None:
+            return
+        N, _, _, _ = rail_nodes(self.cage, r)
+        pick = self._rail_pick(r, N)
+        movable = [j for j in pick if self._rail_movable(r, N, j)]
+        if len(pick) < 2 or not movable:
+            self.info = T("Align: Shift-click two or more guide points (the end points too)")
+            self.refresh()
+            return
+        W = self.l2w(N[pick])
+        fixed = [k for k, j in enumerate(pick) if not self._rail_movable(r, N, j)]
+        val = W[fixed, axis].mean() if fixed else W[:, axis].mean()
+
+        def set_(r):
+            for j in movable:
+                w = self.l2w(np.array(r["pts"][j - 1], float))
+                w[axis] = val
+                r["pts"][j - 1] = [float(x) for x in self.w2l(w)]
+        if self._rail_change(set_):
+            self.info = msg
 
     def _bevel_group(self):
         g = QtWidgets.QGroupBox(T("Bevel / Smooth Shift (B, I = inset only)"))
@@ -4907,8 +5027,10 @@ class SubDSession:
             r = self._rail()
             if r is None:                                  # kilavuzun olusturulmasi geri alindi
                 self.rail = None
-            elif self.rail["sel"] is not None and self.rail["sel"] >= len(r["pts"]):
-                self.rail["sel"] = None
+            else:
+                self.rail["pick"] = []
+                if self.rail["sel"] is not None and self.rail["sel"] >= len(r["pts"]):
+                    self.rail["sel"] = None
             self._undo_splits()
             self.refresh()
 
@@ -6142,9 +6264,18 @@ class SubDSession:
             return None
         return self.cage.rails[self.rail["i"]]
 
-    def _rail_handles(self, r, N):
-        """Tasinabilir dugumler (yerel): ara noktalar; tek uclu kullanimda serbest uc da."""
-        return N[1:] if r.get("b") is None else N[1:-1]
+    @staticmethod
+    def _rail_movable(r, N, j):
+        """N'deki j dugumu tasinabilir mi: ara noktalar ve tek uclu kullanimda serbest uc; A ve B sabit."""
+        return 0 < j < (len(N) if r.get("b") is None else len(N) - 1)
+
+    def _rail_pick(self, r, N):
+        """Secili kilavuz dugumleri (N sirasi): Shift ile secilenler ve tasinan secili nokta."""
+        pick = [j for j in self.rail.get("pick", []) if j < len(N)]
+        h = self.rail["sel"]
+        if h is not None and h + 1 < len(N) and h + 1 not in pick:
+            pick.append(h + 1)
+        return pick
 
     def _rail_draw(self):
         dim, act = [], None
@@ -6167,10 +6298,10 @@ class SubDSession:
         H, S, span, C = np.zeros((0, 3)), np.zeros((0, 3)), [], np.zeros((1, 3))
         if act is not None:
             r, N, C = act
-            H = self._rail_handles(r, N)
+            H = N                                          # butun dugumler; A / B (sabit) yalniz hizalamada secilir
             h, sp = self.rail["sel"], self.rail["span"]
-            if h is not None and h < len(H):
-                S = H[h:h + 1]
+            pick = self._rail_pick(r, N)
+            S = N[pick] if pick else S
             if sp is not None and sp < len(N) - 1:
                 span = list(range(sp * 16, sp * 16 + 17)) + [-1]
         _set_coords(self.rail_coord, C)
@@ -6180,8 +6311,9 @@ class SubDSession:
         self.rail_hset.numPoints = len(H)
         _set_coords(self.rail_scoord, S if len(S) else np.zeros((1, 3)))
         self.rail_sset.numPoints = len(S)
-        if self.rail is not None and not self.grab:        # gizmo secili kilavuz noktasinda
-            self.gizmo.place(App.Vector(*self.l2w(S[0])) if len(S) else None)
+        if self.rail is not None and not self.grab:        # gizmo secili (tasinabilir) kilavuz noktasinda
+            h = self.rail["sel"] if act is not None else None
+            self.gizmo.place(App.Vector(*self.l2w(N[h + 1])) if h is not None and h + 1 < len(N) else None)
 
     def _rail_curve_dist(self, C, pos):
         """Ekranda pos'un egriye (yerel noktalar) en yakin uzakligi (piksel) ve en yakin noktanin sirasi."""
@@ -6231,15 +6363,25 @@ class SubDSession:
             self.refresh()
             return
         N, M, _, _ = rail_nodes(self.cage, r)
-        H = self._rail_handles(r, N)
-        self.rail["sel"] = self.rail["span"] = None
-        if len(H):
-            d = np.linalg.norm(self.project(H) - np.array(pos[:2], float), axis=1)
-            h = int(np.argmin(d))
-            if d[h] < 12.0:
-                self.rail["sel"] = h
-                self.refresh()
-                return
+        shift = bool(QtWidgets.QApplication.keyboardModifiers() & QtCore.Qt.ShiftModifier)
+        pick = self._rail_pick(r, N) if shift else []
+        self.rail["span"] = None
+        d = np.linalg.norm(self.project(N) - np.array(pos[:2], float), axis=1)
+        j = int(np.argmin(d))
+        if d[j] < 12.0:                                    # dugum: Shift ile secime ekle / cikar (hizalama icin)
+            if shift and j in pick:
+                pick.remove(j)
+            else:
+                pick.append(j)
+            movable = [k for k in pick if self._rail_movable(r, N, k)]
+            self.rail["sel"] = movable[-1] - 1 if movable else None
+            self.rail["pick"] = pick
+            self.refresh()
+            return
+        if shift:
+            self.refresh()
+            return
+        self.rail["sel"], self.rail["pick"] = None, []
         d, k = self._rail_curve_dist(rail_curve(N, M), pos)
         if d < 8.0:
             self.rail["span"] = min(k // 16, len(N) - 2)   # rail_curve: parca basina 16 adim
@@ -6274,7 +6416,7 @@ class SubDSession:
             sp = int(np.argmax(np.linalg.norm(np.diff(N, axis=0), axis=1)))
         if self._rail_change(lambda r: rail_insert(self.cage, r, sp),
                              T("Rail bridge: the tube was changed, its guide curve can no longer be edited")):
-            self.rail["sel"], self.rail["span"] = sp, None  # yeni nokta secili: hemen tasinabilir
+            self.rail["sel"], self.rail["span"], self.rail["pick"] = sp, None, []   # yeni nokta secili: hemen tasinir
 
     def rail_delete(self):
         """Secili ara noktayi ve halkasini sil (Del); tek uclu kullanimda serbest uc silinmez."""
@@ -6284,7 +6426,7 @@ class SubDSession:
         h = self.rail["sel"]
         if self._rail_change(lambda r: rail_remove(self.cage, r, h + 1),
                              T("Rail bridge: this point cannot be deleted")):
-            self.rail["sel"] = None
+            self.rail["sel"], self.rail["pick"] = None, []
 
     def rail_segments(self, val):
         """Panel: ara halka sayisi; noktalar egri boyunca esit araliga dizilir (egrinin sekli korunur)."""
@@ -6293,6 +6435,7 @@ class SubDSession:
         self._rail_change(lambda r: rail_resample(self.cage, r, k))
         if self.rail is not None:
             self.rail["sel"] = self.rail["span"] = None
+            self.rail["pick"] = []
 
     def rail_point_set(self, axis, val):
         """Panel: secili ara noktanin dunya X / Y / Z konumu (mm)."""
@@ -6359,7 +6502,11 @@ class SubDSession:
             fields.append(("Elasticity", float(self.rail_elastic), "", 2, self.rail_elastic_set))
         checks = [("Move neighbors", self.rail_falloff, self.rail_falloff_option)]
         buttons = [("Add segment (I)", self.rail_add), ("Delete point (Del)", self.rail_delete),
-                   ("Done (Enter)", self.rail_finish)]
+                   ("Done (Enter)", self.rail_finish),
+                   ("Align horizontally (Shift-click guide points, the end points too)",
+                    lambda: self.align_points(False), self._align_icon(False)),
+                   ("Align vertically (Shift-click guide points, the end points too)",
+                    lambda: self.align_points(True), self._align_icon(True))]
         return T("Rail bridge"), fields, self.drag is None, checks, None, buttons
 
     # --- From face (alt menu: Face / Edge / Point): FreeCAD'de secili Part / PartDesign elemanlarindan kafes ---
@@ -7717,7 +7864,7 @@ class _ToolPanel(QtWidgets.QFrame):
         changed = key != self.key
         self.btn_fns = [b[1] for b in buttons]
         if tuple(b[0] for b in buttons) != self.btn_key:
-            self._build_buttons([b[0] for b in buttons])
+            self._build_buttons([b[0] for b in buttons], [b[2] if len(b) > 2 else None for b in buttons])
         self.check_fns = [c[2] for c in checks]
         if (label, tuple(c[0] for c in checks)) != self.check_key:
             self._build_checks(label, [c[0] for c in checks], [len(c) > 3 and c[3] for c in checks])
@@ -7776,19 +7923,47 @@ class _ToolPanel(QtWidgets.QFrame):
             self.setFixedHeight(self.layout().sizeHint().height())
         return changed
 
-    def _build_buttons(self, names):
+    def _build_buttons(self, names, icons=None):
+        """Yazili dugmeler iki sutunda; simgeli olanlar (icons[i] QIcon) en altta yan yana kucuk kareler, ad
+        ipucu olur."""
         while self.btn_lay.count():
-            w = self.btn_lay.takeAt(0).widget()
+            it = self.btn_lay.takeAt(0)
+            w = it.widget()
+            if w is None and it.layout() is not None:
+                while it.layout().count():
+                    w2 = it.layout().takeAt(0).widget()
+                    if w2 is not None:
+                        w2.hide()
+                        w2.setParent(None)
+                        w2.deleteLater()
             if w is not None:
                 w.hide()
                 w.setParent(None)
                 w.deleteLater()
-        for i, n in enumerate(names):
-            b = QtWidgets.QPushButton(T(n))
+        icons = icons or [None] * len(names)
+        k, row = 0, None
+        for i, (n, ic) in enumerate(zip(names, icons)):
+            if ic is not None:
+                b = QtWidgets.QToolButton()
+                b.setIcon(ic)
+                b.setIconSize(QtCore.QSize(20, 20))
+                b.setFixedSize(28, 28)
+                b.setToolTip(T(n))
+                if row is None:
+                    row = QtWidgets.QHBoxLayout()
+                    row.setSpacing(3)
+            else:
+                b = QtWidgets.QPushButton(T(n))
+                self.btn_lay.addWidget(b, k // 2, k % 2)
+                k += 1
             b.setFocusPolicy(QtCore.Qt.NoFocus)            # kisayollar gorunumde kalsin
             b.clicked.connect(lambda checked=False, i=i: self._button(i))
-            self.btn_lay.addWidget(b, i // 2, i % 2)
+            if ic is not None:
+                row.addWidget(b)
             b.show()
+        if row is not None:
+            row.addStretch()
+            self.btn_lay.addLayout(row, (k + 1) // 2, 0, 1, 2)
         self.btn_key = tuple(names)
         self.btn_bar.setVisible(bool(names))
 
@@ -7843,6 +8018,7 @@ class _ToolPanel(QtWidgets.QFrame):
         _later(lambda: fn(val))
 
 
+_align_icons = {}         # Align dugmelerinin simgeleri (yatay / dikey), bir kez cizilir
 _last_tab = ["create"]   # son secilen sekme; modelleyici yeniden acilinca (or. dil degisince) ayni sekme
 
 TAB_CSS = """
@@ -8020,6 +8196,18 @@ class _Overlay(object):
         tog("Subpatch", "Tab", s.toggle_smooth, lambda: s.smooth)
         tog("Ghost", "X", s.toggle_ghost, lambda: s.ghost)
         tog("Snap", "", s.toggle_snap, lambda: s.snap)
+        for vertical, tip in ((False, "Align horizontally: selected points (polygons, edges: their centers) get the "
+                                      "same height on screen"),
+                              (True, "Align vertically: selected points (polygons, edges: their centers) line up "
+                                     "one above the other on screen")):
+            b = QtWidgets.QPushButton()                    # kucuk kare simgeli dugme (Options'taki ile ayni is)
+            b.setFocusPolicy(QtCore.Qt.NoFocus)
+            b.setIcon(s._align_icon(vertical))
+            b.setIconSize(QtCore.QSize(16, 16))
+            b.setFixedSize(22, 22)
+            b.setToolTip(T(tip))
+            b.clicked.connect(lambda checked=False, v=vertical: (s.align_points(v), self.sync()))
+            row.addWidget(b)
         cc = QtWidgets.QLabel("Catmull-Clark")
         cc.setStyleSheet("padding-left: 10px;")
         row.addWidget(cc)

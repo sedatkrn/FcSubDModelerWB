@@ -22,6 +22,13 @@
   (default 0.1) sets how easily the
   segments stretch: 0 chain, 1 rubber band. The end rings never move. Bridge and Rail bridge share one
   drop-down button.
+- **Align** (two small icon buttons next to Snap in the bottom bar, also in the Options panel and the Rail
+  bridge panel): lines up two or more selected points horizontally or vertically on screen, along the world
+  axis nearest to the screen's up / right direction, at their mean. With polygons or edges selected their
+  centers are aligned instead: touching selected elements move together as one piece, unchanged.
+  While a Rail bridge guide is edited it aligns the guide points instead: the start (A) and end (B) points now
+  show as handles too, Shift-click adds points to the selection, and if A or B is selected the other points
+  line up with it (A and B themselves never move).
 - Rail bridge: the panel's X / Y / Z fields of the selected guide point now work (the method was shadowed by a drawing node).
 - Tool panel: optional button row under the fields.
 - **Flip** (Modify, Shift+F; LightWave Flip): reverses the selected polygons (all when nothing is selected),
