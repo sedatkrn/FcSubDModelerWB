@@ -2669,6 +2669,107 @@ def cage_from_faces(faces, arc_segs=4, max_len=0.0, exact=True):
     return cage
 
 
+# ---------- Kenarlardan / noktalardan cokgen (From face > Edge / Point) ----------
+# Edge: uclari (CHAIN_TOL icinde) cakisan B-rep kenarlari tek zincir olur (farkli objelerden iki yarim daire de);
+# her zincir tek cokgen: kapali zincir oldugu gibi, acik zincirin uclari duz kenarla kapanir (Max Length'e gore
+# bolunur). Ayri yerlerdeki zincirler ayri cokgenler. Duzlemsel olmasi gerekmez. Point: secim sirasiyla tek cokgen.
+CHAIN_TOL = 0.01         # mm: bu kadar yakin kenar uclari ayni nokta sayilir
+
+
+def _edge_chains(edges, tol=CHAIN_TOL):
+    """Kenarlari uclarindan zincirle: [([(kenar, ters mi)], kapali mi)] ya da hata metni (dallanan secim)."""
+    nodes = []
+
+    def node(p):
+        for k, q in enumerate(nodes):
+            if np.linalg.norm(p - q) <= tol:
+                return k
+        nodes.append(p)
+        return len(nodes) - 1
+    ends = [(node(np.array(tuple(e.valueAt(e.FirstParameter)))), node(np.array(tuple(e.valueAt(e.LastParameter)))))
+            for e in edges]
+    adj = {}
+    for i, (a, b) in enumerate(ends):
+        if a != b:
+            adj.setdefault(a, []).append(i)
+            adj.setdefault(b, []).append(i)
+    if any(len(l) > 2 for l in adj.values()):
+        return T("From face: the selected edges branch (more than two meet at a point)")
+    chains, used = [], set()
+    for i, (a, b) in enumerate(ends):
+        if a == b:                                         # kendi basina kapali kenar (cember)
+            chains.append(([(edges[i], False)], True))
+            used.add(i)
+    starts = [n for n, l in adj.items() if len(l) == 1] + list(adj)   # once acik zincirler, sonra halkalar
+    for n0 in starts:
+        for i in adj[n0]:
+            if i in used:
+                continue
+            chain, n = [], n0
+            while i is not None:
+                used.add(i)
+                a, b = ends[i]
+                rev = a != n
+                chain.append((edges[i], rev))
+                n = a if rev else b
+                i = next((k for k in adj[n] if k not in used), None)
+            chains.append((chain, n == n0))
+    return chains
+
+
+def _on_line(P):
+    """Uc noktadan az ya da hepsi bir dogru uzerinde (capraz giden cokgenin alani 0 olabilir, o sayilmaz)."""
+    if len(P) < 3:
+        return True
+    s = np.linalg.svd(P - P.mean(0), compute_uv=False)
+    return s[1] <= 1e-9 * max(s[0], 1.0)
+
+
+def cage_from_edges(edges, arc_segs=4, max_len=0.0):
+    """Secili kenarlardan (dunya) zincir basina bir cokgen: Cage ya da hata metni. max_len <= 0: auto_max_len."""
+    chains = _edge_chains(edges)
+    if isinstance(chains, str):
+        return chains
+    if max_len <= 0:
+        max_len = auto_max_len(edges, arc_segs)
+    V, F = [], []
+    for chain, closed in chains:
+        P = []
+        for e, rev in chain:
+            q = _edge_points(e, _edge_count(e, arc_segs, max_len))
+            q = list(q[::-1] if rev else q)
+            P += q[1:] if P else q
+        if closed:
+            P = P[:-1]
+        else:                                              # uclari duz kenarla kapat
+            a, b = P[-1], P[0]
+            n = int(math.ceil(np.linalg.norm(b - a) / max_len - 1e-9)) if max_len > 0 else 1
+            P += [a + (b - a) * k / n for k in range(1, n)]
+        P = np.array(P)
+        if _on_line(P):
+            continue                                       # tek duz kenar: alani yok
+        F.append(list(range(len(V), len(V) + len(P))))
+        V += list(P)
+    if not F:
+        return T("From face: no polygon can be made from the selected edges")
+    return Cage(np.array(V), F)
+
+
+def cage_from_points(points):
+    """Noktalardan (dunya, secim sirasinda) tek cokgen: Cage ya da hata metni. Ust uste gelen ardisik noktalar
+    tek sayilir."""
+    P = []
+    for p in points:
+        if not P or np.linalg.norm(p - P[-1]) > CHAIN_TOL:
+            P.append(np.asarray(p, float))
+    if len(P) > 1 and np.linalg.norm(P[0] - P[-1]) <= CHAIN_TOL:
+        P.pop()
+    P = np.array(P)
+    if _on_line(P):
+        return T("From face: select 3 or more points that are not on one line")
+    return Cage(P, [list(range(len(P)))])
+
+
 def cage_key(obj):
     """Kafesin degisip degismedigini anlamak icin ozet (Placement haric)."""
     return (hash(tuple((p.x, p.y, p.z) for p in obj.CagePoints)), tuple(obj.CageFaces),
@@ -4371,8 +4472,8 @@ class SubDSession:
             err = self._shell(v, a["faces"])
             if err:
                 self.info = err
-        elif k == "fromface":
-            c = self._face_cage(a["faces"], v)
+        elif k in ("fromface", "fromedge", "frompoint"):
+            c = self._from_cage(k, a, v)
             if isinstance(c, str):
                 self.info = c
                 return
@@ -4436,6 +4537,11 @@ class SubDSession:
                 return T("From face"), [("Arc Segments", v["Arc Segments"], "", 0, r("Arc Segments")),
                                         mm("Max Length"), ("Exact Edge", v["Exact Edge"], "", 0, r("Exact Edge"))], \
                     self.drag is None
+            if k == "fromedge":
+                return T("From edges"), [("Arc Segments", v["Arc Segments"], "", 0, r("Arc Segments")),
+                                         mm("Max Length")], self.drag is None
+            if k == "frompoint":
+                return T("From points"), [], self.drag is None
             if k == "shell":
                 mode = int(v["Mode"])
                 checks = [(n, mode == i, lambda on, n=n: self.shell_option(n, on)) for i, n in enumerate(self.SHELL_MODES)]
@@ -6166,30 +6272,38 @@ class SubDSession:
                    ("Done (Enter)", self.rail_finish)]
         return T("Rail bridge"), fields, self.drag is None, checks, None, buttons
 
-    # --- From face: FreeCAD'de secili Part / PartDesign yuzeylerinden / kenar halkasindan kafes (cage_from_faces) ---
-    # Object modunda yeni SubD nesnesi olur (dunya koordinati), kafeste duzenlerken ayni kafese eklenir. Panel:
-    # Arc Segments (90 derece basina), Max Length (mm, 0 = otomatik), Exact Edge (1: SubD kenari yuzey sinirindan
-    # tam gecer, 0: kafes noktalari sinirda).
+    # --- From face (alt menu: Face / Edge / Point): FreeCAD'de secili Part / PartDesign elemanlarindan kafes ---
+    # Object modunda yeni SubD nesnesi olur (dunya koordinati), kafeste duzenlerken ayni kafese eklenir.
+    # Face (cage_from_faces): yuzeyler; yuz secili degilse kapali duz kenar halkalari duz yuz olur. Panel: Arc
+    # Segments (90 derece basina), Max Length (mm, 0 = otomatik), Exact Edge (1: SubD kenari yuzey sinirindan tam
+    # gecer, 0: kafes noktalari sinirda). Edge (cage_from_edges): zincir basina bir cokgen, Arc Segments / Max
+    # Length. Point (cage_from_points): secim sirasiyla tek cokgen. Edge / Point cokgenleri kameraya bakar.
     FACE = ("Arc Segments", "Max Length", "Exact Edge")
 
-    def _selected_part_faces(self):
-        """FreeCAD secimindeki Part / PartDesign yuzeyleri, dunya koordinatinda (Body yerlesimi dahil). Secili
-        kenarlar kapali halka(lar) olusturuyorsa onlardan duz yuz yapilir (ic ice iki halka: halka yuz). Kopya
-        alinmaz: ortak kenarlar (isSame) taninsin. Hata metni dondurebilir."""
+    def _selected_part(self):
+        """FreeCAD secimindeki Part / PartDesign alt elemanlari, dunya koordinatinda (Body yerlesimi dahil), secim
+        sirasiyla: {"Face": [...], "Edge": [...], "Vertex": [...]}."""
         import Part
-        faces, edges = [], []
-        for so in Gui.Selection.getSelectionEx("", 0):
-            if is_subd(so.Object):
+        items = [(so.Object, sub) for so in Gui.Selection.getSelectionEx("", 0) if not is_subd(so.Object)
+                 for sub in so.SubElementNames]
+        order = {(o, s): k for k, (d, o, s) in enumerate(_pick_order.picks)}
+        items.sort(key=lambda it: order.get((it[0].Name, it[1]), len(order)))
+        out = {"Face": [], "Edge": [], "Vertex": []}
+        for obj, sub in items:
+            try:
+                sh = Part.getShape(obj, sub, needSubElement=True)
+            except Exception:
                 continue
-            for sub in so.SubElementNames:
-                try:
-                    sh = Part.getShape(so.Object, sub, needSubElement=True)
-                except Exception:
-                    continue
-                if not sh.isNull() and sh.ShapeType == "Face":
-                    faces.append(sh)
-                elif not sh.isNull() and sh.ShapeType == "Edge":
-                    edges.append(sh)
+            if not sh.isNull() and sh.ShapeType in out:
+                out[sh.ShapeType].append(sh)
+        return out
+
+    def _selected_part_faces(self):
+        """Secili yuzeyler; yuz yoksa secili kapali kenar halkalarindan duz yuz (ic ice iki halka: halka yuz).
+        Kopya alinmaz: ortak kenarlar (isSame) taninsin. Hata metni dondurebilir."""
+        import Part
+        sel = self._selected_part()
+        faces, edges = sel["Face"], [] if sel["Face"] else sel["Edge"]
         if edges:
             groups = Part.sortEdges(edges)
             wires = [Part.Wire(g) for g in groups]
@@ -6210,8 +6324,33 @@ class SubDSession:
             self.info = faces or T("From face: select faces or a closed edge loop of a Part / PartDesign object")
             self.refresh()
             return
-        vals = {"Arc Segments": 4.0, "Max Length": 0.0, "Exact Edge": 1.0}
-        test = self._face_cage(faces, dict(vals))
+        self._create_from("fromface", {"Arc Segments": 4.0, "Max Length": 0.0, "Exact Edge": 1.0}, faces=faces)
+
+    def from_edges(self):
+        if self.drag or self.grab:
+            return
+        edges = self._selected_part()["Edge"]
+        if not edges:
+            self.info = T("From face: select edges of a Part / PartDesign object")
+            self.refresh()
+            return
+        self._create_from("fromedge", {"Arc Segments": 4.0, "Max Length": 0.0}, edges=edges, look=self._look())
+
+    def from_points(self):
+        if self.drag or self.grab:
+            return
+        pts = [np.array(tuple(v.Point)) for v in self._selected_part()["Vertex"]]
+        if not pts:
+            self.info = T("From face: select 3 or more points of a Part / PartDesign object")
+            self.refresh()
+            return
+        self._create_from("frompoint", {}, points=pts, look=self._look())
+
+    def _look(self):
+        return np.array(tuple(self.view.getViewDirection()))   # dunya bakis yonu: islem tekrarinda da ayni kalsin
+
+    def _create_from(self, kind, vals, **args):
+        test = self._from_cage(kind, args, dict(vals))
         if isinstance(test, str):
             self.info = test
             self.refresh()
@@ -6230,14 +6369,34 @@ class SubDSession:
             self.edit_mode = "face"
             self.edit_object(o)
             self.push()
-            op = self.new_op("fromface", vals, faces=faces, append=False)
+            op = self.new_op(kind, vals, append=False, **args)
         else:
             self.drop_tool()
             self.push()
-            op = self.new_op("fromface", vals, faces=faces, append=True)
+            op = self.new_op(kind, vals, append=True, **args)
         self._apply_op(op)
         self.last_op, self.op = op, None
         self.refresh()
+
+    def _from_cage(self, kind, a, v):
+        """From face islemlerinin kafesi (dunya) ya da hata metni; Edge / Point cokgenleri a["look"]a bakar."""
+        if kind == "fromface":
+            return self._face_cage(a["faces"], v)
+        if kind == "frompoint":
+            c = cage_from_points(a["points"])
+        else:
+            segs = min(max(int(round(v["Arc Segments"])), 1), 32)
+            v["Arc Segments"] = float(segs)
+            if v["Max Length"] <= 0:                       # otomatik: panelde hesaplanan deger gorunsun
+                v["Max Length"] = float(auto_max_len(a["edges"], segs))
+            c = cage_from_edges(a["edges"], segs, v["Max Length"])
+        if not isinstance(c, str):
+            for i, f in enumerate(c.F):
+                P = c.V[f]
+                n = np.cross(P - P.mean(0), np.roll(P - P.mean(0), -1, 0)).sum(0)
+                if n.dot(a["look"]) > 0:
+                    c.F[i] = f[::-1]
+        return c
 
     def _face_cage(self, faces, v):
         """Yuzeylerden (dunya) tek kafes ya da hata metni; degerleri sinirlar, otomatik Max Length'i yazar."""
@@ -7200,6 +7359,31 @@ class _DocWatcher(object):
 App.addDocumentObserver(_DocWatcher())
 
 
+class _PickOrder(object):
+    """FreeCAD secim sirasi (From face > Point icin): getSelectionEx nesneye gore grupluyor, farkli nesnelerden
+    karisik secilen noktalarin sirasi kayboluyordu."""
+
+    def __init__(self):
+        self.picks = []      # (belge, nesne, alt eleman), secildigi sirayla
+
+    def addSelection(self, doc, obj, sub, pnt):
+        self.picks.append((doc, obj, sub))
+
+    def removeSelection(self, doc, obj, sub):
+        if (doc, obj, sub) in self.picks:
+            self.picks.remove((doc, obj, sub))
+
+    def clearSelection(self, doc):
+        self.picks = []
+
+
+_pick_order = _PickOrder()
+if App.GuiUp:
+    _quiet(lambda: Gui.Selection.removeObserver(getattr(Gui, "_subd_pick_order", None)))   # modul yeniden yuklendi
+    Gui.Selection.addObserver(_pick_order)
+    Gui._subd_pick_order = _pick_order
+
+
 _KEYS = {
     QtCore.Qt.Key_Tab: "tab", QtCore.Qt.Key_S: "s", QtCore.Qt.Key_E: "e", QtCore.Qt.Key_K: "k",
     QtCore.Qt.Key_T: "t", QtCore.Qt.Key_G: "g", QtCore.Qt.Key_A: "a", QtCore.Qt.Key_F: "f",
@@ -7684,7 +7868,8 @@ class _Overlay(object):
         head("Create")
         btn("Box", "", s.add_box)
         menu_btn("Cylinder", [("Cylinder", lambda: s.add_cylinder()), ("Topo cylinder", lambda: s.add_cylinder(True))])
-        btn("From face", "", s.from_face)              # FreeCAD'de secili Part / PartDesign yuzeyinden
+        menu_btn("From face", [("Face", s.from_face), ("Edge", s.from_edges),   # FreeCAD'de secili Part /
+                               ("Point", s.from_points)])                     # PartDesign elemanlarindan
         btn("Make polygon", "P", s.make_polygon, sel=True, mode="edit")
         head("Object")
         btn("Duplicate", "D", s.object_duplicate, sel=True, mode="object")

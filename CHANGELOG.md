@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### New tools
+- **From face** is now a drop-down with three commands. *Face*: as before. *Edge*: every chain of selected
+  edges becomes one polygon, flat or not; ends that meet within 0.01 mm (also across objects) are joined, an
+  open chain is closed with a straight edge (split by *Max Length*), separate chains stay separate polygons.
+  *Point*: the selected points become one polygon in pick order (kept across objects). Edge and Point polygons
+  face the camera.
 - **Rail bridge** (Polygon): a tube along a live guide curve. Select two polygon regions / edge loops (or one
   region to extend from); the curve leaves each end perpendicular to its polygon and every ring in between
   stays perpendicular to the curve, carried along without twist, its shape blending from one end to the

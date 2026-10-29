@@ -43,12 +43,18 @@ Catmull-Clark limit surface is on the roadmap.
 - Crease (sharp or semi-sharp edges) — makes the surface hit exact dimensions
 - Copy / cut / paste polygons (with their creases): paste in place into the same cage, into another SubD
   object, or as a new object (e.g. copy the neck of a bottle to start its cap)
-- **From face**: select faces or closed edge loops of a Part / PartDesign object (in object mode FreeCAD's own
-  selection works) and turn them into one cage: four-sided faces (flat or curved: cylinders, B-splines...) become
-  quad grids, flat faces with one or two boundaries become fans / quad strips, flat faces with several holes get a
-  quad ring around each hole and a quad-dominant fill between them, neighbouring faces are welded along
-  their shared edges, sharp joins and corners stay creased. With *Exact Edge* the cage is solved so the SubD
-  surface passes through all sample points (about 0.08 mm on a 4 mm thick filleted box)
+- **From face** (drop-down: Face / Edge / Point), from a Part / PartDesign object (in object mode FreeCAD's own
+  selection works):
+  - *Face*: select faces (or closed flat edge loops) and turn them into one cage: four-sided faces (flat or
+    curved: cylinders, B-splines...) become quad grids, flat faces with one or two boundaries become fans / quad
+    strips, flat faces with several holes get a quad ring around each hole and a quad-dominant fill between
+    them, neighbouring faces are welded along their shared edges, sharp joins and corners stay creased. With
+    *Exact Edge* the cage is solved so the SubD surface passes through all sample points (about 0.08 mm on a
+    4 mm thick filleted box)
+  - *Edge*: each chain of selected edges becomes one polygon (flat or not, e.g. a mating line). Edges whose ends
+    meet (within 0.01 mm, also from different objects) form one chain; an open chain is closed with a straight
+    edge; separate chains give separate polygons. *Arc Segments* / *Max Length* set the sampling.
+  - *Point*: the selected points become one polygon, in the order they were picked.
 - **Make polygon** (P, LightWave Make Polygon / Blender F): a polygon from 3 or more selected points, a closed
   edge loop (fills a hole), or two edges / an open chain (bridges their ends); faces its neighbours
 - **Snap** (bottom bar): free moves (G, the gizmo's centre cube) snap the point nearest to the cursor to the

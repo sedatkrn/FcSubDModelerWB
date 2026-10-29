@@ -103,6 +103,21 @@ TR = {
     "From face: select a flat face of a Part / PartDesign object (in object mode)":
         "Yüzeyden: bir Part / PartDesign nesnesinin düz yüzeyini seçin (nesne modunda)",
     "From face: %d polygons, %d points": "Yüzeyden: %d çokgen, %d nokta",
+    "Face": "Yüzey",
+    "Edge": "Kenar",
+    "Point": "Nokta",
+    "From edges": "Kenarlardan",
+    "From points": "Noktalardan",
+    "From face: select edges of a Part / PartDesign object":
+        "Yüzeyden: bir Part / PartDesign nesnesinin kenarlarını seçin",
+    "From face: select 3 or more points of a Part / PartDesign object":
+        "Yüzeyden: bir Part / PartDesign nesnesinin 3 ya da daha fazla noktasını seçin",
+    "From face: select 3 or more points that are not on one line":
+        "Yüzeyden: aynı doğru üzerinde olmayan 3 ya da daha fazla nokta seçin",
+    "From face: the selected edges branch (more than two meet at a point)":
+        "Yüzeyden: seçili kenarlar dallanıyor (bir noktada ikiden fazla kenar buluşuyor)",
+    "From face: no polygon can be made from the selected edges":
+        "Yüzeyden: seçili kenarlardan çokgen yapılamıyor",
     "Snap: %s": "Yakala: %s",
     "vertex": "köşe",
     "edge": "kenar",
