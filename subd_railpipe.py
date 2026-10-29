@@ -18,17 +18,39 @@ from subd_i18n import T
 
 V = App.Vector
 PROPS = "GuidePoints"     # bu ozellik varsa nesne Rail Pipe / Groove'dur (onarim, komutlar)
+PREVIEW = False           # ekranda surukleme sirasinda True: yavas (kaliteli) supurme yontemi atlanir
+LAST_MODE = None          # son supurmenin yontemi (tani)
 
 
-def _face(link):
-    """PropertyLinkSub (nesne, [alt eleman]) -> Part yuzu ya da None."""
-    if not link or not link[1]:
+def _is_sketch(o):
+    return o is not None and (o.TypeId == "Sketcher::SketchObject" or o.isDerivedFrom("Part::Part2DObject"))
+
+
+def profile(link):
+    """PropertyLinkSub'tan profil: (dis tel, merkez, normal, yuz mu) ya da None / hata metni. Yuz: katinin duz yuzu,
+    normali disari bakar. Sketch (alt eleman yok ya da kenar): en buyuk kapali teli, normali sketch duzleminin Z'si
+    (isareti sonra egriye gore secilir)."""
+    if not link or link[0] is None:
         return None
-    try:
-        sh = link[0].Shape.getElement(link[1][0])
-    except Exception:
-        return None
-    return sh if sh.ShapeType == "Face" else None
+    o, subs = link[0], list(link[1] or [])
+    if _is_sketch(o):
+        ws = [w for w in o.Shape.Wires if w.isClosed()]
+        if not ws:
+            return "Rail Pipe: the sketch has no closed profile"
+        w = max(ws, key=lambda w: w.BoundBox.DiagonalLength)
+        return w, Part.Face(w).CenterOfMass, o.Placement.Rotation.multVec(V(0, 0, 1)), False
+    f = None
+    if subs:
+        try:
+            f = o.Shape.getElement(subs[0])
+        except Exception:
+            f = None
+    if f is None or f.ShapeType != "Face":
+        return "Rail Pipe: the start face is missing"
+    if not (f.isPlanar() if hasattr(f, "isPlanar") else f.Surface.TypeId == "Part::GeomPlane"):
+        return "Rail Pipe: the start face must be flat"
+    c, n = face_frame(f)
+    return f.OuterWire, c, n, True
 
 
 def face_frame(f):
@@ -114,6 +136,47 @@ def _plane_normal(P, along, tol=1e-6):
     return n if all(abs((p - o).dot(n)) <= tol * size for p in P) else None
 
 
+def _aux_spine(bs, t0, ref, size, n=80):
+    """Yardimci omurga: egri boyunca burulmasiz tasinan yan yonun (ref, t0'a dik) size kadar ucundan gecen egri."""
+    r = V(ref) - t0 * V(ref).dot(t0)
+    if r.Length < 1e-9:
+        r = t0.cross(V(1, 0, 0)) if abs(t0.x) < 0.9 else t0.cross(V(0, 1, 0))
+    r.normalize()
+    a, b = bs.FirstParameter, bs.LastParameter
+    steps = 8 * n
+    R, prev, pts = App.Rotation(), V(t0), []
+    for k in range(steps + 1):
+        u = a + (b - a) * k / steps
+        t = bs.tangent(u)[0]
+        R = App.Rotation(prev, t).multiply(R)
+        prev = t
+        if k % 8 == 0:
+            pts.append(bs.value(u) + R.multVec(r) * size)
+    try:
+        c = Part.BSplineCurve()
+        c.interpolate(pts)
+        return Part.Wire(c.toShape())
+    except Exception:
+        return None
+
+
+def _tight_box(sh):
+    """Gercek sinir kutusu: BoundBox B-spline yuzeyin kontrol noktalarina bakiyor, C1 yaklasimda kutu sekilden cok
+    tasiyor ve dogru supurme 'savrulmus' sayilip reddediliyordu."""
+    try:
+        return sh.optimalBoundingBox()
+    except Exception:
+        return sh.BoundBox
+
+
+def _bop_clean(sh):
+    try:
+        sh.check(True)
+        return True
+    except Exception:
+        return False
+
+
 def _oriented(w, along):
     """Telin donus yonu (sag el kurali) along ile ayni olsun: iki uc teli ayni yonde donmezse supurme burulur."""
     try:
@@ -135,41 +198,86 @@ def _start_near(w, p):
     return Part.Wire(E[k:] + E[:k])
 
 
-def build_tool(obj):
-    """Supurulen kati (Body koordinatinda) ya da hata metni."""
-    fa = _face(obj.StartFace)
-    if fa is None:
-        return "Rail Pipe: the start face is missing"
-    if not (fa.isPlanar() if hasattr(fa, "isPlanar") else fa.Surface.TypeId == "Part::GeomPlane"):
-        return "Rail Pipe: the start face must be flat"
-    sub = obj.TypeId == "PartDesign::FeatureSubtractivePython"
-    out = -1.0 if (sub != bool(obj.Reversed)) else 1.0    # Pipe disari, Groove iceri (Reversed cevirir)
-    ca, na = face_frame(fa)
-    ta = na * out
-    fb = _face(obj.EndFace)
-    pts = list(obj.GuidePoints)
-    if fb is None and not pts:
-        return "Rail Pipe: a free end needs at least one guide point"
+def _directions(pa, pb, pts, sub, reversed_):
+    """A'dan cikis (ta) ve B'ye giris (tb) yonu. Yuz: Pipe disari, Groove iceri (Reversed cevirir); sketch: normalin
+    isareti egrinin gittigi yone (ilk kilavuz noktasina / B'ye; B'de: son noktadan B'ye) gore, Reversed cevirir."""
+    out = -1.0 if (sub != bool(reversed_)) else 1.0
+    wa, ca, na, face_a = pa
+    if face_a:
+        ta = na * out
+    else:
+        to = pts[0] if pts else (pb[1] if pb is not None else ca + na)
+        ta = na if na.dot(to - ca) >= 0 else -na
+        if reversed_:
+            ta = -ta
     tb = None
-    N = [ca] + pts
-    if fb is not None:
-        cb, nb = face_frame(fb)
-        tb = nb * -out                                     # B'ye disaridan (Groove: iceriden) girer
-        N.append(cb)
+    if pb is not None:
+        wb, cb, nb, face_b = pb
+        if face_b:
+            tb = nb * -out                                 # B'ye disaridan (Groove: iceriden) girer
+        else:
+            frm = pts[-1] if pts else ca
+            tb = nb if nb.dot(cb - frm) >= 0 else -nb
+    return ta, tb
+
+
+def guide_nodes(obj):
+    """Ekranda duzenleme icin: (dugumler [A merkezi, kilavuz noktalari, (B merkezi)], ta, tb) ya da hata metni."""
+    pa = profile(obj.StartFace)
+    if pa is None or isinstance(pa, str):
+        return pa or "Rail Pipe: the start face is missing"
+    pb = profile(obj.EndFace)
+    if isinstance(pb, str):
+        return pb
+    pts = list(obj.GuidePoints)
+    ta, tb = _directions(pa, pb, pts, obj.TypeId == "PartDesign::FeatureSubtractivePython", obj.Reversed)
+    return [pa[1]] + pts + ([pb[1]] if pb is not None else []), ta, tb
+
+
+def build_tool(obj):
+    """Supurulen ilk uygun kati (Body koordinatinda) ya da hata metni."""
+    for t in build_tools(obj):
+        return t
+    return "Rail Pipe: the sweep gave no solid"
+
+
+def build_tools(obj):
+    """Supurulen katilar, denenecek sirayla (bkz. asagidaki yontem sirasi); hicbiri olmazsa tek bir hata metni."""
+    pa = profile(obj.StartFace)
+    if pa is None:
+        yield "Rail Pipe: the start face is missing"
+        return
+    if isinstance(pa, str):
+        yield pa
+        return
+    pb = profile(obj.EndFace)
+    if isinstance(pb, str):
+        yield pb
+        return
+    pts = list(obj.GuidePoints)
+    if pb is None and not pts:
+        yield "Rail Pipe: a free end needs at least one guide point"
+        return
+    ta, tb = _directions(pa, pb, pts, obj.TypeId == "PartDesign::FeatureSubtractivePython", obj.Reversed)
+    ca = pa[1]
+    N = [ca] + pts + ([pb[1]] if pb is not None else [])
     for i in range(len(N) - 1):
         if (N[i + 1] - N[i]).Length < 1e-6:
-            return "Rail Pipe: two guide points are on top of each other"
-    # uclar yuzun obur yanindan baslar / biter (Pipe: govdenin icinden, Groove: disindan): supurmenin yaklasik ucu
-    # yuzle tam cakisinca boolean cok kucuk kenar / kendini kesen kose birakiyor, sonraki adimlar bozuluyordu
-    ea = min(0.5, 0.05 * fa.BoundBox.DiagonalLength)
-    eb = min(0.5, 0.05 * fb.BoundBox.DiagonalLength) if fb is not None else 0.0
+            yield "Rail Pipe: two guide points are on top of each other"
+            return
+    # yuz uclari yuzun obur yanindan baslar / biter (Pipe: govdenin icinden, Groove: disindan): supurmenin yaklasik
+    # ucu yuzle tam cakisinca boolean cok kucuk kenar / kendini kesen kose birakiyor, sonraki adimlar bozuluyordu.
+    # Sketch uclari tam yerinde (cakisan yuz yok).
+    ea = min(0.5, 0.05 * pa[0].BoundBox.DiagonalLength) if pa[3] else 0.0
+    eb = min(0.5, 0.05 * pb[0].BoundBox.DiagonalLength) if pb is not None and pb[3] else 0.0
+    fb = pb
     bs = guide_spline(N, ta, tb, obj.Tension, ea, eb)
     spine = Part.Wire(bs.toShape())
-    wa = _oriented(fa.OuterWire, ta).copy()
+    wa = _oriented(pa[0], ta).copy()
     wa.translate(-ta * ea)
     ca = ca - ta * ea
     if fb is not None:
-        wb = _oriented(fb.OuterWire, tb).copy()
+        wb = _oriented(pb[0], tb).copy()
         wb.translate(tb * eb)
     else:                                                  # serbest uc: A'nin teli egri boyunca tasinip olceklenir
         R = _transport(bs, ta)
@@ -188,15 +296,29 @@ def build_tool(obj):
     mid = bs.value((bs.FirstParameter + bs.LastParameter) / 2)
     binormal = _plane_normal([ca] + N[1:] + [end], ta)
     err = "Rail Pipe: the sweep gave no solid"
-    # sirayla denenir, gecerli ve egrinin cevresinde kalan ilk sonuc alinir: CorrectedFrenet (burulmasiz; egrilige
-    # dayanir, duz cizgide tanimsiz kalip 'No geometry' veriyordu), sonra duzlemsel egride sabit binormal (duz
-    # cizgide de calisir, ama iki profilli kivrimda bazen gecersiz). Her birinde once C1 yaklasim (C0 kenar / yuz
-    # kalirsa sonraki boolean'lar bozuluyor), sonra C1'siz (iki profilde C1 yaklasim yuzeyi savurabiliyor).
-    modes = [None] + ([binormal] if binormal is not None else [])
-    for bn, c1 in [(m, c) for m in modes for c in (True, False)]:
+    # sirayla denenir, gecerli ve egrinin cevresinde kalan ilk sonuc alinir:
+    # 1. yardimci omurga: kendi burulmasiz cercevemizin (egri boyunca en kisa donmelerle tasinan yan yon) ucundan
+    #    gecen egri kesitin yonunu verir. CorrectedFrenet kesiti egri boyunca birkac derece salindiriyordu (dikis
+    #    ve kenar cizgileri borunun cevresinde dalgali, ~2 mm r=40'ta); bununla ~0.01 derece.
+    # 2. CorrectedFrenet (egrilige dayanir, duz cizgide tanimsiz kalip 'No geometry' veriyordu).
+    # 3. duzlemsel egride sabit binormal (duz cizgide de calisir, ama iki profilli kivrimda bazen gecersiz).
+    # Her birinde once C1 yaklasim (C0 kenar / yuz kalirsa sonraki boolean'lar bozuluyor), sonra C1'siz (iki
+    # profilde C1 yaklasim yuzeyi savurabiliyor).
+    aux = None if PREVIEW else _aux_spine(bs, ta, first - ca, max(wa.BoundBox.DiagonalLength, 1.0))
+    # Yardimci omurga OCCT'de kirilgan: bazi ayarlarda isValid gecip ici bozuk (InvalidCurveOnSurface) kati veriyor,
+    # sonraki boolean boruyu kaybediyordu. Olcumlerde egrisel eslesme + C1 hep temiz cikti: yalniz o denenir
+    # (~0.4 s: supurme + BOP kontrolu), BOP'tan temiz gecmezse CorrectedFrenet. Ekranda surukleme sirasinda
+    # (PREVIEW) hic denenmez: onizleme hizli kalir, birakinca kaliteli hali hesaplanir.
+    tries = [(("aux", aux, True), True)] if aux is not None else []
+    tries += [((m, a, None), c1) for m, a in [("frenet", None)] + ([("binormal", binormal)] if binormal is not None
+                                                                    else []) for c1 in (True, False)]
+    given = False
+    for (mode, arg, cureq), c1 in tries:
         ps = Part.BRepOffsetAPI.MakePipeShell(spine)
-        if bn is not None:
-            ps.setBiNormalMode(bn)
+        if mode == "aux":
+            ps.setAuxiliarySpine(arg, cureq, 0)
+        elif mode == "binormal":
+            ps.setBiNormalMode(arg)
         else:
             ps.setFrenetMode(False)
         ps.setForceApproxC1(c1)
@@ -215,10 +337,15 @@ def build_tool(obj):
         tool = tool.Solids[0]
         if not tool.isInside(mid, 1e-7, True):            # ters yuzlu (ici disina donuk) cikabiliyor: cevir
             tool.reverse()
-        if tool.isValid() and box.isInside(tool.BoundBox):
-            return tool
+        if tool.isValid() and box.isInside(_tight_box(tool)) and (mode != "aux" or _bop_clean(tool)):
+            global LAST_MODE
+            LAST_MODE = (mode, cureq, c1)                  # tani icin: son kullanilan supurme yontemi
+            yield tool
+            given = True
+            continue
         err = "Rail Pipe: the sweep gave an invalid solid"
-    return err
+    if not given:
+        yield err
 
 
 class RailPipe:
@@ -238,20 +365,29 @@ class RailPipe:
         obj.Proxy = self
 
     def execute(self, obj):
-        tool = build_tool(obj)
-        if isinstance(tool, str):
-            raise RuntimeError(T(tool))
         base = obj.BaseFeature.Shape if obj.BaseFeature is not None else None
-        obj.AddSubShape = tool
-        if base is None or base.isNull():
-            res = tool
-        elif obj.TypeId == "PartDesign::FeatureSubtractivePython":
-            res = base.cut(tool)
-        else:
-            res = base.fuse(tool)
-        if obj.Refine:
-            res = res.removeSplitter()
-        obj.Shape = res
+        if base is not None and base.isNull():
+            base = None
+        sub = obj.TypeId == "PartDesign::FeatureSubtractivePython"
+        first = None
+        # boolean sonucu da denetlenir: gecersizse ya da govde tek katiyken bolunduyse siradaki supurme denenir
+        # (supurme tek basina temiz gorunup boolean'da bozulabiliyor); hicbiri olmazsa ilk gecerli sonuc
+        for tool in build_tools(obj):
+            if isinstance(tool, str):
+                raise RuntimeError(T(tool))
+            res = tool if base is None else base.cut(tool) if sub else base.fuse(tool)
+            if obj.Refine:
+                res = res.removeSplitter()
+            if not res.isValid() or not res.Solids:
+                continue
+            if first is None:
+                first = (tool, res)
+            if base is None or len(res.Solids) <= max(len(base.Solids), 1):
+                first = (tool, res)
+                break
+        if first is None:
+            raise RuntimeError(T("Rail Pipe: the sweep gave an invalid solid"))
+        obj.AddSubShape, obj.Shape = first
 
     def dumps(self):
         return None
@@ -268,6 +404,25 @@ class ViewProviderRailPipe:
     def attach(self, vobj):
         self.Object = vobj.Object
 
+    def doubleClicked(self, vobj):
+        import FreeCADGui as Gui
+        Gui.ActiveDocument.setEdit(vobj.Object, 0)
+        return True
+
+    def setEdit(self, vobj, mode=0):
+        if mode != 0:
+            return None
+        import subd_railpipe_gui                           # ekranda kilavuz duzenleme (tutamaklar + gorev paneli)
+        subd_railpipe_gui.start(vobj.Object)
+        return True
+
+    def unsetEdit(self, vobj, mode=0):
+        if mode != 0:
+            return None
+        import subd_railpipe_gui
+        subd_railpipe_gui.stop()
+        return True
+
     def getIcon(self):
         import os
         d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
@@ -282,17 +437,18 @@ class ViewProviderRailPipe:
         return None
 
 
-def initial_points(fa, fb, subtractive, k=3):
-    """Baslangic kilavuz noktalari: iki yuz arasinda A'ya ve B'ye dik yumusak egri uzerinde esit aralikli k nokta;
-    tek yuzde normal yonunde yuz boyunun iki kati uzunlukta duz cizgi (son nokta serbest uc)."""
-    out = -1.0 if subtractive else 1.0
-    ca, na = face_frame(fa)
-    if fb is None:
-        L = 2.0 * fa.BoundBox.DiagonalLength
-        return [ca + na * out * (L * j / k) for j in range(1, k + 1)]
-    cb, nb = face_frame(fb)
+def initial_points(pa, pb, subtractive, k=3):
+    """Baslangic kilavuz noktalari (pa / pb: profile()): iki profil arasinda A'ya ve B'ye dik yumusak egri uzerinde
+    esit aralikli k nokta; tek profilde cikis yonunde profil boyunun iki kati uzunlukta duz cizgi (son nokta serbest
+    uc)."""
+    ta, tb = _directions(pa, pb, [], subtractive, False)
+    ca = pa[1]
+    if pb is None:
+        L = 2.0 * pa[0].BoundBox.DiagonalLength
+        return [ca + ta * (L * j / k) for j in range(1, k + 1)]
+    cb = pb[1]
     L = (cb - ca).Length
-    curve = [_hermite(ca, cb, na * out * L, nb * -out * L, j / 128.0) for j in range(129)]
+    curve = [_hermite(ca, cb, ta * L, tb * L, j / 128.0) for j in range(129)]
     acc = [0.0]
     for p, q in zip(curve, curve[1:]):
         acc.append(acc[-1] + (q - p).Length)
@@ -305,18 +461,24 @@ def initial_points(fa, fb, subtractive, k=3):
 
 
 def make(body, start, end=None, subtractive=False):
-    """Body'de yeni Rail Pipe / Rail Groove: start / end (nesne, "FaceN") ya da None. Nesneyi dondurur."""
+    """Body'de yeni Rail Pipe / Rail Groove: start / end (nesne, "FaceN"), sketch icin (sketch, None); end None:
+    serbest uc. Nesneyi dondurur; profil kullanilamiyorsa hata metni (nesne olusturulmaz)."""
+    link = lambda p: (p[0], [p[1]] if p[1] else [])
+    pa = profile(link(start))
+    pb = profile(link(end)) if end is not None else None
+    for p in (pa, pb):
+        if isinstance(p, str):
+            return p
     obj = body.newObject("PartDesign::FeatureSubtractivePython" if subtractive else "PartDesign::FeatureAdditivePython",
                          "RailGroove" if subtractive else "RailPipe")
     RailPipe(obj)
-    obj.StartFace = (start[0], [start[1]])
+    obj.StartFace = link(start)
     if end is not None:
-        obj.EndFace = (end[0], [end[1]])
-    fa = start[0].Shape.getElement(start[1])
-    fb = end[0].Shape.getElement(end[1]) if end is not None else None
-    obj.GuidePoints = initial_points(fa, fb, subtractive)
+        obj.EndFace = link(end)
+    obj.GuidePoints = initial_points(pa, pb, subtractive)
     if App.GuiUp:
         ViewProviderRailPipe(obj.ViewObject, None)
+        obj.ViewObject.Deviation = 0.1                     # varsayilan 0.5: kavisli boru ekranda dalgali gorunuyordu
     return obj
 
 

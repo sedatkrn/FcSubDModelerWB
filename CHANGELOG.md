@@ -3,12 +3,22 @@
 ## Unreleased
 
 ### New tools
-- **Rail Pipe / Rail Groove** (toolbar): PartDesign features in a Body. From one flat face to a second face or
-  a free end, the start face's outline is swept (OCCT pipe shell) along a guide curve built like the modeler's
+- **Rail Pipe / Rail Groove** (toolbar, also in PartDesign's Modeling Features toolbar): PartDesign features in
+  a Body. From one flat face or closed sketch to a second one or a free end (an empty Body works too), the start
+  profile is swept (OCCT pipe shell) along a guide curve built like the modeler's
   Rail bridge guide (perpendicular to the faces, *Tension*, no bulge on uneven spacing) and fused into or cut
-  out of the Body. Properties: *GuidePoints*, *Tension*, *EndScale* (free end), *Reversed*. The ends are
+  out of the Body. Properties: *GuidePoints*, *Tension*, *EndScale* (free end), *Reversed*. Double-click edits the guide on
+  screen: the selected point gets the modeler's Move gizmo (axis arrows, plane squares, free cube) or is
+  dragged directly (live curve, the pipe recomputes as you drag; a missed button release no longer leaves the
+  point stuck to the mouse), click the curve to pick a span (*Add point* inserts exactly where you clicked), delete points, *Move
+  neighbors*
+  (cable, with *Elasticity*), X / Y / Z of the selected point; OK is one undo step, Cancel reverts. The ends are
   carried a little past the faces so no coincident faces are left for the boolean, and the sweep falls back
-  through several frame / continuity modes until it gives a valid solid. Works without the GUI (freecadcmd).
+  through several frame / continuity modes until it gives a valid solid. The cross-section is oriented by an
+  auxiliary spine built from our own rotation-minimizing frame (OCCT's CorrectedFrenet let the seam and edge
+  lines wobble a few degrees around the tube); while dragging on screen a fast preview sweep is used and the
+  smooth one on release. The boolean result is checked too (a sweep that looks clean can still break the
+  fuse / cut), falling back to the next sweep mode. Works without the GUI (freecadcmd).
 - **From face** is now a drop-down with three commands. *Face*: as before. *Edge*: every chain of selected
   edges becomes one polygon, flat or not; ends that meet within 0.01 mm (also across objects) are joined, an
   open chain is closed with a straight edge (split by *Max Length*), separate chains stay separate polygons.
