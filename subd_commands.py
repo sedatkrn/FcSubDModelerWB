@@ -73,8 +73,60 @@ class _Zebra:
             s.toggle_zebra()
 
 
-COMMANDS = ["SubD_Modeler", "SubD_MakeSolid", "SubD_Zebra"]
+class _RailPipe:
+    """PartDesign Body'de Rail Pipe (ekler) / Rail Groove (oyar): secili bir ya da iki duz yuz arasinda kilavuz egri
+    boyunca supurme (subd_railpipe)."""
+
+    def __init__(self, subtractive):
+        self.sub = subtractive
+
+    def GetResources(self):
+        if self.sub:
+            return {"Pixmap": os.path.join(ICONS, "subd_railgroove.svg"), "MenuText": T("Rail Groove"),
+                    "ToolTip": T("PartDesign: cut a groove along a guide curve from a flat face (and to a second "
+                                 "face). Edit GuidePoints, Tension and EndScale in the property view")}
+        return {"Pixmap": os.path.join(ICONS, "subd_railpipe.svg"), "MenuText": T("Rail Pipe"),
+                "ToolTip": T("PartDesign: add a pipe along a guide curve from a flat face to a second face or a "
+                             "free end. Edit GuidePoints, Tension and EndScale in the property view")}
+
+    def IsActive(self):
+        return App.ActiveDocument is not None
+
+    def Activated(self):
+        import subd_railpipe
+        faces = [(so.Object, sub) for so in Gui.Selection.getSelectionEx() for sub in so.SubElementNames
+                 if sub.startswith("Face")]
+        if not 1 <= len(faces) <= 2:
+            App.Console.PrintWarning(T("Rail Pipe: select one or two flat faces of a PartDesign Body.\n"))
+            return
+        obj = faces[0][0]
+        body = obj.getParentGeoFeatureGroup() if hasattr(obj, "getParentGeoFeatureGroup") else None
+        if body is None or body.TypeId != "PartDesign::Body":
+            App.Console.PrintWarning(T("Rail Pipe: the faces must belong to a PartDesign Body.\n"))
+            return
+        f = obj.Shape.getElement(faces[0][1])
+        if not (f.isPlanar() if hasattr(f, "isPlanar") else f.Surface.TypeId == "Part::GeomPlane"):
+            App.Console.PrintWarning(T("Rail Pipe: the start face must be flat.\n"))
+            return
+        doc = obj.Document
+        doc.openTransaction(T("Rail Groove") if self.sub else T("Rail Pipe"))
+        new = subd_railpipe.make(body, faces[0], faces[1] if len(faces) > 1 else None, self.sub)
+        doc.recompute()
+        doc.commitTransaction()
+        if "Invalid" in new.State:
+            App.Console.PrintWarning(T("Rail Pipe: the first sweep failed; adjust GuidePoints in the property "
+                                       "view.\n"))
+        elif new.BaseFeature is not None:
+            new.BaseFeature.ViewObject.Visibility = False
+            new.ViewObject.Visibility = True
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(new)
+
+
+COMMANDS = ["SubD_Modeler", "SubD_MakeSolid", "SubD_Zebra", "Separator", "SubD_RailPipe", "SubD_RailGroove"]
 
 Gui.addCommand("SubD_Modeler", _OpenModeler())
 Gui.addCommand("SubD_MakeSolid", _MakeSolid())
 Gui.addCommand("SubD_Zebra", _Zebra())
+Gui.addCommand("SubD_RailPipe", _RailPipe(False))
+Gui.addCommand("SubD_RailGroove", _RailPipe(True))

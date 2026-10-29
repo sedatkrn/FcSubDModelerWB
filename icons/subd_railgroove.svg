@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <!-- block -->
+  <path d="M4 26 L32 14 L60 26 L32 40 Z" fill="#aebbd0"/>
+  <path d="M4 26 L32 40 L32 58 L4 44 Z" fill="#71859f"/>
+  <path d="M32 40 L60 26 L60 44 L32 58 Z" fill="#485a74"/>
+  <!-- groove cut along the guide -->
+  <path d="M12 27 C22 20 34 34 50 25" fill="none" stroke="#3a4558" stroke-width="7" stroke-linecap="round"/>
+  <path d="M12 27 C22 20 34 34 50 25" fill="none" stroke="#202836" stroke-width="3" stroke-linecap="round"/>
+  <!-- guide curve -->
+  <path d="M12 27 C22 20 34 34 50 25" fill="none" stroke="#f5c518" stroke-width="1.6" stroke-dasharray="3 2"/>
+  <circle cx="23" cy="24.5" r="2.4" fill="#f5c518"/>
+  <circle cx="38" cy="29" r="2.4" fill="#f5c518"/>
+  <!-- minus badge -->
+  <circle cx="51" cy="52" r="9" fill="#dc2626"/>
+  <rect x="45.5" y="50.5" width="11" height="3" rx="1" fill="#ffffff"/>
+</svg>

@@ -35,6 +35,10 @@ class _RestoreObserver:
                and getattr(o, "Proxy", None) is None for o in doc.Objects):
             import subd_modeler
             subd_modeler.repair_proxies(doc)
+        if any("GuidePoints" in o.PropertiesList and type(getattr(o, "Proxy", None)).__name__ != "RailPipe"
+               for o in doc.Objects):                     # Rail Pipe / Groove (PartDesign)
+            import subd_railpipe
+            subd_railpipe.repair_proxies(doc)
 
 
 import FreeCAD as App

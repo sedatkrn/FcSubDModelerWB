@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <!-- block -->
+  <path d="M6 40 L30 30 L58 40 L34 52 Z" fill="#aebbd0"/>
+  <path d="M6 40 L34 52 L34 60 L6 48 Z" fill="#71859f"/>
+  <path d="M34 52 L58 40 L58 48 L34 60 Z" fill="#485a74"/>
+  <!-- pipe along the guide -->
+  <path d="M16 40 C16 18 30 8 46 12" fill="none" stroke="#3b6fb6" stroke-width="11" stroke-linecap="butt"/>
+  <path d="M16 40 C16 18 30 8 46 12" fill="none" stroke="#7fa6dc" stroke-width="4" opacity="0.8"/>
+  <ellipse cx="47" cy="12" rx="3" ry="5.5" transform="rotate(14 47 12)" fill="#c9daf3" stroke="#2b5490" stroke-width="1"/>
+  <!-- guide curve -->
+  <path d="M16 40 C16 18 30 8 46 12" fill="none" stroke="#f5c518" stroke-width="1.6" stroke-dasharray="3 2"/>
+  <circle cx="22" cy="22" r="2.4" fill="#f5c518"/>
+  <circle cx="34" cy="12.5" r="2.4" fill="#f5c518"/>
+</svg>

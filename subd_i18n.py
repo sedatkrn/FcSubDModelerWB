@@ -146,6 +146,25 @@ TR = {
     "Move neighbors": "Komşular da gelsin",
     "Elasticity": "Esneklik",
     "Tension": "Gerginlik",
+    "Rail Pipe": "Raylı boru",
+    "Rail Groove": "Raylı kanal",
+    "PartDesign: add a pipe along a guide curve from a flat face to a second face or a free end. Edit GuidePoints, Tension and EndScale in the property view":
+        "PartDesign: düz bir yüzden ikinci bir yüze ya da serbest uca, kılavuz eğri boyunca boru ekler. GuidePoints, Tension ve EndScale özellik panelinden düzenlenir",
+    "PartDesign: cut a groove along a guide curve from a flat face (and to a second face). Edit GuidePoints, Tension and EndScale in the property view":
+        "PartDesign: düz bir yüzden (ve ikinci bir yüze) kılavuz eğri boyunca kanal oyar. GuidePoints, Tension ve EndScale özellik panelinden düzenlenir",
+    "Rail Pipe: select one or two flat faces of a PartDesign Body.\n":
+        "Raylı boru: bir PartDesign Body'nin bir ya da iki düz yüzünü seçin.\n",
+    "Rail Pipe: the faces must belong to a PartDesign Body.\n": "Raylı boru: yüzler bir PartDesign Body'ye ait olmalı.\n",
+    "Rail Pipe: the start face must be flat.\n": "Raylı boru: başlangıç yüzü düz olmalı.\n",
+    "Rail Pipe: the first sweep failed; adjust GuidePoints in the property view.\n":
+        "Raylı boru: ilk süpürme başarısız; GuidePoints'i özellik panelinden düzenleyin.\n",
+    "Rail Pipe: the start face is missing": "Raylı boru: başlangıç yüzü bulunamadı",
+    "Rail Pipe: the start face must be flat": "Raylı boru: başlangıç yüzü düz olmalı",
+    "Rail Pipe: a free end needs at least one guide point": "Raylı boru: serbest uç için en az bir kılavuz noktası gerekir",
+    "Rail Pipe: two guide points are on top of each other": "Raylı boru: iki kılavuz noktası üst üste",
+    "Rail Pipe: the sweep failed (%s)": "Raylı boru: süpürme başarısız (%s)",
+    "Rail Pipe: the sweep gave no solid": "Raylı boru: süpürmeden katı çıkmadı",
+    "Rail Pipe: the sweep gave an invalid solid": "Raylı boru: süpürme geçersiz bir katı verdi (eğri çok dar kıvrılıyor olabilir)",
     "Align": "Hizala",
     "Align horizontally: the selected points get the same height on screen":
         "Yatay hizala: seçili noktalar ekranda aynı yüksekliğe gelir",

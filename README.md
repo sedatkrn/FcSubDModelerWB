@@ -83,6 +83,13 @@ Catmull-Clark limit surface is on the roadmap.
 - The cage is saved in the document (`SubD` object), auto-saved every 20 s
 - Parametric B-rep solid (`SubD to solid`), STEP export, booleans, PartDesign
 - Shows both the cage size and the real surface size
+- **Rail Pipe / Rail Groove** (toolbar, PartDesign): the exact B-rep counterpart of Rail bridge as a step in a
+  PartDesign Body. Select one or two flat faces of the Body and press Rail Pipe (adds) or Rail Groove (cuts):
+  the start face's outline is swept along a guide curve to the second face's outline, or to a free end. The
+  curve leaves (and enters) the faces perpendicular, passes through *GuidePoints* and follows the same rules as
+  the modeler's guide (*Tension*, no bulge on uneven spacing); *EndScale* sizes a free end, *Reversed* flips
+  the start direction. Edit them in the property view; the feature recomputes like any PartDesign feature and
+  later steps (fillets, pockets) build on it.
 
 ![Edge bevel with 4 segments](docs/edge_bevel_smooth.png)
 
@@ -146,6 +153,8 @@ bottom bar switches it (the modeler reopens with the same model). The setting is
 - Export / import of the raw cage with creases (OBJ / USD) for Blender round-trips
 - Odd segment counts for all-quad edge-bevel corners
 - From face: curved faces that are not four-sided
+- Rail Pipe: drag the guide points in the 3D view (cable behaviour as in the modeler), sketch profiles,
+  scale per guide point
 
 ## License
 

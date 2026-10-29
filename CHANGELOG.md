@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### New tools
+- **Rail Pipe / Rail Groove** (toolbar): PartDesign features in a Body. From one flat face to a second face or
+  a free end, the start face's outline is swept (OCCT pipe shell) along a guide curve built like the modeler's
+  Rail bridge guide (perpendicular to the faces, *Tension*, no bulge on uneven spacing) and fused into or cut
+  out of the Body. Properties: *GuidePoints*, *Tension*, *EndScale* (free end), *Reversed*. The ends are
+  carried a little past the faces so no coincident faces are left for the boolean, and the sweep falls back
+  through several frame / continuity modes until it gives a valid solid. Works without the GUI (freecadcmd).
 - **From face** is now a drop-down with three commands. *Face*: as before. *Edge*: every chain of selected
   edges becomes one polygon, flat or not; ends that meet within 0.01 mm (also across objects) are joined, an
   open chain is closed with a straight edge (split by *Max Length*), separate chains stay separate polygons.
