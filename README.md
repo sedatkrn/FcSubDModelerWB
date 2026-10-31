@@ -139,7 +139,8 @@ document; save the document as usual (Ctrl+S).
 | T / R / H | move / rotate / stretch-size gizmo | G | free move with the mouse |
 | Y | X symmetry | X | ghost mode |
 | Del | delete faces | Ctrl+Z | undo |
-| P | make polygon from selected points / edges | | |
+| P | make polygon from selected points / edges | M | merge points (selection or whole cage) |
+| Ctrl+W | weld selected points at the last one clicked | Shift+Z | merge selected adjacent polygons |
 | Ctrl+C / Ctrl+X | copy / cut polygons | Ctrl+V | paste in place (object mode: as a new SubD object) |
 | F | save to the document | N | Options panel |
 | Ctrl (while dragging) | mm / degree steps | Shift (while dragging) | fine control |

@@ -1495,9 +1495,157 @@ class Cage:
             removed += 1
         return removed
 
+    def merge_points(self, verts, dist):
+        """LightWave Merge Points: verts icinde birbirine dist mesafesindeki noktalar birlesir. Yuksek numarali nokta
+        dusuk numaralinin yerine gider (ortalama alinmaz, cokgen esner). Zincirleme birlesme yok: mesafe hayatta kalan
+        noktaya olculur. Tek noktaya / kenara inen cokgen silinir (kafeste 1 noktali cokgen yok); kendine degen cokgen
+        ikiye ayrilir. Birlesince ayni noktalara oturan cokgenler: zit yonlu cift ic duvardir, ikisi de silinir (iki
+        kapali parca tek parca olur, bkz. mirror); ayni yonlulerden biri kalir. Birlesen nokta sayisini dondurur."""
+        verts = sorted(verts)
+        d = max(float(dist), 1e-9)
+        keys = [tuple(c) for c in np.floor(self.V[verts] / d).astype(np.int64).tolist()]   # 3B izgara: yalniz komsular
+        cells = {}
+        for v, c in zip(verts, keys):
+            cells.setdefault(c, []).append(v)
+        to = {}
+        for v, (x, y, z) in zip(verts, keys):
+            if v in to:
+                continue
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        for w in cells.get((x + dx, y + dy, z + dz), ()):
+                            if w > v and w not in to and np.linalg.norm(self.V[w] - self.V[v]) <= d:
+                                to[w] = v
+        return self.merge_map(to)
+
+    def merge_map(self, to):
+        """to: {nokta: yerine gececegi nokta} (hedefler to'da anahtar degil). Temizlik kurallari merge_points'te.
+        Birlesen nokta sayisini dondurur."""
+        if not to:
+            return 0
+        before = {v for f in self.F for v in f}
+        faces, touched = [], set()
+        for f in self.F:
+            path, loops = [], []
+            for v in (to.get(v, v) for v in f):
+                if v in path:                              # kendine degdi: aradaki parca ayri cokgen
+                    i = path.index(v)
+                    loops.append(path[i:])
+                    del path[i + 1:]
+                else:
+                    path.append(v)
+            loops.append(path)
+            hit = any(v in to for v in f)
+            for L in loops:
+                if len(L) >= 3:
+                    if hit:
+                        touched.add(len(faces))
+                    faces.append(L)
+
+        def canon(f):
+            i = f.index(min(f))
+            return tuple(f[i:] + f[:i])
+        groups = {}
+        for fi, f in enumerate(faces):
+            groups.setdefault(frozenset(f), []).append(fi)
+        dead = set()
+        for g in groups.values():
+            if len(g) < 2 or touched.isdisjoint(g):
+                continue
+            kept = {}
+            for fi in g:
+                c, r = canon(faces[fi]), canon(faces[fi][::-1])
+                if r in kept:
+                    dead.update((fi, kept.pop(r)))
+                elif c in kept:
+                    dead.add(fi)
+                else:
+                    kept[c] = fi
+        self.F = [f for fi, f in enumerate(faces) if fi not in dead]
+        C = {}
+        for e, s in self.C.items():
+            a, b = (to.get(v, v) for v in e)
+            if a != b:
+                C[_edge(a, b)] = max(s, C.get(_edge(a, b), s))
+        self.C = C
+        after = {v for f in self.F for v in f}             # birlesmeyle bosa dusenler gider, onceden bostakiler kalir
+        self._compact([v for v in range(len(self.V)) if v not in to and (v in after or v not in before)])
+        return len(to)
+
+    def face_regions(self, sel):
+        """sel yuzlerini kenar komsulugu ile parcalara ayirir (yalniz noktada degmek komsuluk sayilmaz)."""
+        ef = {}
+        for fi in sel:
+            f = self.F[fi]
+            for i in range(len(f)):
+                ef.setdefault(_edge(f[i], f[(i + 1) % len(f)]), []).append(fi)
+        left, out = set(sel), []
+        while left:
+            stack, region = [left.pop()], set()
+            while stack:
+                fi = stack.pop()
+                region.add(fi)
+                f = self.F[fi]
+                for i in range(len(f)):
+                    for g in ef[_edge(f[i], f[(i + 1) % len(f)])]:
+                        if g in left:
+                            left.remove(g)
+                            stack.append(g)
+            out.append(region)
+        return out
+
+    def face_outline(self, region):
+        """Yuz bolgesinin dis siniri, yuzlerin yonunde tek kapali nokta listesi; delikli / kendine degen bolge, tamamen
+        kapali kabuk ya da karisik yonlu yuzlerde None."""
+        count, step = {}, []
+        for fi in region:
+            f = self.F[fi]
+            for i in range(len(f)):
+                a, b = f[i], f[(i + 1) % len(f)]
+                count[_edge(a, b)] = count.get(_edge(a, b), 0) + 1
+                step.append((a, b))
+        nxt = {}
+        for a, b in step:
+            if count[_edge(a, b)] == 1:
+                if a in nxt:
+                    return None
+                nxt[a] = b
+        if len(nxt) < 3:
+            return None
+        start = min(nxt)
+        loop, v = [start], nxt[start]
+        while v != start:
+            if v not in nxt or len(loop) >= len(nxt):
+                return None
+            loop.append(v)
+            v = nxt[v]
+        return loop if len(loop) == len(nxt) else None
+
+    def merge_faces(self, regions, loops):
+        """LightWave Merge Polygons: her bolge sinir halkasindan tek cokgen olur; ic kenarlar ve yalniz onlara bagli
+        ic noktalar gider, sinirdaki keskin kenarlar kalir. Yeni cokgenlerin indekslerini dondurur."""
+        before = {v for f in self.F for v in f}
+        repl = {min(r): L for r, L in zip(regions, loops)}
+        dead = set().union(*regions) - set(repl)
+        F, new = [], []
+        for fi, f in enumerate(self.F):
+            if fi in repl:
+                new.append(len(F))
+                F.append(list(repl[fi]))
+            elif fi not in dead:
+                F.append(f)
+        self.F = F
+        after = {v for f in self.F for v in f}
+        self._compact([v for v in range(len(self.V)) if v in after or v not in before])
+        return new
+
     def delete(self, sel):
         self.F = [f for i, f in enumerate(self.F) if i not in sel]
-        used = sorted({v for f in self.F for v in f})
+        self._compact(sorted({v for f in self.F for v in f}))
+
+    def _compact(self, used):
+        """Yalniz used (sirali) noktalar kalir; yuzler, keskin kenarlar ve kilavuzlar yeni numaralara gecer."""
         remap = {v: i for i, v in enumerate(used)}
         self.V = self.V[used] if used else np.zeros((0, 3))
         self.F = [[remap[v] for v in f] for f in self.F]
@@ -2999,6 +3147,8 @@ def _param():
 _last_shell = {"Thickness": 2.0, "Detail filter": 6.0, "Mode": 0.0, "Fill": 1.0, "Sharp": 1.0, "Flat rim": 1.0}   # Shell paneli
 _knife_opts = {"split": False, "objects": False}   # Knife (line) secenekleri (ikisi kapali: yalniz keser)
 _last_reduce = {"Degrees": 5.0, "Delete points": 1.0}   # Reduce points paneli
+_last_merge = {"Fixed": 0.0, "Distance": 1.0}   # Merge points paneli
+MERGE_AUTO = 1e-3       # Merge points, Automatic: bu kadar mm yakin noktalar "ayni yerde" sayilir
 _last_cyl = {"Diameter": 100.0, "Height": 100.0, "Segments": 16.0, "Height Segments": 1.0}   # Cylinder paneli
 _clipboard = None                       # kopyalanan cokgenler (Cage, dunya koordinati); bkz. copy_faces
 PLANE_EDGE = 0.2        # duzlem normali ile bakis arasindaki |cos| bundan kucukse kare yandan gorunuyor sayilir
@@ -3451,6 +3601,7 @@ class SubDSession:
         self.edit_mode = "face"                            # Object modundan Edit'e donulecek secim modu
         self.sel = set()     # yuz indeksleri
         self.sel_v = set()   # nokta indeksleri
+        self.last_v = None   # en son tiklanan secili nokta (Weld hedefi)
         self.sel_e = set()   # frozenset({a, b}) kenarlar
         self.sym = False     # X=0 duzlemine gore simetri
         self.ghost = False   # hayalet modu: arkadakiler gorunur / secilebilir
@@ -3483,6 +3634,7 @@ class SubDSession:
         self.box = None      # bos alana basildi: surukleme kutu secimi olur
         self.rubber = None   # secim kutusu cizimi (QRubberBand)
         self.line_overlay = None  # knife cizgisi cizimi
+        self._line_cursor = None  # knife cizgisi yakalarken: gorunumun onceki imleci
         self.overlay = None
         self._pending = False
         self.mouse = (0, 0)
@@ -3576,6 +3728,8 @@ class SubDSession:
             return
         if self.cage.F:
             self.save(commit=True)
+        else:
+            self._drop_empty()
         self._show_edited()
         self.drop_tool()
         self.edit_mode = self.mode
@@ -3775,6 +3929,12 @@ class SubDSession:
         objs = self.selected_objects()
         if not objs:
             return
+        self._remove_objects(objs)
+        Gui.Selection.clearSelection()
+        self.refresh()
+
+    def _remove_objects(self, objs):
+        """SubD nesnelerini (bagli katilariyla) belgeden tek geri alma adimiyla siler."""
         doc = objs[0].Document
         doc.openTransaction("SubD delete")
         for o in objs:
@@ -3784,8 +3944,17 @@ class SubDSession:
                 self.obj = None
             doc.removeObject(o.Name)
         doc.commitTransaction()
-        Gui.Selection.clearSelection()
-        self.refresh()
+
+    def _drop_empty(self):
+        """Edit oturumu biterken butun cokgenler silinmisse nesne de gider (kafes kaydedilmediginden eski haliyle
+        agacta kaliyordu). Oturum icinde Ctrl+Z calissin diye silme aninda degil burada; FreeCAD Undo nesneyi
+        oturum basindaki haliyle, gorunur olarak geri getirir."""
+        if not _alive(self.obj):
+            return
+        self._show_edited()
+        if self.edit_start is not None:
+            self._restore_start()
+        self._remove_objects([self.obj])
 
     def object_pick(self, pos):
         """Imlecin altindaki SubD nesnesi (kati tiklandiysa kaynagi)."""
@@ -4616,6 +4785,8 @@ class SubDSession:
         else:
             target.clear()
             target.add(hit)
+        if self.mode == "point":
+            self.last_v = hit if hit in self.sel_v else None
         self.last_op = None
         self.refresh()
 
@@ -4692,6 +4863,8 @@ class SubDSession:
                 self.info = err
         elif k == "reduce":
             self._reduce(v, a["verts"])
+        elif k == "merge":
+            self._merge(v, a["verts"])
         elif k == "hole":
             err = self._hole(v)
             if err:
@@ -4780,6 +4953,9 @@ class SubDSession:
             if k == "reduce":
                 return T("Reduce points"), [("Degrees", v["Degrees"], "°", 2, r("Degrees"))], self.drag is None, \
                     [("Delete points", bool(v["Delete points"]), self.reduce_option)]
+            if k == "merge":
+                return T("Merge points"), [mm("Distance")] if v["Fixed"] else [], self.drag is None, \
+                    [("Fixed distance", bool(v["Fixed"]), self.merge_option)]
             if k == "hole":
                 return T("Hole"), [mm("Radius"), ("Segments", v["Segments"], "", 0, r("Segments")), mm("Support")], \
                     self.drag is None
@@ -4886,6 +5062,99 @@ class SubDSession:
         op["values"]["Delete points"] = 1.0 if on else 0.0
         self._reapply(op)
 
+    def merge_points(self):
+        """Modify > Merge points (LightWave, M): secili noktalar / kenarlar / cokgenler (secim yoksa butun kafes)
+        uzerinde cakisan noktalari birlestirir. Panel: Fixed distance kapali = Automatic (ayni yerdekiler); acik =
+        Distance icindekiler."""
+        if self.mode == "object" or self.drag or self.grab:
+            return
+        verts = set(self.selected_verts()) or set(range(len(self.cage.V)))
+        if self.sym:
+            M = self.mirror_map()
+            verts |= {M[v] for v in list(verts) if M.get(v) is not None}
+        self.drop_tool()
+        self.push()
+        op = self.new_op("merge", dict(_last_merge), verts=sorted(verts))
+        self._apply_op(op)
+        self.last_op, self.op = op, None
+        self.refresh()
+
+    def _merge(self, v, verts):
+        v["Distance"] = max(float(v["Distance"]), 0.0)
+        _last_merge.update(v)
+        n = self.cage.merge_points(verts, v["Distance"] if v["Fixed"] else MERGE_AUTO)
+        if n:
+            self.sel, self.sel_v, self.sel_e = set(), set(), set()   # noktalarin numarasi kaydi
+        self.info = T("Merge points: %d merged") % n
+        self.dirty = True
+
+    def merge_option(self, on):
+        op = self.last_op
+        if op is None or op["kind"] != "merge":
+            return
+        op["values"]["Fixed"] = 1.0 if on else 0.0
+        self._reapply(op)
+
+    def merge_polygons(self):
+        """Polygon > Merge polygons (LightWave, Shift+Z): secili bitisik cokgenler tek cokgen olur. Bitisik degillerse
+        ya da tek bir dis sinir cikmiyorsa uyarir, kafese dokunmaz. Symmetry: aynadaki esler de birlesir."""
+        if self.mode == "object" or self.drag or self.grab:
+            return
+        sel = self.selected_faces()
+        regions = self.cage.face_regions(sel)
+        apart = len(regions) > 1
+        if self.sym:
+            mir = self.mirror_faces(sel, self.mirror_map()) - sel
+            if apart:                                      # iki yarisi aynayla birbirine bagliysa tek parca
+                regions = self.cage.face_regions(sel | mir)
+                apart = len(regions) > 1
+            elif mir:                                      # tek parca: aynasi da ayri birlesir (duzlemde kaynamaz)
+                regions = [sel, mir]
+        loops =[self.cage.face_outline(r) for r in regions]
+        if len(sel) < 2:
+            self.info = T("Merge polygons: select at least two adjacent polygons")
+        elif apart:
+            self.info = T("Merge polygons: the selected polygons are not adjacent")
+        elif any(L is None for L in loops):
+            self.info = T("Merge polygons: no single outline (hole, closed shape or mixed directions: try Flip)")
+        else:
+            self.drop_tool()
+            self.push()
+            new = self.cage.merge_faces(regions, loops)
+            self.op = self.last_op = None
+            self.sel, self.sel_v, self.sel_e = set(new) if self.mode == "face" else set(), set(), set()
+            self.info = T("Merge polygons: %d polygons merged") % sum(len(r) for r in regions)
+        self.refresh()
+
+    def weld(self):
+        """Modify > Weld (LightWave, Ctrl+W): secili noktalar en son tiklanan secili noktada birlesir, o yerinde
+        kalir. Symmetry: aynadaki esleri de hedefin aynasinda birlesir. Kutu seciminde sira yok: hedefe tiklanmali."""
+        if self.mode == "object" or self.drag or self.grab:
+            return
+        t = self.last_v
+        if self.mode != "point" or len(self.sel_v) < 2:
+            self.info = T("Weld: select at least two points")
+        elif t not in self.sel_v:
+            self.info = T("Weld: Shift+click the target point last")
+        else:
+            self.drop_tool()
+            self.push()
+            to = {v: t for v in self.sel_v if v != t}
+            if self.sym:
+                M = self.mirror_map()
+                mt = M.get(t)
+                if mt is not None and mt not in to:
+                    for v in list(to):
+                        mv = M.get(v)
+                        if mv is not None and mv not in to and mv not in (t, mt):
+                            to[mv] = mt
+            n = self.cage.merge_map(to)
+            self.op = self.last_op = None
+            self.sel, self.sel_v, self.sel_e = set(), set(), set()
+            self.last_v = None
+            self.info = T("Weld: %d points welded") % n
+        self.refresh()
+
     def crease_selected(self):
         """Secili kenarlara panel keskinligini verir; hepsi zaten o keskinlikteyse keskinligi kaldirir."""
         edges = self.selected_edges()
@@ -4962,14 +5231,7 @@ class SubDSession:
             if self.dirty:                                 # ara kayit yazilmis ama kafes basa dondu: sessizce geri yaz
                 self._write(full)
         elif commit and self.edit_start is not None:
-            c0, lv0, r0, m0 = self.edit_start
-            cage_to_obj(c0, self.obj)                      # sessizce oturum basina
-            set_surface(self.obj, lv0, r0)
-            m0 = m0.copy()
-            m0.Placement = self.obj.Placement
-            self.obj.Mesh = m0
-            if hasattr(self.obj.Proxy, "_key"):            # yuzey onbellegi son ara kaydi tutuyor: yeniden uretilsin
-                self.obj.Proxy._key = None
+            self._restore_start()
             doc.openTransaction(T("SubD edit %s") % self.obj.Label)
             self._write(full)
             doc.commitTransaction()
@@ -4978,6 +5240,17 @@ class SubDSession:
             self._write(full)
         self.dirty = False
         return self.obj
+
+    def _restore_start(self):
+        """Nesneyi sessizce oturum basindaki haline dondurur (geri alma listesine girmez)."""
+        c0, lv0, r0, m0 = self.edit_start
+        cage_to_obj(c0, self.obj)
+        set_surface(self.obj, lv0, r0)
+        m0 = m0.copy()
+        m0.Placement = self.obj.Placement
+        self.obj.Mesh = m0
+        if hasattr(self.obj.Proxy, "_key"):                # yuzey onbellegi son ara kaydi tutuyor: yeniden uretilsin
+            self.obj.Proxy._key = None
 
     def _write(self, full):
         cage_to_obj(self.cage, self.obj)
@@ -5629,16 +5902,48 @@ class SubDSession:
         self.info = T("Knife: split into %s (%d polygons)") % (o.Label, len(sub.F))
         self.refresh()
 
-    def line_plane(self, p0, p1):
+    def line_snap_data(self, cage):
+        """Snap aciksa knife cizgisinin yakalayacagi noktalar: kafes noktalari, kenar ortalari, kenarlar (ekran
+        konumlariyla); kapaliysa None. Duzlem bakis yonunu icerdiginden arkada kalan noktalar da gecerli hedef."""
+        if not self.snap or not len(cage.V) or not cage.F:
+            return None
+        E = np.array([sorted(e) for e in cage.edges()])
+        return dict(V=cage.V.copy(), E=E, S=self.project(cage.V), M=self.project(cage.V[E].mean(1)))
+
+    def line_snap(self, pos, data):
+        """Imlec altindaki hedef: (ekran konumu, dunya noktasi, "point" / "mid" / "edge") ya da None. Nokta ve kenar
+        ortasi 12 piksel, kenar 8 piksel icinde; nokta ve kenar ortasi kenara gore onceliklidir."""
+        if data is None:
+            return None
+        p = np.array(pos, float)
+        V, E, S, M = data["V"], data["E"], data["S"], data["M"]
+        ds, dm = np.linalg.norm(S - p, axis=1), np.linalg.norm(M - p, axis=1)
+        i, j = int(np.argmin(ds)), int(np.argmin(dm))
+        if min(ds[i], dm[j]) < 12:
+            if ds[i] <= dm[j]:
+                return tuple(S[i]), self.l2w(V[i][None])[0], "point"
+            return tuple(M[j]), self.l2w(V[E[j]].mean(0)[None])[0], "mid"
+        a, b = S[E[:, 0]], S[E[:, 1]]
+        ab = b - a
+        t = np.clip(((p - a) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-12), 0, 1)
+        d = np.linalg.norm(a + ab * t[:, None] - p, axis=1)
+        k = int(np.argmin(d))
+        if d[k] < 8:
+            return tuple(a[k] + t[k] * ab[k]), self.l2w((V[E[k, 0]] + t[k] * (V[E[k, 1]] - V[E[k, 0]]))[None])[0], "edge"
+        return None
+
+    def line_plane(self, p0, p1, w0=None, w1=None):
         """Ekrandaki cizgiden kesim duzlemi (iki uc ve bakis yonunden gecen): (n, d, gosterilecek p1) ya da None.
-        Ctrl: cizgi acisi 15 derece adim; ekranda gosterilen cizgi de bu yuvarlanmis aciyla cizilir."""
+        Ctrl: cizgi acisi 15 derece adim; ekranda gosterilen cizgi de bu yuvarlanmis aciyla cizilir. w0, w1: yakalanan
+        ucun tam dunya noktasi (piksele yuvarlanmaz, duzlem tam oradan gecer)."""
         p0, p1 = np.array(p0, float), np.array(p1, float)
         if _ctrl_held():
             v = p1 - p0
             ang = math.radians(_snap(math.degrees(math.atan2(v[1], v[0])), 15.0))
             p1 = p0 + np.linalg.norm(v) * np.array([math.cos(ang), math.sin(ang)])
-        P0 = np.array(tuple(self.view.getPoint(int(round(p0[0])), int(round(p0[1])))))   # numpy sayisi kabul etmiyor
-        P1 = np.array(tuple(self.view.getPoint(int(round(p1[0])), int(round(p1[1])))))
+        P0 = (np.array(tuple(self.view.getPoint(int(round(p0[0])), int(round(p0[1])))))   # numpy sayisi kabul etmiyor
+              if w0 is None else w0)
+        P1 = np.array(tuple(self.view.getPoint(int(round(p1[0])), int(round(p1[1]))))) if w1 is None else w1
         if self.view.getCameraType() == "Perspective":
             eye = np.array(self.view.getCameraNode().position.getValue().getValue())
             n = np.cross(P0 - eye, P1 - eye)
@@ -5648,10 +5953,10 @@ class SubDSession:
         if ln < 1e-12:
             return None
         n /= ln
-        for e in np.eye(3):                                # dunya eksenine cok yakinsa tam eksene oturt
-            if abs(n.dot(e)) > math.cos(math.radians(2.0)):
+        for e in np.eye(3) if w1 is None else ():          # dunya eksenine cok yakinsa tam eksene oturt (yakalanan uc
+            if abs(n.dot(e)) > math.cos(math.radians(2.0)):   # kacmasin diye o zaman degil)
                 n = e * np.sign(n.dot(e))
-        nl = self.w2l_dir(n)                               # kesim kafesin yerel koordinatinda yapilir
+        nl = self.w2l_dir(n)                             # kesim kafesin yerel koordinatinda yapilir
         return nl, float(nl.dot(self.w2l(P0))), p1
 
     def line_live(self, b, pos):
@@ -5669,7 +5974,10 @@ class SubDSession:
         c = b["before"][0]
         self.cage = c.copy()
         self.sel, self.sel_v, self.sel_e = set(), set(), set()
-        pl = self.line_plane(b["p0"], pos)
+        # hedefler kesim oncesi kafesten: canli kesimin yeni noktalari cizginin ucunu kendine cekmesin. Ctrl: aci adimi
+        hit = None if _ctrl_held() else self.line_snap(pos, b.get("snap"))
+        self._line_mark(hit)
+        pl = self.line_plane(b["p0"], hit[0] if hit else pos, b.get("w0"), hit[1] if hit else None)
         b["plane"] = pl
         if pl is not None:
             n, d, p1 = pl
@@ -5715,17 +6023,43 @@ class SubDSession:
         self.refresh()
 
     def _line_show(self, p0, p1):
-        vp = self.gv.viewport()
-        if self.line_overlay is None:
-            self.line_overlay = _LineOverlay(vp)
-        dpr = vp.devicePixelRatioF()
-        H = self.view.getSize()[1]
-        q = lambda p: QtCore.QPointF(p[0] / dpr, (H - p[1]) / dpr)
-        self.line_overlay.set_line(q(p0), q(p1))
+        self._line_widget().set_line(self._line_q(p0), self._line_q(p1))
 
     def _line_hide(self):
         if self.line_overlay is not None:
             self.line_overlay.set_line(None, None)
+        self._line_mark(None)
+
+    def _line_widget(self):
+        if self.line_overlay is None:
+            self.line_overlay = _LineOverlay(self.gv.viewport())
+        return self.line_overlay
+
+    def _line_q(self, p):
+        """Coin olay konumu (sol alt kokenli, aygit pikseli) -> Qt (sol ust, mantiksal)."""
+        dpr = self.gv.viewport().devicePixelRatioF()
+        return QtCore.QPointF(p[0] / dpr, (self.view.getSize()[1] - p[1]) / dpr)
+
+    def _line_mark(self, hit):
+        """Yakalama gostergesi: hedef varken imlec arti olur ve hedefte isaret cizilir; yoksa imlec eski haline doner."""
+        vp = self.gv.viewport()
+        if hit is not None:
+            if self._line_cursor is None:
+                self._line_cursor = vp.cursor()
+                vp.setCursor(QtCore.Qt.CrossCursor)
+            self._line_widget().set_mark(self._line_q(hit[0]), hit[2])
+        else:
+            if self._line_cursor is not None:
+                vp.setCursor(self._line_cursor)
+                self._line_cursor = None
+            if self.line_overlay is not None:
+                self.line_overlay.set_mark(None, None)
+
+    def _line_hover(self):
+        """Knife (line) acik, cizgi cekilmiyor: imlecin altindaki hedefi goster."""
+        self._pending = False
+        on = self.armed == "line" and self.box is None and self.mode != "object"
+        self._line_mark(self.line_snap(self.mouse, self.line_snap_data(self.cage)) if on else None)
 
     # --- kalici araclar (LightWave gibi): dugme sari yanar, kapatilana kadar her tiklama araci uygular ---
     # "knife": kenara tikla = loop cut + kaydirma; "line": cizgi cek = duzlemle kes; "loop": kenara tikla = halka sec.
@@ -5735,6 +6069,7 @@ class SubDSession:
         if self.drag or self.grab or self.box is not None or self.mode == "object":
             return
         self.armed = None if self.armed == name else name
+        self._line_mark(None)
         self.info = {None: "",
                      "knife": T("Knife: click edges to cut (K / Esc / right click: off)"),
                      "line": T("Knife: drag cut lines (Ctrl: 15° steps; J / Esc / right click: off)"),
@@ -5746,6 +6081,7 @@ class SubDSession:
         if self.armed:
             self.armed = None
             self.info = ""
+            self._line_mark(None)
 
     def hover_edge(self, pos):
         """Imlecin altindaki yuz ve o yuzun imlece en yakin kenari: (yuz, u, v) ya da None."""
@@ -6883,6 +7219,8 @@ class SubDSession:
 
     def toggle_snap(self):
         self.snap = not self.snap
+        if not self.snap:
+            self._line_mark(None)
         self.refresh()
 
     def _snap_prepare(self, verts):
@@ -7238,7 +7576,11 @@ class SubDSession:
         # kalici arac (sari dugme) acik kaldikca her tiklama onu uygular; secim / kutu secimi yapilmaz
         if self.armed == "line":                           # knife cizgisi baslar; birakinca kesilir
             cb.setHandled()
-            self.box = dict(p0=pos, moved=False, kind="line", shift=False, ctrl=False)
+            self.box = dict(p0=pos, press=pos, moved=False, kind="line", shift=False, ctrl=False)
+            self.box["snap"] = data = self.line_snap_data(self.cage)
+            hit = self.line_snap(pos, data)
+            if hit is not None:                            # cizgi yakalanan hedeften baslar
+                self.box.update(p0=hit[0], w0=hit[1])
             return
         if self.armed in ("knife", "loop"):
             cb.setHandled()
@@ -7291,7 +7633,8 @@ class SubDSession:
                 return
             cb.setHandled()
             b = self.box
-            if b["moved"] or abs(pos[0] - b["p0"][0]) + abs(pos[1] - b["p0"][1]) > 4:
+            p0 = b.get("press", b["p0"])                   # yakalanan baslangic imlecten uzak olabilir
+            if b["moved"] or abs(pos[0] - p0[0]) + abs(pos[1] - p0[1]) > 4:
                 b["moved"] = True
                 if b.get("kind") == "line":
                     b["pos"] = pos                         # canli kesim: hareketler birlestirilir
@@ -7301,6 +7644,8 @@ class SubDSession:
         else:
             key = self.gizmo.pick(pos)
             _later(lambda: self.gizmo.set_hover(key))
+            if self.armed == "line" or self._line_cursor is not None:
+                self._schedule(self._line_hover)
 
     def finish_box(self, pos):
         """Sol tus birakildi: surukleme olduysa kutu secimi, olmadiysa tiklama secimi."""
@@ -7365,7 +7710,7 @@ class SubDSession:
                 self.doc_undone()
             elif ctrl and k == "v":                       # panodaki cokgenler -> yeni SubD nesnesi
                 self.paste_faces()
-            elif ctrl and k in ("c", "x"):                # nesne modunda kopyalanacak cokgen yok
+            elif ctrl and k in ("c", "x", "w"):           # nesne modunda kopyalanacak cokgen / nokta yok
                 pass
             elif ctrl:
                 self.set_mode({"g": "point", "h": "face"}.get(k, "face"))
@@ -7410,7 +7755,7 @@ class SubDSession:
                 self.rail_finish()
         if ctrl:                                           # LightWave: ^G nokta, ^H cokgen
             {"z": self.do_undo, "g": lambda: self.set_mode("point"), "h": lambda: self.set_mode("face"),
-             "c": self.copy_faces, "x": lambda: self.copy_faces(cut=True), "v": self.paste_faces}[k]()
+             "c": self.copy_faces, "x": lambda: self.copy_faces(cut=True), "v": self.paste_faces, "w": self.weld}[k]()
         elif k == "n":
             self.toggle_options()
         elif k == "escape" and self.armed:
@@ -7420,6 +7765,10 @@ class SubDSession:
             self.toggle_smooth()
         elif k == "e":
             self.extrude()
+        elif k == "m":
+            self.merge_points()
+        elif k == "Z":
+            self.merge_polygons()
         elif k == "k":
             self.toggle_tool("knife")
         elif k == "t":                                     # LightWave Move: gizmo (menudeki Move dugmesi gibi)
@@ -7475,6 +7824,8 @@ class SubDSession:
             try:
                 if self.cage.F:
                     self.save(commit=True)
+                else:
+                    self._drop_empty()
                 self._show_edited()
             except Exception as e:
                 App.Console.PrintError(T("SubD could not be saved: %s\n") % e)
@@ -7487,6 +7838,7 @@ class SubDSession:
         if self.overlay is not None:
             _quiet(self.overlay.close)
             self.overlay = None
+        _quiet(lambda: self._line_mark(None))
         for w in (self.rubber, self.line_overlay):
             if w is not None:
                 _quiet(w.deleteLater)
@@ -7650,10 +8002,12 @@ _KEYS = {
     QtCore.Qt.Key_C: "c", QtCore.Qt.Key_B: "b", QtCore.Qt.Key_I: "i",
     QtCore.Qt.Key_H: "h", QtCore.Qt.Key_N: "n", QtCore.Qt.Key_L: "l", QtCore.Qt.Key_X: "x",
     QtCore.Qt.Key_J: "j", QtCore.Qt.Key_D: "d", QtCore.Qt.Key_O: "o", QtCore.Qt.Key_V: "v", QtCore.Qt.Key_P: "p",
+    QtCore.Qt.Key_M: "m", QtCore.Qt.Key_W: "w",
 }
-# Ctrl+Z geri al, Ctrl+G nokta modu, Ctrl+H cokgen modu (LightWave), Ctrl+C / X / V cokgen kopyala / kes / yapistir
-_CTRL_KEYS = ("z", "g", "h", "c", "x", "v")
-_CTRL_ONLY = ("z", "v")        # tek basina bizim degil (FreeCAD'e gider)
+# Ctrl+Z geri al, Ctrl+G nokta modu, Ctrl+H cokgen modu (LightWave), Ctrl+C / X / V cokgen kopyala / kes / yapistir,
+# Ctrl+W weld
+_CTRL_KEYS = ("z", "g", "h", "c", "x", "v", "w")
+_CTRL_ONLY = ("z", "v", "w")   # tek basina bizim degil (FreeCAD'e gider)
 
 
 class _KeyFilter(QtCore.QObject):
@@ -7689,6 +8043,8 @@ class _KeyFilter(QtCore.QObject):
         if k == "f" and ev.modifiers() & QtCore.Qt.ShiftModifier:
             k = "F"                                        # Shift+F: Flip (F: kaydet)
         extr = g is not None and g.get("kind") == "extrude"   # extrude surerken Z = eksen (Ctrl+Z degil)
+        if k == "z" and not ctrl and not extr and ev.modifiers() & QtCore.Qt.ShiftModifier:
+            k = "Z"                                        # Shift+Z: Merge polygons
         if k is None or (ctrl and k not in _CTRL_KEYS) or (not ctrl and k in _CTRL_ONLY and not (extr and k == "z")):
             return False
         if t == QtCore.QEvent.ShortcutOverride:
@@ -7751,27 +8107,48 @@ class _LineOverlay(QtWidgets.QWidget):
     def __init__(self, parent):
         super().__init__(parent)
         self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
-        self.a = self.b = None
+        self.a = self.b = self.mark = self.kind = None
         self.resize(parent.size())
         self.show()
 
     def set_line(self, a, b):
         self.a, self.b = a, b
+        self._changed()
+
+    def set_mark(self, pt, kind):
+        """Yakalama hedefi: "point" kare, "mid" ucgen, "edge" capraz."""
+        self.mark, self.kind = pt, kind
+        self._changed()
+
+    def _changed(self):
         self.resize(self.parent().size())
         self.raise_()
         self.update()
 
     def paintEvent(self, ev):
-        if self.a is None:
+        if self.a is None and self.mark is None:
             return
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
-        pen = QtGui.QPen(QtGui.QColor(245, 158, 11), 2, QtCore.Qt.DashLine)
-        p.setPen(pen)
-        p.drawLine(self.a, self.b)
-        p.setBrush(QtGui.QColor(245, 158, 11))
-        for pt in (self.a, self.b):
-            p.drawEllipse(pt, 3, 3)
+        if self.a is not None:
+            pen = QtGui.QPen(QtGui.QColor(245, 158, 11), 2, QtCore.Qt.DashLine)
+            p.setPen(pen)
+            p.drawLine(self.a, self.b)
+            p.setBrush(QtGui.QColor(245, 158, 11))
+            for pt in (self.a, self.b):
+                p.drawEllipse(pt, 3, 3)
+        if self.mark is not None:
+            p.setPen(QtGui.QPen(QtGui.QColor(34, 211, 238), 2))
+            p.setBrush(QtCore.Qt.NoBrush)
+            x, y, r = self.mark.x(), self.mark.y(), 6.0
+            if self.kind == "point":
+                p.drawRect(QtCore.QRectF(x - r, y - r, 2 * r, 2 * r))
+            elif self.kind == "mid":
+                p.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(x, y - r), QtCore.QPointF(x + r, y + r),
+                                               QtCore.QPointF(x - r, y + r)]))
+            else:
+                p.drawLine(QtCore.QPointF(x - r, y - r), QtCore.QPointF(x + r, y + r))
+                p.drawLine(QtCore.QPointF(x - r, y + r), QtCore.QPointF(x + r, y - r))
         p.end()
 
 
@@ -8172,6 +8549,7 @@ class _Overlay(object):
         btn("Knife (line)", "J", lambda: s.toggle_tool("line"), mode="edit", tool="line")
         menu_btn("Bridge", [("Bridge", s.bridge), ("Rail bridge", s.rail_bridge)])
         btn("Hole", "", s.hole, sel=True, mode="edit")
+        btn("Merge polygons", "⇧Z", s.merge_polygons, sel=True, mode="edit")
         btn("Delete", "Del", lambda: s.object_delete() if obj() else s.delete(), sel=True)
         head("Clipboard")
         btn("Copy", "^C", s.copy_faces, sel=True, mode="edit")
@@ -8184,6 +8562,8 @@ class _Overlay(object):
         btn("Stretch / Size", "H", lambda: s.set_gizmo("scale"), toggle=lambda: s.gizmo.mode == "scale")
         btn("Crease", "C", s.crease_selected, sel=True, mode="edit")
         btn("Reduce points", "", s.reduce_points, mode="edit")   # secim yoksa butun kafes
+        btn("Merge points", "M", s.merge_points, mode="edit")    # secim yoksa butun kafes
+        btn("Weld", "^W", s.weld, sel=True, mode="edit")         # son tiklanan noktada birlesir
         btn("Flip", "⇧F", s.flip_faces, mode="edit")             # secim yoksa butun cokgenler
         btn("Shell", "", s.shell)                     # Object: secili nesne; Edit: secili cokgenler (yoksa hepsi)
         # kafeste: secili cokgenler (secim yoksa hepsi) ayni kafese aynalanir; Object modunda: secili nesnelerin kopyasi

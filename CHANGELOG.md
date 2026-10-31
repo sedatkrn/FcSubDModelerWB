@@ -5,7 +5,24 @@
 - Rail Pipe / Rail Groove now live in the **Pimp My PartDesign** add-in (github.com/sedatkrn/partdesign_addins).
   When it is installed, this workbench no longer adds its own Rail Pipe buttons to PartDesign's toolbar (no
   duplicates); old documents keep opening, and the add-in links their Rail Pipe objects to itself.
+- Deleting every polygon of an object now removes the object (with its solid) from the tree when you leave its cage:
+  it used to stay there with its old shape. Ctrl+Z still works inside the edit, and FreeCAD's Undo brings the object
+  back afterwards.
 ### New tools
+- **Merge polygons** (Polygon, Shift+Z, LightWave Merge Polygons): selected adjacent polygons become one polygon;
+  inner edges and points go, creases on the outline stay. Polygons that are not adjacent, or a selection with no single
+  outline (a ring with a hole, a whole closed shape, mixed directions), give a warning and leave the cage untouched.
+- **Knife (line)** snaps to the cage when Snap is on: both ends of the line catch points, edge midpoints and edges
+  (points and midpoints win over edges). Over a target the cursor turns into a cross and a mark appears (square:
+  point, triangle: midpoint, X: edge), and the cut passes exactly through it. Ctrl (15° steps) turns snapping off for
+  the end of the line.
+- **Merge points** (Modify, key M, LightWave Detail > Points > Merge Points): joins points on the selection or the
+  whole cage. *Automatic* takes points in the same place; *Fixed distance* takes points within *Distance*. A point
+  moves onto the other (no averaging). Polygons that collapse are removed, a polygon that touches itself is split,
+  and two polygons left back to back on the same points are removed, so two closed pieces become one.
+- **Weld** (Modify, Ctrl+W, LightWave Detail > Points > Weld): selected points join at the last one clicked, which
+  stays in place, with the same polygon clean-up as Merge points. With Symmetry on, the mirror points weld too. A box
+  selection has no order, so Shift+click the target last.
 - Rail Pipe: a profile face that belongs to no solid (SubShapeBinder of a face, a lone face) no longer sends
   the pipe out of its back side: like a sketch, it leaves towards the other profile. A binder or sketch that
   lies on the Body's surface is treated like the Body's own face (outward, end carried into the body, so the
