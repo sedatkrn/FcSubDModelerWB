@@ -43,12 +43,18 @@ Catmull-Clark limit surface is on the roadmap.
 - Crease (sharp or semi-sharp edges) — makes the surface hit exact dimensions
 - Copy / cut / paste polygons (with their creases): paste in place into the same cage, into another SubD
   object, or as a new object (e.g. copy the neck of a bottle to start its cap)
-- **From face**: select faces or closed edge loops of a Part / PartDesign object (in object mode FreeCAD's own
-  selection works) and turn them into one cage: four-sided faces (flat or curved: cylinders, B-splines...) become
-  quad grids, flat faces with one or two boundaries become fans / quad strips, flat faces with several holes get a
-  quad ring around each hole and a quad-dominant fill between them, neighbouring faces are welded along
-  their shared edges, sharp joins and corners stay creased. With *Exact Edge* the cage is solved so the SubD
-  surface passes through all sample points (about 0.08 mm on a 4 mm thick filleted box)
+- **From face** (drop-down: Face / Edge / Point), from a Part / PartDesign object (in object mode FreeCAD's own
+  selection works):
+  - *Face*: select faces (or closed flat edge loops) and turn them into one cage: four-sided faces (flat or
+    curved: cylinders, B-splines...) become quad grids, flat faces with one or two boundaries become fans / quad
+    strips, flat faces with several holes get a quad ring around each hole and a quad-dominant fill between
+    them, neighbouring faces are welded along their shared edges, sharp joins and corners stay creased. With
+    *Exact Edge* the cage is solved so the SubD surface passes through all sample points (about 0.08 mm on a
+    4 mm thick filleted box)
+  - *Edge*: each chain of selected edges becomes one polygon (flat or not, e.g. a mating line). Edges whose ends
+    meet (within 0.01 mm, also from different objects) form one chain; an open chain is closed with a straight
+    edge; separate chains give separate polygons. *Arc Segments* / *Max Length* set the sampling.
+  - *Point*: the selected points become one polygon, in the order they were picked.
 - **Make polygon** (P, LightWave Make Polygon / Blender F): a polygon from 3 or more selected points, a closed
   edge loop (fills a hole), or two edges / an open chain (bridges their ends); faces its neighbours
 - **Snap** (bottom bar): free moves (G, the gizmo's centre cube) snap the point nearest to the cursor to the
@@ -59,7 +65,8 @@ Catmull-Clark limit surface is on the roadmap.
   faces are removed), with number of cuts, twist, smoothness (tangent to the surfaces) and profile factor
 - Mirror X / Y / Z (LightWave Mirror): mirrors the selected polygons (or the whole cage) across a world axis
   plane (exact center in the panel) and welds the points on the plane, so a half model becomes one piece
-- LightWave-style **Create / Modify** tabs in the FreeCAD toolbar choose which tool menu the viewport shows
+- The tools are in the **SubD tools** panel, a FreeCAD panel you can dock or float; its LightWave-style **Create /
+  Modify** tabs choose which tool menu it shows
 - X symmetry for every tool
 - Move / rotate / stretch / size gizmo (ported from FC YBT Raytracer), Ctrl = mm / degree steps
 - Exact numeric input for every operation, plus selection center / size in mm
@@ -77,6 +84,20 @@ Catmull-Clark limit surface is on the roadmap.
 - The cage is saved in the document (`SubD` object), auto-saved every 20 s
 - Parametric B-rep solid (`SubD to solid`), STEP export, booleans, PartDesign
 - Shows both the cage size and the real surface size
+- **Rail Pipe / Rail Groove** (toolbar, PartDesign): the exact B-rep counterpart of Rail bridge as a step in a
+  PartDesign Body. Select one or two flat faces or closed sketches of the Body (a sketch: click its edge or pick it in the
+  tree) and press Rail Pipe (adds) or Rail Groove (cuts): the start profile is swept along a guide curve to the
+  second profile, or to a free end; in an empty Body the pipe is the first solid. The
+  curve leaves (and enters) the faces perpendicular, passes through *GuidePoints* and follows the same rules as
+  the modeler's guide (*Tension*, no bulge on uneven spacing); *EndScale* sizes a free end, *Reversed* flips
+  the start direction. Double-click the feature to edit the guide on screen (shown like Pad / Pocket editing: the previous solid
+  plus a green / red translucent preview): click a yellow point and move it with
+  the modeler's Move gizmo (arrows: along X / Y / Z, squares: in a plane, cube: in the screen plane) or drag
+  the point itself (the white end points belong to the profiles); click the curve to pick a span and *Add
+  point* puts a point exactly there; delete points, *Move neighbors* makes the guide follow like a cable
+  (as in the modeler); the task panel also has the selected point's X / Y / Z, *Tension*, *End scale* and
+  *Reversed*. OK keeps the changes as one undo step, Cancel reverts them. The feature recomputes like any
+  PartDesign feature and later steps (fillets, pockets) build on it.
 
 ![Edge bevel with 4 segments](docs/edge_bevel_smooth.png)
 
@@ -119,7 +140,8 @@ document; save the document as usual (Ctrl+S).
 | T / R / H | move / rotate / stretch-size gizmo | G | free move with the mouse |
 | Y | X symmetry | X | ghost mode |
 | Del | delete faces | Ctrl+Z | undo |
-| P | make polygon from selected points / edges | | |
+| P | make polygon from selected points / edges | M | merge points (selection or whole cage) |
+| Ctrl+W | weld selected points at the last one clicked | Shift+Z | merge selected adjacent polygons |
 | Ctrl+C / Ctrl+X | copy / cut polygons | Ctrl+V | paste in place (object mode: as a new SubD object) |
 | F | save to the document | N | Options panel |
 | Ctrl (while dragging) | mm / degree steps | Shift (while dragging) | fine control |
@@ -140,6 +162,7 @@ bottom bar switches it (the modeler reopens with the same model). The setting is
 - Export / import of the raw cage with creases (OBJ / USD) for Blender round-trips
 - Odd segment counts for all-quad edge-bevel corners
 - From face: curved faces that are not four-sided
+- Rail Pipe: scale per guide point, sketches with several profiles (holes)
 
 ## License
 

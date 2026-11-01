@@ -103,6 +103,21 @@ TR = {
     "From face: select a flat face of a Part / PartDesign object (in object mode)":
         "Yüzeyden: bir Part / PartDesign nesnesinin düz yüzeyini seçin (nesne modunda)",
     "From face: %d polygons, %d points": "Yüzeyden: %d çokgen, %d nokta",
+    "Face": "Yüzey",
+    "Edge": "Kenar",
+    "Point": "Nokta",
+    "From edges": "Kenarlardan",
+    "From points": "Noktalardan",
+    "From face: select edges of a Part / PartDesign object":
+        "Yüzeyden: bir Part / PartDesign nesnesinin kenarlarını seçin",
+    "From face: select 3 or more points of a Part / PartDesign object":
+        "Yüzeyden: bir Part / PartDesign nesnesinin 3 ya da daha fazla noktasını seçin",
+    "From face: select 3 or more points that are not on one line":
+        "Yüzeyden: aynı doğru üzerinde olmayan 3 ya da daha fazla nokta seçin",
+    "From face: the selected edges branch (more than two meet at a point)":
+        "Yüzeyden: seçili kenarlar dallanıyor (bir noktada ikiden fazla kenar buluşuyor)",
+    "From face: no polygon can be made from the selected edges":
+        "Yüzeyden: seçili kenarlardan çokgen yapılamıyor",
     "Snap: %s": "Yakala: %s",
     "vertex": "köşe",
     "edge": "kenar",
@@ -116,6 +131,117 @@ TR = {
     "Hole: radius too large for the selected faces (max %.2f mm)":
         "Delik: yarıçap seçili yüzlere sığmıyor (en çok %.2f mm)",
     "Hole: radius %.2f mm, %d segments": "Delik: yarıçap %.2f mm, %d segment",
+    "Reduce points": "Nokta azalt",
+    "Merge points": "Noktaları birleştir",
+    "Merge points: %d merged": "Noktaları birleştir: %d nokta birleşti",
+    "Fixed distance": "Sabit mesafe",
+    "SubD tools": "SubD araçları",
+    "Matcap": "Matcap",
+    "Environment reflection": "Ortam yansıtma",
+    "Environment image": "Ortam resmi",
+    "Environment image: %s": "Ortam resmi: %s",
+    "Environment image (*.hdr *.jpg *.jpeg *.png)": "Ortam resmi (*.hdr *.jpg *.jpeg *.png)",
+    "Load image...": "Resim yükle...",
+    "Roughness": "Pürüzlülük",
+    "Surface color": "Yüzey rengi",
+    "Cage color": "Kafes rengi",
+    "Color of the cage faces when Subpatch is off": "Subpatch kapalıyken kafes yüzlerinin rengi",
+    "Surface color for the plastic look (no effect at Metal 1)": "Plastik görünümün yüzey rengi (Metal 1'de etkisiz)",
+    "0: mirror, 1: fully blurred reflections": "0: ayna, 1: tamamen bulanık yansıma",
+    "0: plastic (surface color with a soft reflection), 1: metal (reflection only)":
+        "0: plastik (yüzey rengi ve hafif yansıma), 1: metal (yalnız yansıma)",
+    "The smooth preview reflects an image of the surroundings: an equirectangular (2:1) panorama, best as .hdr; JPG and PNG also work":
+        "Pürüzsüz önizleme, ortam resmini yansıtır: eşdikdörtgen (2:1) panorama; en iyisi .hdr, JPG ve PNG de olur",
+    "Off": "Kapalı",
+    "Clay": "Kil",
+    "Plastic": "Plastik",
+    "Black plastic": "Siyah plastik",
+    "Ceramic": "Seramik",
+    "Metal": "Metal",
+    "Surface look of the smooth preview (Edit mode)": "Pürüzsüz önizlemenin yüzey görünümü (Edit modu)",
+    "Merge polygons": "Çokgenleri birleştir",
+    "Merge polygons: select at least two adjacent polygons": "Çokgenleri birleştir: en az iki bitişik çokgen seçin",
+    "Merge polygons: the selected polygons are not adjacent": "Çokgenleri birleştir: seçili çokgenler bitişik değil",
+    "Merge polygons: no single outline (hole, closed shape or mixed directions: try Flip)":
+        "Çokgenleri birleştir: tek dış sınır çıkmıyor (delik, kapalı şekil ya da karışık yön: Çevir'i deneyin)",
+    "Merge polygons: %d polygons merged": "Çokgenleri birleştir: %d çokgen birleşti",
+    "Weld": "Kaynak",
+    "Weld: select at least two points": "Kaynak: en az iki nokta seçin",
+    "Weld: Shift+click the target point last": "Kaynak: hedef noktaya en son Shift+tıklayın",
+    "Weld: %d points welded": "Kaynak: %d nokta birleşti",
+    "Rail bridge": "Kılavuzlu köprü",
+    "Rail bridge: select two polygon regions or edge loops, or one region to extend":
+        "Kılavuzlu köprü: iki çokgen bölgesi / kenar halkası ya da uzatmak için tek bölge seçin",
+    "Rail bridge: click a point and move it, I: add segment, Del: delete point, Enter: done":
+        "Kılavuzlu köprü: noktaya tıklayıp taşıyın, I: segment ekle, Del: nokta sil, Enter: bitti",
+    "Rail bridge: the tube was changed, its guide curve can no longer be edited":
+        "Kılavuzlu köprü: boru değiştirilmiş, kılavuz eğrisi artık düzenlenemiyor",
+    "Rail bridge: this point cannot be deleted": "Kılavuzlu köprü: bu nokta silinemez",
+    "Add segment (I)": "Segment ekle (I)",
+    "Delete point (Del)": "Nokta sil (Del)",
+    "Done (Enter)": "Bitti (Enter)",
+    "Move neighbors": "Komşular da gelsin",
+    "Elasticity": "Esneklik",
+    "Tension": "Gerginlik",
+    "Rail Pipe": "Raylı boru",
+    "Rail Groove": "Raylı kanal",
+    "PartDesign: add a pipe along a guide curve from a flat face or closed sketch to a second one or a free end. Edit GuidePoints, Tension and EndScale in the property view":
+        "PartDesign: düz bir yüzden ya da kapalı sketch'ten ikincisine ya da serbest uca, kılavuz eğri boyunca boru ekler. GuidePoints, Tension ve EndScale özellik panelinden düzenlenir",
+    "PartDesign: cut a groove along a guide curve from a flat face or closed sketch (and to a second one). Edit GuidePoints, Tension and EndScale in the property view":
+        "PartDesign: düz bir yüzden ya da kapalı sketch'ten (ve ikincisine) kılavuz eğri boyunca kanal oyar. GuidePoints, Tension ve EndScale özellik panelinden düzenlenir",
+    "Rail Pipe: select one or two flat faces of a PartDesign Body.\n":
+        "Raylı boru: bir PartDesign Body'nin bir ya da iki düz yüzünü seçin.\n",
+    "Rail Pipe: the faces must belong to a PartDesign Body.\n": "Raylı boru: yüzler bir PartDesign Body'ye ait olmalı.\n",
+    "Rail Pipe: the start face must be flat.\n": "Raylı boru: başlangıç yüzü düz olmalı.\n",
+    "Rail Pipe: the first sweep failed; adjust GuidePoints in the property view.\n":
+        "Raylı boru: ilk süpürme başarısız; GuidePoints'i özellik panelinden düzenleyin.\n",
+    "Rail Pipe: select one or two flat faces or closed sketches of a PartDesign Body.\n":
+        "Raylı boru: bir PartDesign Body'nin bir ya da iki düz yüzünü veya kapalı sketch'ini seçin.\n",
+    "Edit Rail Pipe": "Raylı boruyu düzenle",
+    "Click a guide point in the 3D view and move it with the gizmo (arrows: along an axis, squares: in a plane, cube: free) or drag the point itself. The white end points belong to the profiles and stay put. Click the curve to pick a span: Add point puts the new point where you clicked.":
+        "3B görünümde bir kılavuz noktasına tıklayın ve gizmo ile taşıyın (oklar: eksen boyunca, kareler: düzlemde, küp: serbest) ya da noktanın kendisini sürükleyin. Beyaz uç noktalar profillere aittir, yerinde kalır. Bir eğri parçası seçmek için eğriye tıklayın: Nokta ekle yeni noktayı tıkladığınız yere koyar.",
+    "Selected point": "Seçili nokta",
+    "Add point": "Nokta ekle",
+    "Delete point": "Nokta sil",
+    "Guide": "Kılavuz",
+    "The guide follows the dragged point like a cable": "Kılavuz, sürüklenen noktayı kablo gibi izler",
+    "End scale": "Uç ölçeği",
+    "Reversed": "Ters",
+    "Rail Pipe: the sketch has no closed profile": "Raylı boru: sketch'te kapalı profil yok",
+    "Rail Pipe: the start face is missing": "Raylı boru: başlangıç yüzü bulunamadı",
+    "Rail Pipe: the start face must be flat": "Raylı boru: başlangıç yüzü düz olmalı",
+    "Rail Pipe: a free end needs at least one guide point": "Raylı boru: serbest uç için en az bir kılavuz noktası gerekir",
+    "Rail Pipe: two guide points are on top of each other": "Raylı boru: iki kılavuz noktası üst üste",
+    "Rail Pipe: the sweep failed (%s)": "Raylı boru: süpürme başarısız (%s)",
+    "Rail Pipe: the sweep gave no solid": "Raylı boru: süpürmeden katı çıkmadı",
+    "Rail Pipe: the sweep gave an invalid solid": "Raylı boru: süpürme geçersiz bir katı verdi (eğri çok dar kıvrılıyor olabilir)",
+    "Align": "Hizala",
+    "Align horizontally: the selected points get the same height on screen":
+        "Yatay hizala: seçili noktalar ekranda aynı yüksekliğe gelir",
+    "Align vertically: the selected points line up one above the other on screen":
+        "Dikey hizala: seçili noktalar ekranda alt alta dizilir",
+    "Align: select two or more points": "Hizala: iki ya da daha fazla nokta seçin",
+    "Align: select two or more separate polygons or edges":
+        "Hizala: birbirinden ayrı iki ya da daha fazla poligon veya kenar seçin",
+    "Align horizontally: selected points (polygons, edges: their centers) get the same height on screen":
+        "Yatay hizala: seçili noktalar (poligon ve kenarlarda merkezleri) ekranda aynı yüksekliğe gelir",
+    "Align vertically: selected points (polygons, edges: their centers) line up one above the other on screen":
+        "Dikey hizala: seçili noktalar (poligon ve kenarlarda merkezleri) ekranda alt alta dizilir",
+    "Align: Shift-click two or more guide points (the end points too)":
+        "Hizala: Shift ile iki ya da daha fazla kılavuz noktası seçin (uç noktalar da olur)",
+    "Align horizontally (Shift-click guide points, the end points too)":
+        "Yatay hizala (kılavuz noktalarını Shift ile seçin, uç noktalar da olur)",
+    "Align vertically (Shift-click guide points, the end points too)":
+        "Dikey hizala (kılavuz noktalarını Shift ile seçin, uç noktalar da olur)",
+    "Align horizontally: %s":"Yatay hizalandı: %s",
+    "Align vertically: %s": "Dikey hizalandı: %s",
+    "Scale": "Ölçek",
+    "Flip": "Çevir",
+    "Flip: %d polygons": "Çevir: %d çokgen",
+    "Auto direction": "Otomatik yön",
+    "Reduce points: %d removed": "Nokta azalt: %d nokta çıkarıldı",
+    "Degrees": "Derece",
+    "Delete points": "Noktaları sil",
     "Bridge": "Köprü",
     "Number of Cuts": "Kesim sayısı",
     "Twist": "Burgu",
@@ -261,6 +387,7 @@ TR = {
         "Knife: kesmek için kenarlara tıkla (K / Esc / sağ tık: kapat)",
     "Distance %.3f mm": "Mesafe %.3f mm",
     "Axis (none = normal)": "Eksen (boş = normal)",
+    "Individual faces (own normals)": "Yüzler ayrı (kendi normalinde)",
     "Extrude: select open (boundary) edges": "Extrude: açık (sınır) kenarları seçin",
     "Extrude  %.3f mm   %d segments": "Extrude  %.3f mm   %d segment",
     "Extrude  %s mm   %d segments": "Extrude  %s mm   %d segment",

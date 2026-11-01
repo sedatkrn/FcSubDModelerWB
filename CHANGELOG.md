@@ -2,7 +2,107 @@
 
 ## Unreleased
 
+- Rail Pipe / Rail Groove now live in the **Pimp My PartDesign** add-in (github.com/sedatkrn/partdesign_addins).
+  When it is installed, this workbench no longer adds its own Rail Pipe buttons to PartDesign's toolbar (no
+  duplicates); old documents keep opening, and the add-in links their Rail Pipe objects to itself.
+- Deleting every polygon of an object now removes the object (with its solid) from the tree when you leave its cage:
+  it used to stay there with its old shape. Ctrl+Z still works inside the edit, and FreeCAD's Undo brings the object
+  back afterwards.
+- The tool column and the Create / Modify tabs now live in a FreeCAD panel (**SubD tools**) instead of on top of the 3D
+  view: it opens as a tab next to Model / Tasks and can be dragged to a side or floated, and its place is remembered.
+  The bottom bar, numeric panel and messages stay in the view.
 ### New tools
+- **Cage color** (Options): color of the cage faces when Subpatch is off; remembered.
+- **Environment reflection** (Options): the smooth preview in Edit mode reflects a loaded panorama, read per pixel and
+  wrapped on a sphere around the model (fixed to the world, Z up), so flat faces show an image instead of streaks. *Roughness* blurs the reflection and *Metal* goes
+  from plastic (surface color lit by the image, with a soft reflection stronger at the edges; *Surface color* sets it) to metal. Use an equirectangular (2:1) image: Radiance .hdr is best, JPG and PNG also work. HDR is tone
+  mapped to 8 bits. Image and setting are remembered. The surface does not reflect itself or cast shadows.
+- **Matcap** (bottom bar): surface looks for the smooth preview in Edit mode, with light, highlights and darkened edges
+  painted into a texture: Clay, Plastic, Black plastic, Ceramic, Metal. The texture is read per pixel, on smooth normals
+  of the surface (creases and very sharp breaks stay hard), so no blocks appear in curved areas. The choice is
+  remembered. Zebra takes over while it is on.
+- **Merge polygons** (Polygon, Shift+Z, LightWave Merge Polygons): selected adjacent polygons become one polygon;
+  inner edges and points go, creases on the outline stay. Polygons that are not adjacent, or a selection with no single
+  outline (a ring with a hole, a whole closed shape, mixed directions), give a warning and leave the cage untouched.
+- **Knife (line)** snaps to the cage when Snap is on: both ends of the line catch points, edge midpoints and edges
+  (points and midpoints win over edges). Over a target the cursor turns into a cross and a mark appears (square:
+  point, triangle: midpoint, X: edge), and the cut passes exactly through it. Ctrl (15° steps) turns snapping off for
+  the end of the line.
+- **Merge points** (Modify, key M, LightWave Detail > Points > Merge Points): joins points on the selection or the
+  whole cage. *Automatic* takes points in the same place; *Fixed distance* takes points within *Distance*. A point
+  moves onto the other (no averaging). Polygons that collapse are removed, a polygon that touches itself is split,
+  and two polygons left back to back on the same points are removed, so two closed pieces become one.
+- **Weld** (Modify, Ctrl+W, LightWave Detail > Points > Weld): selected points join at the last one clicked, which
+  stays in place, with the same polygon clean-up as Merge points. With Symmetry on, the mirror points weld too. A box
+  selection has no order, so Shift+click the target last.
+- Rail Pipe: a profile face that belongs to no solid (SubShapeBinder of a face, a lone face) no longer sends
+  the pipe out of its back side: like a sketch, it leaves towards the other profile. A binder or sketch that
+  lies on the Body's surface is treated like the Body's own face (outward, end carried into the body, so the
+  fuse no longer splits or comes out empty). A single-face object picked in the tree is accepted.
+- **Rail Pipe / Rail Groove** (toolbar, also in PartDesign's Modeling Features toolbar): PartDesign features in
+  a Body. From one flat face or closed sketch to a second one or a free end (an empty Body works too), the start
+  profile is swept (OCCT pipe shell) along a guide curve built like the modeler's
+  Rail bridge guide (perpendicular to the faces, *Tension*, no bulge on uneven spacing) and fused into or cut
+  out of the Body. Properties: *GuidePoints*, *Tension*, *EndScale* (free end), *Reversed*. Double-click edits the guide on
+  screen: the selected point gets the modeler's Move gizmo (axis arrows, plane squares, free cube) or is
+  dragged directly (live curve, the pipe recomputes as you drag; a missed button release no longer leaves the
+  point stuck to the mouse), while editing, the Body shows as with Pad / Pocket: the previous solid as usual and the added (green) or cut
+  (red) shape as FreeCAD's own translucent preview; click the curve to pick a span (*Add point* inserts exactly
+  where you clicked), delete points, *Move neighbors*
+  (cable, with *Elasticity*), X / Y / Z of the selected point; OK is one undo step, Cancel reverts. The ends are
+  carried a little past the faces so no coincident faces are left for the boolean, and the sweep falls back
+  through several frame / continuity modes until it gives a valid solid. The cross-section is oriented by an
+  auxiliary spine built from our own rotation-minimizing frame (OCCT's CorrectedFrenet let the seam and edge
+  lines wobble a few degrees around the tube); while dragging on screen only the pipe is swept (fast mode, no
+  boolean / refine / orientation test, coarse preview mesh: ~0.05 s per step) and the smooth one is computed on
+  release. The boolean result is checked by volume (fuse: body + pipe - common, cut: body - common;
+  a sweep that looks clean could lose the pipe in the boolean), falling back to the next sweep mode; the slow
+  BOP check (up to 25 s on sharp bends) is not used. Works without the GUI (freecadcmd).
+- **From face** is now a drop-down with three commands. *Face*: as before. *Edge*: every chain of selected
+  edges becomes one polygon, flat or not; ends that meet within 0.01 mm (also across objects) are joined, an
+  open chain is closed with a straight edge (split by *Max Length*), separate chains stay separate polygons.
+  *Point*: the selected points become one polygon in pick order (kept across objects). Edge and Point polygons
+  face the camera.
+- **Rail bridge** (Polygon): a tube along a live guide curve. Select two polygon regions / edge loops (or one
+  region to extend from); the curve leaves each end perpendicular to its polygon and every ring in between
+  stays perpendicular to the curve, carried along without twist, its shape blending from one end to the
+  other. While editing, click a point and move it with the gizmo or the panel's X / Y / Z, set its ring
+  *Scale*, *Segments* re-spaces the rings along the curve, I adds a ring in the clicked span, Del removes the
+  selected one, Enter finishes. The guide is stored with the cage (undo, saved in the document): double-click
+  the curve later to edit it again. If the tube is cut or rebuilt by hand, the guide detaches with a message.
+  *Move neighbors* makes the guide act like a cable: the whole guide follows the moved point, bends smoothly
+  (leaving the end rings perpendicular), keeps its segment lengths, pulls straight and stretches evenly when
+  pulled further than its length. A free tail lies like a cable on a table: pulling a middle point raises a
+  bulge there while the free end barely moves, until the tail is pulled taut and drags along. *Elasticity*
+  (default 0.1) sets how easily the
+  segments stretch: 0 chain, 1 rubber band. The end rings never move. Bridge and Rail bridge share one
+  drop-down button.
+- **Align** (two small icon buttons next to Snap in the bottom bar, also in the Options panel and the Rail
+  bridge panel): lines up two or more selected points horizontally or vertically on screen, along the world
+  axis nearest to the screen's up / right direction, at their mean. With polygons or edges selected their
+  centers are aligned instead: touching selected elements move together as one piece, unchanged.
+  While a Rail bridge guide is edited it aligns the guide points instead: the start (A) and end (B) points now
+  show as handles too, Shift-click adds points to the selection, and if A or B is selected the other points
+  line up with it (A and B themselves never move).
+- Rail bridge: the guide no longer bulges after a long gap followed by a short one (tangents scale with each
+  span's own length), and a new *Tension* field (0 smooth .. 1 straight between points, saved per guide) pulls
+  the curve tighter where it still rounds out too much.
+- Rail bridge: the panel's X / Y / Z fields of the selected guide point now work (the method was shadowed by a drawing node).
+- Tool panel: optional button row under the fields.
+- **Flip** (Modify, Shift+F; LightWave Flip): reverses the selected polygons (all when nothing is selected),
+  so their normals point the other way. F stays Save.
+- **Bridge > Auto direction** (on by default): an end made of free (pasted, unattached) polygons is turned to
+  face the other end, so a smooth bridge no longer wraps around behind a copied polygon. Ends embedded in a
+  surface keep their direction (handles over a surface still work); the strip takes its winding from the
+  embedded end.
+- **Reduce points** (Modify, LightWave Construct > Reduce): removes in-between points along polygon edges whose
+  bend is below *Degrees* (default 5°), on the selection or the whole cage. Only points on a single edge line
+  are taken, so neighbouring polygons stay joined; polygons never drop below triangles; creases carry over to
+  the merged edge. *Delete points* removes the freed points from the cage.
+- **Extrude > Individual faces (own normals)**: each selected face is extruded on its own, with its own side
+  walls, along its own normal (Blender's Extrude Individual Faces), e.g. for knurled / ribbed rings on a
+  cylinder. Off: the region moves along the averaged normal as before. The choice is remembered; an axis lock
+  turns it off. It sits on its own row under the axis checks.
 - **Shell** (Modify): object mode shells the whole selected object, edit mode the selected polygons. Thickness,
   inside / outside / centered, *Detail filter* (details narrower than this width are skipped on the inner side:
   short inner edges such as support loops and narrow steps are merged, and a robust local quadric fit flattens
