@@ -9,7 +9,7 @@ You model a low-poly control cage with polygon tools (extrude, bevel, knife, loo
 Catmull-Clark surface live. Everything has exact numeric input, so it stays a CAD tool: after every operation a
 small panel in the viewport shows its values — type a number, press Enter, and the operation is redone with it.
 
-> **Status:** early version (0.2.0, see the [changelog](CHANGELOG.md)). It works and is fun to use, but expect
+> **Status:** early version (0.3.0, see the [changelog](CHANGELOG.md)). It works and is fun to use, but expect
 > rough edges. Feedback and bug reports are very welcome.
 
 ## Is the result a mesh or a B-rep?
@@ -139,6 +139,7 @@ document; save the document as usual (Ctrl+S).
 | K | loop cut + slide (stays on) | J | line knife, live plane cut (stays on) |
 | T / R / H | move / rotate / stretch-size gizmo | G | free move with the mouse |
 | Y | X symmetry | X | ghost mode |
+| Q | Snap on/off | | |
 | Del | delete faces | Ctrl+Z | undo |
 | P | make polygon from selected points / edges | M | merge points (selection or whole cage) |
 | Ctrl+W | weld selected points at the last one clicked | Shift+Z | merge selected adjacent polygons |
