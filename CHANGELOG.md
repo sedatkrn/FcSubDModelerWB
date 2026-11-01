@@ -1,7 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-02)
 
+- **Snap** can be switched on and off with the **Q** key.
+- **Hole** now works on several separate polygon patches at once, one hole in each (for example opposite walls). The
+  radius and segments are shared, so the holes match; if one patch cannot take the hole, nothing changes.
+- **Magnet** (Modify): drag on the cage to pull or push it softly. Points inside the radius (shown as a ring) move by
+  their distance from the pressed spot; a selection limits it to the selected points. Falloff: Smooth, Linear, Peak,
+  Dome. **Spherical** measures in 3D, **Radial** ignores depth, so it affects everything inside the ring through the
+  whole model along the view direction. Dragging with the right mouse button (or the wheel during a pull) sets the
+  radius; a right click without moving closes the tool. Ctrl while pulling keeps the move straight, horizontal or
+  vertical on screen. With Snap on, the pressed spot and the end of the pull catch the cage's own points and edges (not the
+  ones being moved) and Part / PartDesign corners and edges; the target and the ring show before you press.
+  The panel re-applies Radius, offset and falloff afterwards.
+  Works with symmetry; it only moves points, so no polygons are added.
+- **Align** now lines everything up with the first clicked point (polygon, edge, guide point), which stays in place,
+  instead of the mean. A selection made only with a box still aligns at the mean, since it has no first click.
 - Rail Pipe / Rail Groove now live in the **Pimp My PartDesign** add-in (github.com/sedatkrn/partdesign_addins).
   When it is installed, this workbench no longer adds its own Rail Pipe buttons to PartDesign's toolbar (no
   duplicates); old documents keep opening, and the add-in links their Rail Pipe objects to itself.
@@ -79,7 +93,7 @@
   drop-down button.
 - **Align** (two small icon buttons next to Snap in the bottom bar, also in the Options panel and the Rail
   bridge panel): lines up two or more selected points horizontally or vertically on screen, along the world
-  axis nearest to the screen's up / right direction, at their mean. With polygons or edges selected their
+  axis nearest to the screen's up / right direction. With polygons or edges selected their
   centers are aligned instead: touching selected elements move together as one piece, unchanged.
   While a Rail bridge guide is edited it aligns the guide points instead: the start (A) and end (B) points now
   show as handles too, Shift-click adds points to the selection, and if A or B is selected the other points

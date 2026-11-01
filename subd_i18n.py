@@ -125,8 +125,8 @@ TR = {
     "Radius": "Yarıçap",
     "Support": "Destek",
     "Hole: select faces": "Delik: yüz seçin",
-    "Hole: the selected faces must form one patch without holes":
-        "Delik: seçili yüzler deliksiz tek bir parça olmalı",
+    "Hole: each selected patch must be closed, without holes inside":
+        "Delik: seçili her parça kapalı ve içi deliksiz olmalı",
     "Hole: the selected faces are not flat": "Delik: seçili yüzler düz değil",
     "Hole: radius too large for the selected faces (max %.2f mm)":
         "Delik: yarıçap seçili yüzlere sığmıyor (en çok %.2f mm)",
@@ -215,18 +215,29 @@ TR = {
     "Rail Pipe: the sweep failed (%s)": "Raylı boru: süpürme başarısız (%s)",
     "Rail Pipe: the sweep gave no solid": "Raylı boru: süpürmeden katı çıkmadı",
     "Rail Pipe: the sweep gave an invalid solid": "Raylı boru: süpürme geçersiz bir katı verdi (eğri çok dar kıvrılıyor olabilir)",
+    "Magnet": "Mıknatıs",
+    "Magnet: drag to pull the surface softly, a selection limits it (right drag: radius; Esc / right click: off)":
+        "Mıknatıs: yüzeyi yumuşakça çekmek için sürükleyin, seçim varsa yalnız onu etkiler (sağ tuşla sürükleme: yarıçap; Esc / sağ tık: kapat)",
+    "Radius %.3f mm": "Yarıçap %.3f mm",
+    "Spherical": "Küresel",
+    "Radial": "Radyal",
+    "Magnet: no points within the radius": "Mıknatıs: yarıçap içinde nokta yok",
+    "Smooth": "Yumuşak",
+    "Linear": "Doğrusal",
+    "Peak": "Sivri",
+    "Dome": "Kubbe",
     "Align": "Hizala",
-    "Align horizontally: the selected points get the same height on screen":
-        "Yatay hizala: seçili noktalar ekranda aynı yüksekliğe gelir",
-    "Align vertically: the selected points line up one above the other on screen":
-        "Dikey hizala: seçili noktalar ekranda alt alta dizilir",
+    "Align horizontally: the selected points get the height of the first clicked one on screen":
+        "Yatay hizala: seçili noktalar ekranda ilk tıklanan noktanın yüksekliğine gelir",
+    "Align vertically: the selected points line up with the first clicked one on screen":
+        "Dikey hizala: seçili noktalar ekranda ilk tıklanan noktanın altına / üstüne dizilir",
     "Align: select two or more points": "Hizala: iki ya da daha fazla nokta seçin",
     "Align: select two or more separate polygons or edges":
         "Hizala: birbirinden ayrı iki ya da daha fazla poligon veya kenar seçin",
-    "Align horizontally: selected points (polygons, edges: their centers) get the same height on screen":
-        "Yatay hizala: seçili noktalar (poligon ve kenarlarda merkezleri) ekranda aynı yüksekliğe gelir",
-    "Align vertically: selected points (polygons, edges: their centers) line up one above the other on screen":
-        "Dikey hizala: seçili noktalar (poligon ve kenarlarda merkezleri) ekranda alt alta dizilir",
+    "Align horizontally: selected points (polygons, edges: their centers) get the height of the first clicked one on screen":
+        "Yatay hizala: seçili noktalar (poligon ve kenarlarda merkezleri) ekranda ilk tıklananın yüksekliğine gelir",
+    "Align vertically: selected points (polygons, edges: their centers) line up with the first clicked one on screen":
+        "Dikey hizala: seçili noktalar (poligon ve kenarlarda merkezleri) ekranda ilk tıklananın altına / üstüne dizilir",
     "Align: Shift-click two or more guide points (the end points too)":
         "Hizala: Shift ile iki ya da daha fazla kılavuz noktası seçin (uç noktalar da olur)",
     "Align horizontally (Shift-click guide points, the end points too)":

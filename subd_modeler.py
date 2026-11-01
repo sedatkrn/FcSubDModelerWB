@@ -480,6 +480,54 @@ class Cage:
         return list(range(nf, len(self.F)))
 
     def hole(self, region, radius=0.0, segs=0, support=-1.0):
+        """Secili yuzlerin birbirine kenardan bagli her parcasina bir delik (karsilikli delikler icin). Otomatik
+        degerler parcalarin hepsine sigan ortak degerlerdir: en kucuk yaricap ve destek, en cok segment. Bir parca
+        olmazsa kafes degismez. Donus: _hole_patch gibi."""
+        ef = self.edge_faces()
+        patches, left = [], set(region)
+        while left:
+            todo, patch = [left.pop()], set()
+            while todo:
+                fi = todo.pop()
+                patch.add(fi)
+                f = self.F[fi]
+                for i in range(len(f)):
+                    for o in ef[_edge(f[i], f[(i + 1) % len(f)])]:
+                        if o in left:
+                            left.remove(o)
+                            todo.append(o)
+            patches.append(patch)
+        if len(patches) < 2:
+            return self._hole_patch(region, radius, segs, support)
+        res = self._hole_patches(patches, radius, segs, support)
+        if isinstance(res, str):
+            return res
+        if radius <= 0 or segs < 3 or support < 0:
+            used = res[2]
+            res = self._hole_patches(patches, radius if radius > 0 else min(u[0] for u in used),
+                                     segs if segs >= 3 else max(u[1] for u in used),
+                                     support if support >= 0 else min(u[2] for u in used))
+            if isinstance(res, str):
+                return res
+        self.__dict__.update(res[0].__dict__)
+        return (res[1],) + res[2][0]
+
+    def _hole_patches(self, patches, radius, segs, support):
+        """Parcalari bir kopyada sirayla deler: (kopya, yeni yuzler, [(radius, segs, support)]) ya da hata metni."""
+        c, new, used = self.copy(), [], []
+        patches = [set(p) for p in patches]
+        for i, p in enumerate(patches):
+            res = c._hole_patch(p, radius, segs, support)
+            if isinstance(res, str):
+                return res
+            gone = sorted(p)                               # silinenler kadar kayan indeksler
+            shift = lambda fi: fi - int(np.searchsorted(gone, fi))
+            new = [shift(f) for f in new] + list(res[0])
+            patches[i + 1:] = [{shift(f) for f in q} for q in patches[i + 1:]]
+            used.append(tuple(res[1:]))
+        return c, new, used
+
+    def _hole_patch(self, region, radius=0.0, segs=0, support=-1.0):
         """Secili yuz bolgesinin ortasina daire delik acar (bolgenin yuzleri yeniden orulur). Bolgenin dis siniri
         (N nokta) delik cevresindeki M noktaya aci sirasiyla baglanir: M = N ise hepsi dortgen; M > N besgen,
         M < N ucgen olur. support > 0: delik kenarina destek halkasi (keskin, SubD'de daire kalir). radius / segs /
@@ -491,7 +539,7 @@ class Cage:
         edges = {e for e, fs in ef.items() if sum(f in region for f in fs) == 1}
         chains = self.edge_chains(edges)
         if not chains or len(chains) != 1 or not chains[0][1]:
-            return T("Hole: the selected faces must form one patch without holes")
+            return T("Hole: each selected patch must be closed, without holes inside")
         B = chains[0][0]
         # bolgenin normali ve gercek alan merkezi (ucgen yelpazeleri; kose ortalamasi simetrik bolgede bile
         # merkezi eksenden kaydiriyordu)
@@ -3198,6 +3246,20 @@ AXES = (App.Vector(1, 0, 0), App.Vector(0, 1, 0), App.Vector(0, 0, 1))
 PLANE_A, PLANE_B = 0.22, 0.42          # duzlem karesinin iki eksendeki baslangic / bitisi (ok boyunun orani)
 FREE_R = 0.07                          # merkez kupun yari boyu
 MIRROR = np.array([-1.0, 1.0, 1.0])    # X = 0 duzlemine gore ayna
+
+FALLOFFS = ("Smooth", "Linear", "Peak", "Dome")
+
+
+def _falloff(t, mode):
+    """Azalma egrisi: t = uzaklik / yaricap (0..1) -> etki (merkezde 1, sinirda 0). mode: FALLOFFS sirasi."""
+    t = np.clip(t, 0.0, 1.0)
+    if mode == 1:
+        return 1.0 - t
+    if mode == 2:
+        return (1.0 - t) ** 2
+    if mode == 3:
+        return np.sqrt(1.0 - t * t)
+    return 0.5 * (1.0 + np.cos(math.pi * t))
 _last_box = {"Width": 100.0, "Depth": 100.0, "Height": 100.0,           # Box paneli son degerleri (mm, dilim)
              "Segments X": 1.0, "Segments Y": 1.0, "Segments Z": 1.0}
 def _param():
@@ -3882,6 +3944,8 @@ class SubDSession:
         self.sel_v = set()   # nokta indeksleri
         self.last_v = None   # en son tiklanan secili nokta (Weld hedefi)
         self.sel_e = set()   # frozenset({a, b}) kenarlar
+        self.sel_order = {}  # mod -> tiklama sirasiyla secilenler (Align: ilk tiklanan sabit kalir)
+        self.sel_order_key = None   # sel_order'in gecerli oldugu (nokta, yuz) sayisi: numaralar degisince silinir
         self.sym = False     # X=0 duzlemine gore simetri
         self.ghost = False   # hayalet modu: arkadakiler gorunur / secilebilir
         self.snap = False    # serbest tasimada Part / PartDesign kose ve kenarlarina yakalama
@@ -3908,7 +3972,12 @@ class SubDSession:
         self.splits = []     # Knife "Split into two objects": (geri alma derinligi, yeni nesnenin adi)
         self.grab = None     # klavyeyle tasima (G, extrude)
         self.drag = None     # gizmo tutamagiyla tasima
-        self.armed = None    # kalici arac ("knife" / "line" / "loop"): kapatilana kadar her tiklamada uygulanir
+        self.armed = None    # kalici arac ("knife" / "line" / "loop" / "magnet"): kapatilana kadar her tiklamada uygulanir
+        self.magnet_radius = None    # Magnet yaricapi (mm); ilk acilista kafesin boyuna gore
+        self.magnet_mode = 0         # Magnet azalma egrisi (FALLOFFS sirasi)
+        self.magnet_radial = False   # Magnet etki alani: False kure, True bakis yonunde boydan boya silindir
+        self.magnet_size = None      # Magnet: sag tusla yaricap ayari surerken
+        self._magnet_snap = None     # Magnet: (kamera + kafes anahtari, _snap_prepare hedefleri, kafes dahil hedefler)
         self.op = None       # surmekte olan islem (panelde canli degerler)
         self.ebevel_segs = 1  # kenar bevel segment sayisi (son kullanilan)
         self.extrude_segs = 1        # extrude dilim sayisi (son kullanilan)
@@ -4637,8 +4706,9 @@ class SubDSession:
         """Secili noktalari yatay / dikey hizala: kucuk kare simgeli dugmeler (align_points)."""
         g = QtWidgets.QGroupBox(T("Align"))
         row = QtWidgets.QHBoxLayout(g)
-        for vertical, tip in ((False, "Align horizontally: the selected points get the same height on screen"),
-                              (True, "Align vertically: the selected points line up one above the other on "
+        for vertical, tip in ((False, "Align horizontally: the selected points get the height of the first clicked "
+                                      "one on screen"),
+                              (True, "Align vertically: the selected points line up with the first clicked one on "
                                      "screen")):
             b = QtWidgets.QToolButton()
             b.setIcon(self._align_icon(vertical))
@@ -4652,7 +4722,8 @@ class SubDSession:
 
     def align_points(self, vertical):
         """Secili (en az iki) noktayi ekranda yatay ya da dikey hizala: ekranin dikey (yatay hizada) ya da yatay
-        (dikey hizada) yonune en yakin dunya ekseninde hepsi ortalamaya gelir (o eksende olcek 0)."""
+        (dikey hizada) yonune en yakin dunya ekseninde hepsi ilk tiklanan noktaya gelir (o eksende olcek 0).
+        Tiklanmis nokta yoksa (yalniz kutu secimi) ortalamaya gelir."""
         if self.drag or self.grab:
             return
         cam = self.view.getCameraNode().orientation.getValue()
@@ -4674,16 +4745,18 @@ class SubDSession:
         P = self.l2w(self.cage.V[verts])
         k = np.ones(3)
         k[axis] = 0.0
+        first = self._first_selected(self.sel_v)
+        c = self.cage.V[first].copy() if first is not None else self.w2l(P.mean(0))
         self.push()
         self.last_op = None
-        self.apply_scale(self.move_state(verts), self.w2l(P.mean(0)), k)
+        self.apply_scale(self.move_state(verts), c, k)
         self.info = msg
         self.refresh()
 
     def _align_centers(self, axis, msg):
         """Poligon / kenar modunda: secili poligonlarin (kenarlarin) merkezlerini hizala. Birbirine degen secili
         elemanlar tek parca sayilir (ortak noktalar yirtilmasin); her parca bozulmadan tasinir, merkezi (noktalarinin
-        ortalamasi) parcalarin ortalamasina gelir."""
+        ortalamasi) ilk tiklanan elemanin parcasinin merkezine, tiklanmis eleman yoksa parcalarin ortalamasina gelir."""
         items = ([set(self.cage.F[fi]) for fi in self.sel] if self.mode == "face" else [set(e) for e in self.sel_e])
         groups = []
         for it in items:                                   # ortak noktasi olanlari birlestir
@@ -4697,7 +4770,12 @@ class SubDSession:
             self.refresh()
             return
         centers = [self.l2w(self.cage.V[sorted(g)]).mean(0)[axis] for g in groups]
-        val = float(np.mean(centers))
+        first = self._first_selected(self.sel if self.mode == "face" else self.sel_e)
+        if first is None:
+            val = float(np.mean(centers))
+        else:
+            first = set(self.cage.F[first]) if self.mode == "face" else set(first)
+            val = float(next(c for g, c in zip(groups, centers) if g & first))
         self.push()
         self.last_op = None
         for g, c in zip(groups, centers):
@@ -4709,7 +4787,7 @@ class SubDSession:
 
     def _rail_align(self, axis, msg):
         """Secili kilavuz dugumlerini (Shift ile, A / B dahil) dunya ekseninde ayni degere getir: secimde A ya da
-        B varsa (sabit uclar) onun degeri, yoksa ortalama. Halkalar yeniden yerlesir."""
+        B varsa (sabit uclar) onun degeri, yoksa ilk secilen dugumun degeri. Halkalar yeniden yerlesir."""
         r = self._rail()
         if r is None:
             return
@@ -4722,7 +4800,7 @@ class SubDSession:
             return
         W = self.l2w(N[pick])
         fixed = [k for k, j in enumerate(pick) if not self._rail_movable(r, N, j)]
-        val = W[fixed, axis].mean() if fixed else W[:, axis].mean()
+        val = W[fixed, axis].mean() if fixed else W[0, axis]
 
         def set_(r):
             for j in movable:
@@ -5010,7 +5088,7 @@ class SubDSession:
             self.env_rad.value = float(max(np.linalg.norm(hi - lo), 1e-6)) * ENV_RADIUS
         self.s_switch.whichChild = 0 if self.smooth else -1
         self.c_switch.whichChild = -1 if self.smooth else 0
-        verts = self.selected_verts() if not self.grab else []
+        verts = self.selected_verts() if not self.grab and self.armed != "magnet" else []
         self.gizmo.place(App.Vector(*self.l2w(V[verts].mean(0))) if verts else None)
         self._rail_draw()
         self._update_measure(fast)
@@ -5151,10 +5229,28 @@ class SubDSession:
         else:
             target.clear()
             target.add(hit)
+        order = self._click_order()
+        if not shift:
+            del order[:]
+        if hit in target:
+            order.append(hit)
+        elif hit in order:
+            order.remove(hit)
         if self.mode == "point":
             self.last_v = hit if hit in self.sel_v else None
         self.last_op = None
         self.refresh()
+
+    def _click_order(self):
+        """Bu modda tiklama sirasiyla secilenler. Nokta / yuz sayisi degistiyse numaralar kaymis olabilir: silinir."""
+        key = (len(self.cage.V), len(self.cage.F))
+        if key != self.sel_order_key:
+            self.sel_order, self.sel_order_key = {}, key
+        return self.sel_order.setdefault(self.mode, [])
+
+    def _first_selected(self, target):
+        """Hala secili olan ilk tiklanan eleman; tiklanmis eleman yoksa None."""
+        return next((x for x in self._click_order() if x in target), None)
 
     # --- islemler ---
     def push(self):
@@ -5204,6 +5300,11 @@ class SubDSession:
                                 math.radians(v["Angle"]))
         elif k == "scale":
             self.apply_scale(self.move_state(a["verts"]), a["c"], np.array([v["X"], v["Y"], v["Z"]]))
+        elif k == "magnet":
+            v["Radius"] = max(v["Radius"], 1e-3)
+            self.magnet_radius, self.magnet_mode, self.magnet_radial = v["Radius"], int(v["Mode"]), bool(v["Radial"])
+            st = self._magnet_state(a["c"], v["Radius"], int(v["Mode"]), a["mask"], a["axis"] if v["Radial"] else None)
+            self._magnet_apply(st, self.w2l_dir(np.array([v["X"], v["Y"], v["Z"]])))
         elif k == "extrude":
             segs = min(max(int(round(v["Segments"])), 1), 64)
             v["Segments"] = float(segs)
@@ -5273,6 +5374,9 @@ class SubDSession:
         op = self.op if live else self.last_op
         if self.armed == "line" and not live and (op is None or op["kind"] != "plane"):
             return T("Knife (line)"), [], True, self._knife_checks()   # cizmeden once secenekler
+        if self.armed == "magnet" and not live and (op is None or op["kind"] != "magnet"):
+            return T("Magnet"), [("Radius", self.magnet_radius, " mm", 3, self.magnet_set_radius)], True, \
+                self._magnet_checks()                      # surtmeden once secenekler
         if op is not None:
             k, v, a = op["kind"], op["values"], op["args"]
             r = lambda name: (lambda val: self.redo_last(name, val))
@@ -5283,6 +5387,8 @@ class SubDSession:
                 return T("Rotate ") + a["letter"], [("Angle", v["Angle"], "°", 2, r("Angle"))], self.drag is None
             if k == "scale":
                 return "Stretch / Size", [(n, v[n], " x", 4, r(n)) for n in "XYZ"], self.drag is None
+            if k == "magnet":
+                return T("Magnet"), [mm("Radius"), mm("X"), mm("Y"), mm("Z")], not live, self._magnet_checks()
             if k == "extrude":
                 axes = a["axes"]
                 fields = [mm(n) for n in "XYZ" if n in axes] if axes else [mm("Distance")]
@@ -5708,6 +5814,7 @@ class SubDSession:
         self.sel.clear()
         self.sel_v.clear()
         self.sel_e.clear()
+        self.sel_order = {}
         self.last_op = None
 
     def toggle_smooth(self):
@@ -6547,10 +6654,17 @@ class SubDSession:
             return
         self.armed = None if self.armed == name else name
         self._line_mark(None)
+        self._magnet_ring(None)
+        self._magnet_snap = None
+        if self.armed == "magnet" and self.magnet_radius is None:
+            P = self.l2w(self.cage.V) if len(self.cage.V) else np.zeros((1, 3))
+            self.magnet_radius = max(float(np.linalg.norm(np.ptp(P, 0))) * 0.25, 1.0)
         self.info = {None: "",
                      "knife": T("Knife: click edges to cut (K / Esc / right click: off)"),
                      "line": T("Knife: drag cut lines (Ctrl: 15° steps; J / Esc / right click: off)"),
-                     "loop": T("Loop: click edges to select loops (Esc / right click: off)")}[self.armed]
+                     "loop": T("Loop: click edges to select loops (Esc / right click: off)"),
+                     "magnet": T("Magnet: drag to pull the surface softly, a selection limits it "
+                                 "(right drag: radius; Esc / right click: off)")}[self.armed]
         self.refresh()
 
     def drop_tool(self):
@@ -6558,7 +6672,228 @@ class SubDSession:
         if self.armed:
             self.armed = None
             self.info = ""
+            self.magnet_size = None
             self._line_mark(None)
+            self._magnet_ring(None)
+
+    # --- Magnet (LightWave gibi): basilan yerin cevresindeki noktalar uzakliga gore yumusakca tasinir ---
+    # Etki alani yaricapli bir kure ya da bakis yonunde boydan boya silindir (Radial); secim varsa yalniz secili
+    # noktalar etkilenir. Noktalar tasinir, yeni cokgen olusmaz. Sag tusla surukleme yaricapi ayarlar.
+
+    def _magnet_checks(self):
+        shape = [(n, self.magnet_radial == bool(i), lambda on, i=i: self.magnet_option("Radial", on, i))
+                 for i, n in enumerate(("Spherical", "Radial"))]
+        return shape + [(n, self.magnet_mode == i, lambda on, i=i: self.magnet_option("Mode", on, i))
+                        for i, n in enumerate(FALLOFFS)]
+
+    def magnet_option(self, name, on, value):
+        """Etki alani / azalma egrisi (ikisi de tek secim); son Magnet islemi varsa yeni secimle yeniden yapilir."""
+        if on:
+            if name == "Radial":
+                self.magnet_radial = bool(value)
+            else:
+                self.magnet_mode = value
+            op = self.last_op
+            if op is not None and op["kind"] == "magnet":
+                op["values"][name] = float(value)
+                self._reapply(op)
+                return
+        self.refresh()
+
+    def magnet_set_radius(self, value):
+        self.magnet_radius = max(value, 1e-3)
+        self.refresh()
+
+    def _magnet_center(self, pos):
+        """Imlecin altindaki kafes noktasi; kafes yoksa imlecin kafes ortasindan gecen ekran duzlemindeki yeri."""
+        hit = self.pick(pos)
+        if hit is not None:
+            return hit[1]
+        return self.ray_plane(pos, self.cage.V.mean(0), self.view_dir())
+
+    def _magnet_state(self, c, radius, mode, mask, axis=None):
+        """Etkilenen noktalar ve etkileri: move_state + w (noktalar), mw (aynadaki esler). axis (yerel birim yon)
+        verilirse uzaklik o eksene dik olculur: silindir. Simetride merkez bir taraftadir: iki esi de alan icindeyse
+        yakin olan tasinir, oteki onu aynalar (iki taraf ayni kalsin)."""
+        R = self.cage.V - np.asarray(c, float)
+        if axis is not None:
+            R = R - np.outer(R @ axis, axis)
+        dist = np.linalg.norm(self.l2w_dir(R), axis=1)
+        idx = np.nonzero(dist < radius)[0] if mask is None else np.array(
+            [v for v in mask if dist[v] < radius], dtype=int)
+        M = self.mirror_map() if self.sym else {}
+        chosen = {int(v) for v in idx}
+        verts = [int(v) for v in idx if not (M.get(int(v)) in chosen and M[int(v)] != v and
+                                             (dist[M[int(v)]], M[int(v)]) < (dist[v], v))]
+        st = self.move_state(verts)
+        w = _falloff(dist[verts] / radius, mode) if verts else np.zeros(0)
+        by = dict(zip((M.get(v) for v in verts), w))
+        st["w"] = w
+        st["mw"] = np.array([by[m] for m in st["mirrored"]], float)
+        return st
+
+    def _magnet_apply(self, st, d):
+        self.apply_transform(st, lambda P: P + st["w"][:, None] * d, lambda P: P + st["mw"][:, None] * (d * MIRROR))
+
+    def _magnet_ring(self, c):
+        """Etki alani halkasi (yerel merkez) ya da None: kaldir."""
+        if c is None:
+            if self.line_overlay is not None:
+                self.line_overlay.set_ring(None, 0.0)
+            return
+        cam = self.view.getCameraNode().orientation.getValue()
+        right = np.array(cam.multVec(coin.SbVec3f(1, 0, 0)).getValue())
+        w = self.l2w(np.asarray(c, float))
+        a, b = self.project(np.array([c, self.w2l(w + right * self.magnet_radius)]))
+        dpr = self.gv.viewport().devicePixelRatioF()
+        self._line_widget().set_ring(self._line_q(a), float(np.linalg.norm(b - a)) / dpr)
+
+    def _magnet_hover(self):
+        self._pending = False
+        on = self.armed == "magnet" and self.box is None and not self.grab and self.mode != "object"
+        if not on or not len(self.cage.V):
+            self._magnet_ring(None)
+            self._line_mark(None)
+            return
+        self._magnet_snap_ready()                          # basmadan once hedef gorunsun: basinca merkez oraya oturur
+        hit = self._snap_target(self.mouse)
+        self._magnet_mark(hit)
+        self._magnet_ring(self.w2l(hit[0]) if hit is not None else self._magnet_center(self.mouse))
+
+    def _magnet_mark(self, hit):
+        self._line_mark(None if hit is None else (self.project(self.w2l(hit[0]))[0], None,
+                                                  "point" if hit[1] == "vertex" else "edge"))
+
+    def _magnet_snap_ready(self):
+        """Snap acikken hedefleri hazirlar, kamera ya da kafes degismedikce yeniden toplamaz (fare her
+        kipirdadiginda cagrilir). Donus: _snap_prepare hedefleri; Snap kapaliysa None."""
+        if not self.snap:
+            self._snapdata = self._magnet_snap = None
+            return None
+        ref = self.project(np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], float))
+        key = (ref.tobytes(), self.cage.V.tobytes(), len(self.cage.F))
+        if self._magnet_snap is None or self._magnet_snap[0] != key:
+            self._snap_prepare([0])
+            base = self._snapdata
+            self._snap_with_cage(base)
+            self._magnet_snap = (key, base, self._snapdata)
+        self._snapdata = self._magnet_snap[2]              # cekme bunu kendi hedefleriyle degistirmis olabilir
+        return self._magnet_snap[1]
+
+    def _snap_with_cage(self, base, st=None):
+        """Yakalama hedefleri: base (_snap_prepare) + kafesin noktalari ve kenarlari; st (_magnet_state) varsa
+        onun tasidigi noktalar haric."""
+        V = self.cage.V
+        skip = set(st["verts"]) | set(st["mirrored"]) if st is not None else set()
+        W, S = self.l2w(V), self.project(V)
+        keep = [i for i in range(len(V)) if i not in skip]
+        E = np.array([sorted(e) for e in self.cage.edges() if not skip & set(e)], dtype=int).reshape(-1, 2)
+        self._snapdata = dict(P=np.vstack([base["P"], W[keep]]), Ps=np.vstack([base["Ps"], S[keep]]),
+                              A=np.vstack([base["A"], W[E[:, 0]]]), As=np.vstack([base["As"], S[E[:, 0]]]),
+                              B=np.vstack([base["B"], W[E[:, 1]]]), Bs=np.vstack([base["Bs"], S[E[:, 1]]]))
+
+    def magnet_start(self, pos):
+        if self.drag or self.grab or self.mode == "object" or not len(self.cage.V):
+            return
+        self.mouse = pos
+        base = self._magnet_snap_ready()                   # Part / PartDesign ve kafesin kendi hedefleri
+        hit = self._snap_target(pos)
+        c = self.w2l(hit[0]) if hit is not None else self._magnet_center(pos)   # ilk tiklama hedefe oturur
+        if c is None:
+            return
+        mask = self.selected_verts() or None
+        n = self.view_dir()
+        axis = n / np.linalg.norm(n)
+        st = self._magnet_state(c, self.magnet_radius, self.magnet_mode, mask, axis if self.magnet_radial else None)
+        if not len(st["verts"]):
+            self.info = T("Magnet: no points within the radius")
+            self.refresh()
+            return
+        if base:                                           # cekerken tasinan noktalar hedef olmasin
+            self._snap_with_cage(base, st)
+        self.push()
+        self.new_op("magnet", dict(Radius=self.magnet_radius, X=0.0, Y=0.0, Z=0.0, Mode=float(self.magnet_mode),
+                                   Radial=float(self.magnet_radial)), c=np.array(c, float), mask=mask, axis=axis)
+        self.grab = dict(kind="magnet", state=st, c=c, n=n, p0=self.ray_plane(pos, c, n), mask=mask, axis=axis,
+                         V0=self.cage.V.copy(), d=np.zeros(3), snap=base)
+        self.gizmo.place(None)
+        self._magnet_ring(c)
+        self.refresh()
+
+    def magnet_move(self):
+        g = self.grab
+        if not _left_held():                               # tus gorunum disinda birakildi
+            self.magnet_end()
+            return
+        p = self.ray_plane(self.mouse, g["c"], g["n"])
+        if p is None or g["p0"] is None:
+            return
+        g["d"] = p - g["p0"]
+        if _ctrl_held():                                   # Ctrl: ortho, yalniz ekranda yatay ya da dikey (buyuk olan)
+            cam = self.view.getCameraNode().orientation.getValue()
+            axes = [self.w2l_dir(np.array(cam.multVec(coin.SbVec3f(*a)).getValue())) for a in ((1, 0, 0), (0, 1, 0))]
+            g["d"] = max((ax * g["d"].dot(ax) for ax in axes), key=np.linalg.norm)
+        hit = self._snap_target(self.mouse)
+        if hit is not None:                                # son nokta: merkez hedefe tam oturur
+            g["d"] = self.w2l(hit[0]) - g["c"]
+        self._magnet_mark(hit)
+        dw = self.l2w_dir(g["d"])
+        self.op["values"].update(X=float(dw[0]), Y=float(dw[1]), Z=float(dw[2]))
+        self.info = "Δ  X %.3f   Y %.3f   Z %.3f mm" % tuple(dw) + (
+            "   " + T("Snap: %s") % T(hit[1]) if hit is not None else "")
+        self._magnet_apply(g["state"], g["d"])
+
+    def magnet_wheel(self, steps):
+        """Surerken fare tekerlegi: yaricap."""
+        g = self.grab
+        self.magnet_radius *= 1.1 ** steps
+        self.op["values"]["Radius"] = self.magnet_radius
+        self.cage.V[:] = g["V0"]
+        g["state"] = self._magnet_state(g["c"], self.magnet_radius, self.magnet_mode, g["mask"],
+                                        g["axis"] if self.magnet_radial else None)
+        if g["snap"]:
+            self._snap_with_cage(g["snap"], g["state"])
+        self._magnet_ring(g["c"])
+        self._magnet_apply(g["state"], g["d"])
+
+    def magnet_size_start(self, pos):
+        """Sag tus basildi: surukleme yaricapi ayarlar, kipirdamadan birakmak araci kapatir."""
+        self.magnet_size = dict(p0=pos, r0=self.magnet_radius, c=self._magnet_center(pos), moved=False)
+
+    def magnet_size_move(self):
+        self._pending = False
+        g = self.magnet_size
+        if g is None:
+            return
+        dx = self.mouse[0] - g["p0"][0]                    # saga buyur, sola kuculur (150 piksel: e kat)
+        if not g["moved"] and abs(dx) < 4:
+            return
+        g["moved"] = True
+        self.magnet_radius = max(g["r0"] * math.exp(dx / 150.0), 1e-3)
+        if self.last_op is not None and self.last_op["kind"] == "magnet":
+            self.last_op = None                            # panel son cekmeyi degil yeni yaricapi gostersin
+        self.info = T("Radius %.3f mm") % self.magnet_radius
+        if g["c"] is not None:
+            self._magnet_ring(g["c"])
+        self.refresh()
+
+    def magnet_size_end(self):
+        g, self.magnet_size = self.magnet_size, None
+        if g is None:
+            return
+        if g["moved"]:
+            self.info = ""
+        else:
+            self.drop_tool()
+        self.refresh()
+
+    def magnet_end(self):
+        g = self.grab
+        if g is None or g.get("kind") != "magnet":
+            return
+        self._line_mark(None)
+        self.end_grab(bool(np.any(g["d"])))                # kipirdamadiysa geri alma adimi kalmasin
+        self.info = ""
 
     def hover_edge(self, pos):
         """Imlecin altindaki yuz ve o yuzun imlece en yakin kenari: (yuz, u, v) ya da None."""
@@ -6719,6 +7054,7 @@ class SubDSession:
         else:
             if not add:
                 target.clear()
+                del self._click_order()[:]
             target |= found
         self.last_op = None
         self.refresh()
@@ -7792,6 +8128,9 @@ class SubDSession:
         g = self.grab
         if g is None:
             return
+        if g.get("kind") == "magnet":
+            self.magnet_move()
+            return
         if g.get("kind") == "bevel":
             self.bevel_move()
             return
@@ -8039,6 +8378,14 @@ class SubDSession:
             cb.setHandled()
             self.finish_box(pos)
             return
+        if left and not down and self.grab and self.grab.get("kind") == "magnet":
+            cb.setHandled()
+            _later(self.magnet_end)
+            return
+        if self.magnet_size is not None and not down and ev.getButton() == coin.SoMouseButtonEvent.BUTTON2:
+            cb.setHandled()
+            _later(self.magnet_size_end)
+            return
         if not down:
             return
         if self.grab:
@@ -8046,6 +8393,10 @@ class SubDSession:
             _later(lambda ok=left: self.end_grab(ok))
             return
         if not left:
+            if self.armed == "magnet" and ev.getButton() == coin.SoMouseButtonEvent.BUTTON2:
+                cb.setHandled()                            # surukleme: yaricap; kipirdamadan birakma: arac kapanir
+                self.magnet_size_start(pos)
+                return
             if self.armed and ev.getButton() == coin.SoMouseButtonEvent.BUTTON2:   # sag tik: kalici araci kapat
                 self.drop_tool()
                 _later(self.refresh)
@@ -8063,6 +8414,10 @@ class SubDSession:
             cb.setHandled()
             fn = self.knife if self.armed == "knife" else self.loop_select
             _later(lambda: fn(pos))
+            return
+        if self.armed == "magnet":
+            cb.setHandled()
+            _later(lambda: self.magnet_start(pos))
             return
         key = self.gizmo.pick(pos)
         if key is not None:
@@ -8096,7 +8451,13 @@ class SubDSession:
     def _on_motion(self, cb):
         pos = cb.getEvent().getPosition().getValue()
         self.mouse = pos
-        if self.drag is not None:
+        if self.magnet_size is not None:
+            cb.setHandled()
+            if QtWidgets.QApplication.mouseButtons() & QtCore.Qt.RightButton:
+                self._schedule(self.magnet_size_move)
+            else:                                          # sag tus gorunum disinda birakildi
+                _later(self.magnet_size_end)
+        elif self.drag is not None:
             if not _left_held():
                 _later(self.drag_end)                      # sol tus gorunum disinda birakildi
                 return
@@ -8121,7 +8482,9 @@ class SubDSession:
         else:
             key = self.gizmo.pick(pos)
             _later(lambda: self.gizmo.set_hover(key))
-            if self.armed == "line" or self._line_cursor is not None:
+            if self.armed == "magnet":                     # imlec / isaret Magnet'in: _line_hover silmesin
+                self._schedule(self._magnet_hover)
+            elif self.armed == "line" or self._line_cursor is not None:
                 self._schedule(self._line_hover)
 
     def finish_box(self, pos):
@@ -8177,6 +8540,9 @@ class SubDSession:
             elif k in ("x", "y", "z") and self.grab.get("kind") == "extrude":
                 self.extrude_axis(k.upper())               # yalniz bu eksen; tekrar = normal yon
                 self.refresh()
+            return
+        if k == "q":                                       # Snap ac / kapat: her modda, kilavuz duzenleme de surer
+            self.toggle_snap()
             return
         if self.mode == "object":                          # Object modu: yalniz nesne komutlari
             if ctrl and k == "z":
@@ -8479,7 +8845,7 @@ _KEYS = {
     QtCore.Qt.Key_C: "c", QtCore.Qt.Key_B: "b", QtCore.Qt.Key_I: "i",
     QtCore.Qt.Key_H: "h", QtCore.Qt.Key_N: "n", QtCore.Qt.Key_L: "l", QtCore.Qt.Key_X: "x",
     QtCore.Qt.Key_J: "j", QtCore.Qt.Key_D: "d", QtCore.Qt.Key_O: "o", QtCore.Qt.Key_V: "v", QtCore.Qt.Key_P: "p",
-    QtCore.Qt.Key_M: "m", QtCore.Qt.Key_W: "w",
+    QtCore.Qt.Key_M: "m", QtCore.Qt.Key_W: "w", QtCore.Qt.Key_Q: "q",
 }
 # Ctrl+Z geri al, Ctrl+G nokta modu, Ctrl+H cokgen modu (LightWave), Ctrl+C / X / V cokgen kopyala / kes / yapistir,
 # Ctrl+W weld
@@ -8501,6 +8867,20 @@ class _KeyFilter(QtCore.QObject):
             if d:
                 (self.session.ebevel_wheel if g["kind"] == "ebevel" else self.session.extrude_wheel)(1 if d > 0 else -1)
             return True
+        if t == QtCore.QEvent.Wheel and g is not None and g.get("kind") == "magnet":
+            if ev.angleDelta().y():                        # Magnet surerken tekerlek: yaricap
+                self.session.magnet_wheel(1 if ev.angleDelta().y() > 0 else -1)
+            return True
+        if t == QtCore.QEvent.MouseButtonRelease and ev.button() == QtCore.Qt.LeftButton and g is not None \
+                and g.get("kind") == "magnet":             # birakma sahneye ulasmayabilir (kutu secimi gibi)
+            _later(self.session.magnet_end)
+            return False
+        if t == QtCore.QEvent.MouseButtonRelease and ev.button() == QtCore.Qt.RightButton \
+                and self.session.magnet_size is not None:
+            _later(self.session.magnet_size_end)
+            return False
+        if t == QtCore.QEvent.ContextMenu and self.session.armed == "magnet":
+            return True                                    # sag tus Magnet'in: FreeCAD menusu acilmasin
         if t == QtCore.QEvent.Resize and self.session.overlay is not None:
             _later(self.session.overlay.relayout)          # gorunum boyutlaninca menuler yerinde kalsin
             return False
@@ -8584,7 +8964,8 @@ class _LineOverlay(QtWidgets.QWidget):
     def __init__(self, parent):
         super().__init__(parent)
         self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
-        self.a = self.b = self.mark = self.kind = None
+        self.a = self.b = self.mark = self.kind = self.ring = None
+        self.ring_r = 0.0
         self.resize(parent.size())
         self.show()
 
@@ -8597,16 +8978,25 @@ class _LineOverlay(QtWidgets.QWidget):
         self.mark, self.kind = pt, kind
         self._changed()
 
+    def set_ring(self, pt, r):
+        """Magnet etki alani: merkez ve yaricap (mantiksal piksel)."""
+        self.ring, self.ring_r = pt, r
+        self._changed()
+
     def _changed(self):
         self.resize(self.parent().size())
-        self.raise_()
+        self.lower()                                       # panellerin ve alt cubugun altinda kalsin
         self.update()
 
     def paintEvent(self, ev):
-        if self.a is None and self.mark is None:
+        if self.a is None and self.mark is None and self.ring is None:
             return
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
+        if self.ring is not None:
+            p.setPen(QtGui.QPen(QtGui.QColor(245, 158, 11), 1.5, QtCore.Qt.DashLine))
+            p.setBrush(QtCore.Qt.NoBrush)
+            p.drawEllipse(self.ring, self.ring_r, self.ring_r)
         if self.a is not None:
             pen = QtGui.QPen(QtGui.QColor(245, 158, 11), 2, QtCore.Qt.DashLine)
             p.setPen(pen)
@@ -9072,6 +9462,7 @@ class _Overlay(object):
         btn("Move", "T", lambda: s.set_gizmo("move"), toggle=lambda: s.gizmo.mode == "move")
         btn("Rotate", "R", lambda: s.set_gizmo("rotate"), toggle=lambda: s.gizmo.mode == "rotate")
         btn("Stretch / Size", "H", lambda: s.set_gizmo("scale"), toggle=lambda: s.gizmo.mode == "scale")
+        btn("Magnet", "", lambda: s.toggle_tool("magnet"), mode="edit", tool="magnet")
         btn("Crease", "C", s.crease_selected, sel=True, mode="edit")
         btn("Reduce points", "", s.reduce_points, mode="edit")   # secim yoksa butun kafes
         btn("Merge points", "M", s.merge_points, mode="edit")    # secim yoksa butun kafes
@@ -9108,7 +9499,7 @@ class _Overlay(object):
         tog("Symmetry", "Y", s.toggle_sym, lambda: s.sym)
         tog("Subpatch", "Tab", s.toggle_smooth, lambda: s.smooth)
         tog("Ghost", "X", s.toggle_ghost, lambda: s.ghost)
-        tog("Snap", "", s.toggle_snap, lambda: s.snap)
+        tog("Snap", "Q", s.toggle_snap, lambda: s.snap)
         mc = _lw_button(T("Matcap"), "▴")
         mc.setCheckable(True)
         mc.setToolTip(T("Surface look of the smooth preview (Edit mode)"))
@@ -9126,9 +9517,9 @@ class _Overlay(object):
         mc.clicked.connect(lambda checked=False: mm.popup(mc.mapToGlobal(QtCore.QPoint(0, -mm.sizeHint().height() - 2))))
         row.addWidget(mc)
         for vertical, tip in ((False, "Align horizontally: selected points (polygons, edges: their centers) get the "
-                                      "same height on screen"),
+                                      "height of the first clicked one on screen"),
                               (True, "Align vertically: selected points (polygons, edges: their centers) line up "
-                                     "one above the other on screen")):
+                                     "with the first clicked one on screen")):
             b = QtWidgets.QPushButton()                    # kucuk kare simgeli dugme (Options'taki ile ayni is)
             b.setFocusPolicy(QtCore.Qt.NoFocus)
             b.setIcon(s._align_icon(vertical))
