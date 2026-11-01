@@ -23,6 +23,7 @@
 import copy
 import json
 import math
+import os
 import time
 
 import numpy as np
@@ -157,6 +158,66 @@ def subdivide(V, F, levels, crease=None, rules=RULES):
     for _ in range(levels):
         V, F, crease = catmull_clark(V, F, crease, rules)
     return V, F
+
+
+SHARP_COS = math.cos(math.radians(60.0))   # yuzey onizlemesi: komsu yuzler arasinda bundan buyuk aci sert kose gibi golgelenir
+
+
+def surface_normals(S, Q, crease=None):
+    """Dortgen yuzeyin kose normalleri (dortgen basina 4; n x 4 x 3): her nokta, cevresindeki yuzlerin alana gore
+    agirlikli ortalamasini alir (matcap piksel basina bunlardan okur). Keskin kenar (crease) ve 60 dereceden sert kirik
+    iki yana ayri golgelenir."""
+    fn = np.cross(S[Q[:, 2]] - S[Q[:, 0]], S[Q[:, 3]] - S[Q[:, 1]])
+    unit = lambda a: a / np.maximum(np.linalg.norm(a, axis=-1, keepdims=True), 1e-30)
+    vn = np.zeros_like(S)
+    np.add.at(vn, Q.ravel(), np.repeat(fn, 4, 0))
+    out = unit(vn)[Q]
+    N = len(S)
+    a, b = Q.ravel(), np.roll(Q, -1, 1).ravel()
+    keys = np.minimum(a, b) * N + np.maximum(a, b)
+    order = np.argsort(keys, kind="stable")
+    k = keys[order]
+    pair = np.nonzero(k[1:] == k[:-1])[0]                  # ayni kenari paylasan iki kose
+    fu = unit(fn)
+    fi, fj = order[pair] // 4, order[pair + 1] // 4
+    sharp = set(k[pair][(fu[fi] * fu[fj]).sum(1) < SHARP_COS].tolist())
+    if crease:
+        sharp.update(min(e) * N + max(e) for e in crease)
+    if not sharp:
+        return out
+    ks = np.array(sorted(sharp), dtype=np.int64)
+    corners = {}                                           # yalniz sert kenara degen noktalar: kose gruplari ayrilir
+    for v in set((ks // N).tolist()) | set((ks % N).tolist()):
+        corners[v] = []
+    for ci, v in enumerate(a.tolist()):
+        if v in corners:
+            corners[v].append(ci)
+    for v, cs in corners.items():
+        group = {c: c for c in cs}
+
+        def root(c):
+            while group[c] != c:
+                group[c] = group[group[c]]
+                c = group[c]
+            return c
+        side = {}
+        for c in cs:                                       # bu kosenin iki kenari; sert olmayanla komsu yuzu birlesir
+            q, i = c // 4, c % 4
+            for w in (Q[q, (i + 1) % 4], Q[q, i - 1]):
+                w = int(w)
+                if min(v, w) * N + max(v, w) in sharp:
+                    continue
+                if w in side:
+                    group[root(c)] = root(side[w])
+                else:
+                    side[w] = c
+        total = {}
+        for c in cs:
+            r = root(c)
+            total[r] = total.get(r, 0) + fn[c // 4]
+        for c in cs:
+            out[c // 4, c % 4] = unit(total[root(c)])
+    return out
 
 
 # ---------- Kafes (poligon mesh) ve duzenleme islemleri ----------
@@ -3167,6 +3228,224 @@ def _zebra_texture():
     return g
 
 
+# Matcap: yuzey normaline gore boyanmis "isikli kure" dokusu (kure ortam haritasi). Isik, parlama ve kenar kararmasi
+# (sahte AO) dokunun icinde: sahne isiklarindan bagimsiz ve cok hizli. Ayar: taban rengi, ortam, ana / dolgu isigi,
+# parlama (guc, siddet), kenar kararmasi, kenar parlamasi; "env": taban yerine stüdyo yansimasi (metal).
+MATCAPS = {
+    "Clay": dict(base=(0.80, 0.74, 0.68), amb=0.30, key=0.72, fill=0.16, spec=(14.0, 0.06), ao=0.55, rim=0.04),
+    "Plastic": dict(base=(0.62, 0.66, 0.72), amb=0.24, key=0.74, fill=0.18, spec=(70.0, 0.55), ao=0.45, rim=0.22),
+    "Black plastic": dict(base=(0.14, 0.14, 0.15), amb=0.40, key=1.10, fill=0.50, spec=(40.0, 0.60), ao=0.40, rim=0.45),
+    "Ceramic": dict(base=(0.93, 0.92, 0.89), amb=0.34, key=0.60, fill=0.14, spec=(180.0, 0.90), ao=0.35, rim=0.30),
+    "Metal": dict(base=(0.80, 0.81, 0.84), amb=0.0, key=0.0, fill=0.0, spec=(120.0, 0.50), ao=0.30, rim=0.0, env=True),
+}
+
+
+def _matcap_image(name, size=256):
+    """MATCAPS ayarindan size x size RGB doku (bytes; ilk satir kurenin alti, Coin dokusu gibi)."""
+    c = MATCAPS[name]
+    y, x = np.mgrid[0:size, 0:size]
+    x, y = (x + 0.5) / size * 2 - 1, (y + 0.5) / size * 2 - 1
+    r = np.maximum(np.hypot(x, y), 1.0)                    # daire disi kenar rengini alir (doku suzmesinde dikis yok)
+    x, y = x / r, y / r
+    n = np.dstack((x, y, np.sqrt(np.maximum(1 - x * x - y * y, 0.0))))
+    light = lambda *v: np.array(v) / np.linalg.norm(v)
+    key, fill = light(-0.45, 0.65, 0.65), light(0.75, 0.05, 0.45)
+    half = (key + (0, 0, 1)) / np.linalg.norm(key + (0, 0, 1))
+    base = np.array(c["base"])
+    if c.get("env"):                                       # yansima yonune gore stüdyo: tavan, ufuk bandi, koyu zemin
+        ry = 2 * n[..., 2] * n[..., 1]
+        sky = 0.45 + 0.50 * np.clip(ry, 0, 1) ** 0.7
+        ground = 0.10 + 0.25 * np.clip(-ry - 0.15, 0, 1)
+        t = np.clip((ry + 0.04) / 0.08, 0, 1)
+        env = ground + t * t * (3 - 2 * t) * (sky - ground) + 0.30 * np.exp(-(ry / 0.05) ** 2)
+        rgb = env[..., None] * base
+    else:
+        dif = c["amb"] + c["key"] * np.maximum(n @ key, 0) + c["fill"] * np.maximum(n @ fill, 0)
+        rgb = dif[..., None] * base
+    p, k = c["spec"]
+    rgb = rgb + (k * np.maximum(n @ half, 0) ** p)[..., None]
+    rgb = rgb + (c["rim"] * (1 - n[..., 2]) ** 4 * np.clip(y * 0.5 + 0.5, 0, 1))[..., None]
+    t = np.clip(n[..., 2] / 0.55, 0, 1)                    # kenara dogru karar: sahte AO
+    rgb = rgb * (1 - c["ao"] * (1 - t * t * (3 - 2 * t)))[..., None]
+    return (np.clip(rgb, 0, 1) * 255 + 0.5).astype(np.uint8).tobytes()
+
+
+def _matcap_shader():
+    """Dokuyu piksel basina okur: kure ortam haritasi koseler arasinda dogrusal gittiginden keskin dokuda ucgenler
+    basamak basamak gorunuyordu. Yedek: shader derlenmezse ortam haritasi calismaya devam eder."""
+    vs = coin.SoVertexShader()
+    vs.sourceType = coin.SoShaderObject.GLSL_PROGRAM
+    vs.sourceProgram = "varying vec3 vN; void main(){ vN = gl_NormalMatrix * gl_Normal; gl_Position = ftransform(); }"
+    fs = coin.SoFragmentShader()
+    fs.sourceType = coin.SoShaderObject.GLSL_PROGRAM
+    fs.sourceProgram = ("uniform sampler2D tex; varying vec3 vN; void main(){ vec3 n = normalize(vN); "
+                        "if (!gl_FrontFacing) n = -n; "
+                        "gl_FragColor = vec4(texture2D(tex, n.xy * 0.5 + 0.5).rgb, gl_FrontMaterial.diffuse.a); }")
+    prog = coin.SoShaderProgram()
+    prog.shaderObject.set1Value(0, vs)
+    prog.shaderObject.set1Value(1, fs)
+    return prog
+
+
+# Ortam yansitma: equirectangular (2:1) ortam resmi piksel basina yansima yonunden okunur. Radiance .hdr ya da
+# JPG / PNG; HDR 8 bit dokuya tonemap ile iner (Coin dokusu 8 bit). Ortam DUNYAYA bagli, Z yukari: model donunce
+# yansima kayar.
+ENV_FILTER = "Environment image (*.hdr *.jpg *.jpeg *.png)"
+ENV_RADIUS = 1.0        # ortam kuresinin yaricapi / modelin kosegeni (kucuk: yansima konumla daha cok degisir)
+
+
+def _read_hdr(path):
+    """Radiance .hdr (RGBE, duz ya da RLE satirlar): H x W x 3 kayan nokta, ilk satir resmin ustu."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    if not data.startswith((b"#?", b"RADIANCE")):
+        raise ValueError("not a Radiance HDR file")
+    end = data.find(b"\n\n")
+    if end < 0:
+        raise ValueError("broken HDR header")
+    i = data.index(b"\n", end + 2)
+    parts = data[end + 2:i].split()
+    if len(parts) != 4 or parts[0] != b"-Y" or parts[2] != b"+X":
+        raise ValueError("unsupported HDR orientation")
+    H, W = int(parts[1]), int(parts[3])
+    i += 1
+    out = np.zeros((H, W, 4), np.uint8)
+    if not 8 <= W <= 32767 or data[i] != 2 or data[i + 1] != 2 or data[i + 2] & 0x80:   # eski tip: duz piksel
+        out[:] = np.frombuffer(data, np.uint8, H * W * 4, i).reshape(H, W, 4)
+    else:
+        for y in range(H):
+            if data[i] != 2 or data[i + 1] != 2 or (data[i + 2] << 8 | data[i + 3]) != W:
+                raise ValueError("broken HDR scanline")
+            i += 4
+            for c in range(4):
+                x = 0
+                while x < W:
+                    n = data[i]
+                    i += 1
+                    if n > 128:                            # tekrar
+                        n -= 128
+                        out[y, x:x + n, c] = data[i]
+                        i += 1
+                    else:                                  # duz
+                        out[y, x:x + n, c] = np.frombuffer(data, np.uint8, n, i)
+                        i += n
+                    x += n
+    e = out[..., 3].astype(float)
+    return out[..., :3] * np.where(e > 0, np.ldexp(1.0, (e - 136).astype(int)), 0.0)[..., None]
+
+
+def _env_read(path, maxw=2048):
+    """Ortam resmi -> (dogrusal RGB, H x W x 3, ilk satir resmin ustu; HDR mi). Hata: ValueError."""
+    if path.lower().endswith(".hdr"):
+        px, hdr = _read_hdr(path), True
+    else:
+        img = QtGui.QImage(path)
+        if img.isNull():
+            raise ValueError("cannot read the image")
+        img = img.convertToFormat(QtGui.QImage.Format_RGB888)
+        px = np.frombuffer(img.constBits(), np.uint8, img.sizeInBytes()).reshape(img.height(), img.bytesPerLine())
+        px = (px[:, :img.width() * 3].reshape(img.height(), img.width(), 3) / 255.0) ** 2.2
+        hdr = False
+    k = max(int(math.ceil(px.shape[1] / maxw)), 1)         # buyuk resim: bellek ve doku siniri
+    return px[::k, ::k], hdr
+
+
+def _env_blur(px, sigma):
+    """Panoramayi sigma radyan bulaniklastirir: FFT; yatayda sarmal ve kutuplara dogru genisleyen, dikeyde sabit."""
+    if sigma <= 0:
+        return px
+    H, W = px.shape[:2]
+    lat = (0.5 - (np.arange(H) + 0.5) / H) * math.pi
+    sx = sigma * W / (2 * math.pi) / np.maximum(np.cos(lat), 0.02)
+    f = np.fft.rfftfreq(W)
+    out = np.fft.irfft(np.fft.rfft(px, axis=1) * np.exp(-2 * (math.pi * f[None, :] * sx[:, None]) ** 2)[..., None],
+                       n=W, axis=1)
+    pad = np.concatenate([out[::-1], out, out[::-1]])      # kutuplarda yansitma
+    f = np.fft.rfftfreq(3 * H)
+    out = np.fft.irfft(np.fft.rfft(pad, axis=0) * np.exp(-2 * (math.pi * f * sigma * H / math.pi) ** 2)[:, None, None],
+                       n=3 * H, axis=0)[H:2 * H]
+    return np.maximum(out, 0.0)
+
+
+def _env_atlas(px, hdr, rough):
+    """Tek dokuda iki katman (genislik, 2 x yukseklik, RGB bytes; ilk satir altta): ust yari yansima (rough kadar bulanik),
+    alt yari yuzeyin rengini aydinlatan cok bulanik ortam."""
+    if rough > 0.02 and px.shape[1] > 1024:                # bulanik yansimada yuksek cozunurluk bosa gider
+        px = px[::2, ::2]
+    H, W = px.shape[:2]
+    k = max(W // 256, 1)
+    low = _env_blur(px[::k, ::k], 0.55)
+    dif = low[np.arange(H) * low.shape[0] // H][:, np.arange(W) * low.shape[1] // W]
+    ref = _env_blur(px, rough * rough * 0.9)               # algi icin karesel: dusuk degerlerde ince ayar
+    if hdr:                                                # ortalama parlaklik orta gri civari, sonra tonemap
+        lum = px @ np.array([0.2126, 0.7152, 0.0722])
+        g = 0.5 / max(float(np.exp(np.log(lum + 1e-4).mean())), 1e-4)
+        ref, dif = (lambda a: g * a / (1 + g * a))(ref), (lambda a: g * a / (1 + g * a))(dif)
+    data = (np.clip(np.concatenate([dif[::-1], ref[::-1]]), 0, 1) ** (1 / 2.2) * 255 + 0.5).astype(np.uint8)
+    return W, 2 * H, data.tobytes()
+
+
+ENV_VERT = "varying vec3 vN; varying vec3 vP; void main(){ vN = gl_Normal; vP = gl_Vertex.xyz; gl_Position = ftransform(); }"
+ENV_FRAG = """uniform sampler2D tex; uniform vec3 px; uniform vec3 py; uniform vec3 pz; uniform vec3 ctr; uniform float rad;
+uniform float rough; uniform float metal; uniform float texel; uniform vec3 base;
+varying vec3 vN; varying vec3 vP;
+vec2 pano(vec3 d){
+  vec3 w = normalize(vec3(dot(px, d), dot(py, d), dot(pz, d)));
+  return vec2(0.5 - atan(w.y, w.x) / 6.2831853, asin(clamp(w.z, -1.0, 1.0)) / 3.1415927 + 0.5);
+}
+void main(){
+  mat3 M = mat3(gl_ModelViewMatrix[0].xyz, gl_ModelViewMatrix[1].xyz, gl_ModelViewMatrix[2].xyz);
+  vec3 I = gl_ProjectionMatrix[3][3] > 0.5 ? vec3(0.0, 0.0, -1.0) : (gl_ModelViewMatrix * vec4(vP, 1.0)).xyz;
+  I = normalize(I * M);
+  vec3 n = normalize(vN);
+  if (dot(n, I) > 0.0) n = -n;
+  vec3 r = reflect(I, n);
+  vec3 o = vP - ctr;                                     // resim modeli saran kureye sarili: isin kureye carptigi yon
+  float b = dot(o, r);
+  r = o + (sqrt(max(b * b - dot(o, o) + rad * rad, 0.0)) - b) * r;
+  vec2 uv = pano(r), ud = pano(n);
+  vec3 refl = texture2D(tex, vec2(uv.x, clamp(uv.y * 0.5 + 0.5, 0.5 + texel, 1.0 - texel))).rgb;
+  vec3 dif = texture2D(tex, vec2(ud.x, clamp(ud.y * 0.5, texel, 0.5 - texel))).rgb;
+  dif = mix(vec3(dot(dif, vec3(0.2126, 0.7152, 0.0722))), dif, 0.4);   // yuzey rengi ortamin rengine fazla boyanmasin
+  float f0 = mix(0.08, 1.0, metal);
+  float f = f0 + (1.0 - f0) * pow(1.0 - max(dot(-I, n), 0.0), 5.0) * (1.0 - 0.7 * rough);
+  gl_FragColor = vec4((1.0 - metal) * (1.0 - f) * base * dif * 1.5 + f * refl, gl_FrontMaterial.diffuse.a);
+}"""
+
+def _env_nodes():
+    """(grup, doku, [px, py, pz], ctr, rad, rough, metal, texel, base): shader nesne normalini kullanir, Placement
+    donmesi parametreden; ctr, rad: resmin sarili oldugu kure (yerel); rough, metal: gorunum; texel: atlasta katman
+    siniri; base: yuzey rengi, ortamin bulanik kopyasiyla aydinlanir; ustune Fresnel yansima gelir. Sonsuz uzak ortamda duz yuzeydeki paralel isinlar resmin tek noktasina bakar ve
+    yuzey cizgi cizgi gorunurdu; sonlu kurede yuzeyin konumu da ise girer."""
+    g = coin.SoGroup()
+    q = coin.SoComplexity()
+    q.textureQuality = 0.3                                 # mipmap yok: atan dikisinde cizgi cikmasin
+    g.addChild(q)
+    tex = coin.SoTexture2()
+    tex.model = coin.SoTexture2.REPLACE
+    g.addChild(tex)
+    vs, fs = coin.SoVertexShader(), coin.SoFragmentShader()
+    vs.sourceType = fs.sourceType = coin.SoShaderObject.GLSL_PROGRAM
+    vs.sourceProgram, fs.sourceProgram = ENV_VERT, ENV_FRAG
+    prog = coin.SoShaderProgram()
+    prog.shaderObject.set1Value(0, vs)
+    prog.shaderObject.set1Value(1, fs)
+    rows = []
+    for name in ("px", "py", "pz"):
+        p = coin.SoShaderParameter3f()
+        p.name = name
+        rows.append(p)
+    ctr, base = coin.SoShaderParameter3f(), coin.SoShaderParameter3f()
+    ctr.name, base.name = "ctr", "base"
+    rad, rough, metal, texel = (coin.SoShaderParameter1f() for _ in range(4))
+    rad.name, rough.name, metal.name, texel.name = "rad", "rough", "metal", "texel"
+    rad.value = 1000.0
+    for i, p in enumerate(rows + [ctr, rad, rough, metal, texel, base]):
+        fs.parameter.set1Value(i, p)
+    g.addChild(prog)
+    return g, tex, rows, ctr, rad, rough, metal, texel, base
+
+
 def _zebra_button(on):
     """FreeCAD arac cubugundaki Zebra dugmesini (SubD_Zebra) oturumun durumuna getir."""
     cmd = Gui.Command.get("SubD_Zebra")
@@ -3607,6 +3886,19 @@ class SubDSession:
         self.ghost = False   # hayalet modu: arkadakiler gorunur / secilebilir
         self.snap = False    # serbest tasimada Part / PartDesign kose ve kenarlarina yakalama
         self.zebra = False   # zebra seritleri (yuzey surekliligi analizi)
+        self.matcap = _param().GetString("Matcap", "")     # yuzey gorunumu (MATCAPS adi; bos = kapali)
+        self.env_on = _param().GetBool("EnvOn", False)     # ortam yansitma (acikken matcap'in onune gecer)
+        self.env_path = _param().GetString("EnvPath", "")  # ortam resmi
+        self.env_loaded = None                             # dokuya yuklu resim
+        self.env_px = None                                 # okunan resim (dogrusal, HDR mi); Roughness degisince gerekir
+        self.env_rough = _param().GetFloat("EnvRoughness", 0.25)   # 0 ayna, 1 tamamen dagitik
+        self.env_metal = _param().GetFloat("EnvMetal", 0.0)        # 0 plastik (renk + hafif yansima), 1 metal
+        self.cage_color = QtGui.QColor(_param().GetString("CageColor", "#8c99b3"))  # Subpatch kapaliyken kafes yuzleri
+        if not self.cage_color.isValid():
+            self.cage_color = QtGui.QColor("#8c99b3")
+        self.env_color = QtGui.QColor(_param().GetString("EnvColor", "#b8bfcc"))   # plastik yuzey rengi
+        if not self.env_color.isValid():
+            self.env_color = QtGui.QColor("#b8bfcc")
         self._snapdata = None
         self.smooth = obj is not None
         self.levels = obj.Levels if obj is not None else 3       # son (belge / kati) seviyesi
@@ -4140,12 +4432,35 @@ class SubDSession:
 
         # hayalet modunda bu iki malzeme yari saydam olur: arkadaki kenar / noktalar gorunur
         self.smooth_mat = material((0.72, 0.75, 0.80), (0.5, 0.5, 0.5), 0.6)
-        self.cage_mat = material((0.55, 0.60, 0.70))
+        self.cage_mat = material(tuple(self.cage_color.getRgbF()[:3]))
         self.s_switch = coin.SoSwitch()
         self.zebra_switch = coin.SoSwitch()                # yansima seritleri: ortam (kure) dokusu
         self.zebra_switch.addChild(_zebra_texture())
-        self.s_switch.addChild(_sep(hints(0.5), self.smooth_mat, offset(), self.zebra_switch, self.s_coord,
-                                    self.s_faces))
+        self.matcap_switch = coin.SoSwitch()               # matcap: isik dokuda, sahne isiklari yerine (REPLACE)
+        mc = coin.SoGroup()
+        mc.addChild(coin.SoTextureCoordinateEnvironment())
+        self.matcap_tex = coin.SoTexture2()
+        self.matcap_tex.model = coin.SoTexture2.REPLACE
+        mc.addChild(self.matcap_tex)
+        mc.addChild(_matcap_shader())
+        self.matcap_switch.addChild(mc)
+        self.s_normal = coin.SoNormal()                    # kose normalleri: surface_normals
+        nb = coin.SoNormalBinding()
+        nb.value = coin.SoNormalBinding.PER_VERTEX_INDEXED
+        self.env_switch = coin.SoSwitch()
+        eg, self.env_tex, self.env_rows, self.env_ctr, self.env_rad, self.env_rough_p, self.env_metal_p, \
+            self.env_texel, self.env_base = _env_nodes()
+        self.env_base.value = tuple(self.env_color.getRgbF()[:3])
+        self.env_metal_p.value = self.env_metal
+        self.env_rough_p.value = self.env_rough
+        self.env_switch.addChild(eg)
+        self.s_switch.addChild(_sep(hints(0.5), self.smooth_mat, offset(), self.zebra_switch, self.matcap_switch,
+                                    self.env_switch, self.s_coord, self.s_normal, nb, self.s_faces))
+        if self.matcap not in MATCAPS:
+            self.matcap = ""
+        if self.env_on and self._env_load() is not None:   # hatirlanan resim tasinmis / silinmis
+            self.env_on = False
+        self._matcap_apply()
         self.c_switch = coin.SoSwitch()
         self.c_switch.addChild(_sep(
             _sep(hints(0.0), self.cage_mat, offset(), self.c_coord, self.c_faces),
@@ -4460,6 +4775,42 @@ class SubDSession:
         self.zebra_box.setToolTip(T("Reflection stripes on the surface: kinks show as broken stripes (G0), "
                                     "corners in the stripes as G1, smooth stripes as G2"))
         grid.addWidget(self.zebra_box, 2, 2, 1, 2)
+        self.env_box = QtWidgets.QCheckBox(T("Environment reflection"))
+        self.env_box.setToolTip(T("The smooth preview reflects an image of the surroundings: an equirectangular (2:1) "
+                                  "panorama, best as .hdr; JPG and PNG also work"))
+        grid.addWidget(self.env_box, 3, 0, 1, 2)
+        self.env_btn = QtWidgets.QPushButton(T("Load image..."))
+        self.env_btn.setToolTip(self.env_path or T("Environment image"))
+        grid.addWidget(self.env_btn, 3, 2, 1, 2)
+        for row, name, tip, val, fn in (
+                (4, "Roughness", "0: mirror, 1: fully blurred reflections", self.env_rough,
+                 lambda v: self.set_env_look(rough=v)),
+                (5, "Metal", "0: plastic (surface color with a soft reflection), 1: metal (reflection only)",
+                 self.env_metal, lambda v: self.set_env_look(metal=v))):
+            sp = QtWidgets.QDoubleSpinBox()
+            sp.setRange(0.0, 1.0)
+            sp.setSingleStep(0.05)
+            sp.setDecimals(2)
+            sp.setKeyboardTracking(False)
+            sp.setValue(val)
+            sp.setToolTip(T(tip))
+            sp.valueChanged.connect(fn)
+            grid.addWidget(QtWidgets.QLabel(T(name)), row, 0, 1, 2)
+            grid.addWidget(sp, row, 2, 1, 2)
+        self.env_color_btn = QtWidgets.QPushButton()
+        self.env_color_btn.setToolTip(T("Surface color for the plastic look (no effect at Metal 1)"))
+        self.env_color_btn.clicked.connect(lambda checked=False: self.env_pick_color())
+        self._env_swatch()
+        grid.addWidget(QtWidgets.QLabel(T("Surface color")), 6, 0, 1, 2)
+        grid.addWidget(self.env_color_btn, 6, 2, 1, 2)
+        self.cage_color_btn = QtWidgets.QPushButton()
+        self.cage_color_btn.setToolTip(T("Color of the cage faces when Subpatch is off"))
+        self.cage_color_btn.setStyleSheet("background: %s;" % self.cage_color.name())
+        self.cage_color_btn.clicked.connect(lambda checked=False: self.cage_pick_color())
+        grid.addWidget(QtWidgets.QLabel(T("Cage color")), 7, 0, 1, 2)
+        grid.addWidget(self.cage_color_btn, 7, 2, 1, 2)
+        self.env_box.toggled.connect(lambda on: self.set_env(bool(on)))
+        self.env_btn.clicked.connect(lambda checked=False: self.env_pick())
         self._sync_surface_widgets()
         self.edit_lv_box.valueChanged.connect(self.set_edit_levels)
         self.final_lv_box.valueChanged.connect(lambda v: self.change_surface(levels=v))
@@ -4533,7 +4884,8 @@ class SubDSession:
         for b, fn in ((self.boundary_box, lambda: b.setCurrentIndex(
                            BOUNDARY_RULES.index(self.rules[0]) if self.rules[0] in BOUNDARY_RULES else 0)),
                       (self.smooth_tri_box, lambda: b.setChecked(self.rules[1])),
-                      (self.zebra_box, lambda: b.setChecked(self.zebra))):
+                      (self.zebra_box, lambda: b.setChecked(self.zebra)),
+                      (self.env_box, lambda: b.setChecked(self.env_on))):
             b.blockSignals(True)
             fn()
             b.blockSignals(False)
@@ -4641,9 +4993,21 @@ class SubDSession:
         self.p_switch.whichChild = 0 if self.mode == "point" else -1
         if self.smooth and F:
             lv = self.edit_levels
-            S, Q = subdivide(V, F, min(lv, 2) if fast else lv, self.cage.C, self.rules)
+            S, Q, cr = V, F, self.cage.C
+            for _ in range(min(lv, 2) if fast else lv):
+                S, Q, cr = catmull_clark(S, Q, cr, self.rules)
             _set_coords(self.s_coord, S)
             _set_index(self.s_faces, np.concatenate([Q, -np.ones((len(Q), 1), int)], 1).ravel().tolist())
+            Nv = surface_normals(S, Q, cr)
+            self.s_normal.vector.setValues(0, Nv.size // 3, Nv.reshape(-1, 3).tolist())
+            self.s_normal.vector.setNum(Nv.size // 3)
+            idx = np.arange(4 * len(Q)).reshape(-1, 4)
+            idx = np.concatenate([idx, -np.ones((len(Q), 1), int)], 1).ravel().tolist()
+            self.s_faces.normalIndex.setValues(0, len(idx), idx)
+            self.s_faces.normalIndex.setNum(len(idx))
+            lo, hi = S.min(0), S.max(0)                    # ortam kuresi modeli sarar
+            self.env_ctr.value = tuple(((lo + hi) / 2).tolist())
+            self.env_rad.value = float(max(np.linalg.norm(hi - lo), 1e-6)) * ENV_RADIUS
         self.s_switch.whichChild = 0 if self.smooth else -1
         self.c_switch.whichChild = -1 if self.smooth else 0
         verts = self.selected_verts() if not self.grab else []
@@ -4663,6 +5027,8 @@ class SubDSession:
         self._t = np.array(tuple(pl.Base))
         self.xform.translation = tuple(self._t)
         self.xform.rotation.setValue(*pl.Rotation.Q)
+        for p, row in zip(self.env_rows, self._R):         # ortam yansitma: yerel yon -> dunya
+            p.value = tuple(row.tolist())
 
     def l2w(self, P):
         return np.asarray(P) @ self._R.T + self._t
@@ -5373,11 +5739,122 @@ class SubDSession:
         seritte kose = G1, yumusak serit = G2. Subpatch kapaliysa acilir."""
         self.zebra = not self.zebra
         self.zebra_switch.whichChild = 0 if self.zebra else -1
+        self._matcap_apply()
         if self.zebra and not self.smooth:
             self.toggle_smooth()
         self._sync_surface_widgets()
         _zebra_button(self.zebra)
         self.refresh()
+
+    def set_matcap(self, name):
+        """Yuzey gorunumu: MATCAPS adi ya da "" (kapali); secim hatirlanir. Zebra analiz icin matcap'in onune gecer
+        (zebra acikken matcap gizli, kapaninca geri gelir); matcap secmek zebrayi kapatir. Subpatch kapaliysa acilir."""
+        self.matcap = name
+        _param().SetString("Matcap", name)
+        if name and self.env_on:
+            self.set_env(False)
+        self._matcap_apply()
+        if name and self.zebra:
+            self.toggle_zebra()
+        if name and not self.smooth:
+            self.toggle_smooth()
+        self.refresh()
+
+    def _matcap_apply(self):
+        if self.matcap:
+            self.matcap_tex.image.setValue(coin.SbVec2s(256, 256), 3, _matcap_image(self.matcap))
+        self.matcap_switch.whichChild = 0 if self.matcap and not self.zebra and not self.env_on else -1
+        self.env_switch.whichChild = 0 if self.env_on and not self.zebra else -1
+
+    def _env_load(self):
+        """env_path resmini dokuya yukler; hata mesajini dondurur (yoksa None)."""
+        if self.env_loaded == self.env_path:
+            return None
+        try:
+            self.env_px = _env_read(self.env_path)
+        except (OSError, ValueError, IndexError) as e:
+            return str(e)
+        self._env_upload()
+        self.env_loaded = self.env_path
+        return None
+
+    def _env_upload(self):
+        w, h, data = _env_atlas(*self.env_px, self.env_rough)
+        self.env_tex.image.setValue(coin.SbVec2s(w, h), 3, data)
+        self.env_texel.value = 1.0 / h
+
+    def cage_pick_color(self):
+        """Options > Cage color: Subpatch kapaliyken kafes yuzlerinin rengi; secim hatirlanir (secili yuzler turuncu kalir)."""
+        c = QtWidgets.QColorDialog.getColor(self.cage_color, Gui.getMainWindow(), T("Cage color"))
+        if not c.isValid():                                # vazgecildi
+            return
+        self.cage_color = c
+        _param().SetString("CageColor", c.name())
+        self.cage_mat.diffuseColor = tuple(c.getRgbF()[:3])
+        self.cage_color_btn.setStyleSheet("background: %s;" % c.name())
+        self.refresh()
+
+    def env_pick_color(self):
+        """Options > Surface color: secim hatirlanir; yalniz ortam yansitmada kullanilir (Metal 1'de etkisiz)."""
+        c = QtWidgets.QColorDialog.getColor(self.env_color, Gui.getMainWindow(), T("Surface color"))
+        if not c.isValid():                                # vazgecildi
+            return
+        self.env_color = c
+        _param().SetString("EnvColor", c.name())
+        self.env_base.value = tuple(c.getRgbF()[:3])
+        self._env_swatch()
+        self.refresh()
+
+    def _env_swatch(self):
+        self.env_color_btn.setStyleSheet("background: %s;" % self.env_color.name())
+
+    def set_env_look(self, rough=None, metal=None):
+        """Options: Roughness (bulaniklik; doku yeniden kurulur) ve Metal (plastik - metal karisimi)."""
+        if rough is not None and rough != self.env_rough:
+            self.env_rough = rough
+            _param().SetFloat("EnvRoughness", rough)
+            self.env_rough_p.value = rough
+            if self.env_px is not None:
+                self._env_upload()
+        if metal is not None and metal != self.env_metal:
+            self.env_metal = metal
+            _param().SetFloat("EnvMetal", metal)
+            self.env_metal_p.value = metal
+        self.refresh()
+
+    def set_env(self, on):
+        """Options > Environment reflection: resim yoksa once sorar. Zebra analiz icin onune gecer (kapaninca geri
+        gelir); ortam acikken matcap gizli kalir. Subpatch kapaliysa acilir. Secim hatirlanir."""
+        if on and not self.env_path and not self.env_pick(False):
+            on = False
+        if on:
+            err = self._env_load()
+            if err:
+                self.info = T("Environment image: %s") % err
+                on = False
+        self.env_on = on
+        _param().SetBool("EnvOn", on)
+        self._matcap_apply()
+        if on and self.zebra:
+            self.toggle_zebra()
+        if on and not self.smooth:
+            self.toggle_smooth()
+        self._sync_surface_widgets()
+        self.refresh()
+
+    def env_pick(self, apply=True):
+        """Ortam resmi sec; secilmediyse False. apply: secildiyse hemen ac."""
+        start = os.path.dirname(self.env_path) if self.env_path else ""
+        path = QtWidgets.QFileDialog.getOpenFileName(Gui.getMainWindow(), T("Environment image"), start,
+                                                     T(ENV_FILTER))[0]
+        if not path:
+            return False
+        self.env_path, self.env_loaded = path, None
+        _param().SetString("EnvPath", path)
+        self.env_btn.setToolTip(path)
+        if apply:
+            self.set_env(True)
+        return True
 
     def switch_language(self):
         """EN <-> TR: dili kaydet, modelleyiciyi kapatip (kafes belgeye yazilir) ayni nesneyle yeniden ac."""
@@ -8632,6 +9109,22 @@ class _Overlay(object):
         tog("Subpatch", "Tab", s.toggle_smooth, lambda: s.smooth)
         tog("Ghost", "X", s.toggle_ghost, lambda: s.ghost)
         tog("Snap", "", s.toggle_snap, lambda: s.snap)
+        mc = _lw_button(T("Matcap"), "▴")
+        mc.setCheckable(True)
+        mc.setToolTip(T("Surface look of the smooth preview (Edit mode)"))
+        self.toggles["Matcap"] = (mc, lambda: bool(s.matcap) and not s.zebra and not s.env_on)
+        mm = QtWidgets.QMenu(mc)
+        mm.setStyleSheet(MENU_CSS)
+        acts = []
+        for key in ("",) + tuple(MATCAPS):
+            a = mm.addAction(T(key or "Off"))
+            a.setCheckable(True)
+            a.triggered.connect(lambda checked=False, key=key: (s.set_matcap(key), self.sync(), self.refocus()))
+            acts.append((a, key))
+        mm.aboutToShow.connect(lambda: [a.setChecked(k == s.matcap) for a, k in acts])
+        mm.aboutToHide.connect(self.sync)                  # iptal: tiklamayla degisen dugme durumu geri gelsin
+        mc.clicked.connect(lambda checked=False: mm.popup(mc.mapToGlobal(QtCore.QPoint(0, -mm.sizeHint().height() - 2))))
+        row.addWidget(mc)
         for vertical, tip in ((False, "Align horizontally: selected points (polygons, edges: their centers) get the "
                                       "same height on screen"),
                               (True, "Align vertically: selected points (polygons, edges: their centers) line up "

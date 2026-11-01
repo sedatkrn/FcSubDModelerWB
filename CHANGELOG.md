@@ -12,6 +12,15 @@
   view: it opens as a tab next to Model / Tasks and can be dragged to a side or floated, and its place is remembered.
   The bottom bar, numeric panel and messages stay in the view.
 ### New tools
+- **Cage color** (Options): color of the cage faces when Subpatch is off; remembered.
+- **Environment reflection** (Options): the smooth preview in Edit mode reflects a loaded panorama, read per pixel and
+  wrapped on a sphere around the model (fixed to the world, Z up), so flat faces show an image instead of streaks. *Roughness* blurs the reflection and *Metal* goes
+  from plastic (surface color lit by the image, with a soft reflection stronger at the edges; *Surface color* sets it) to metal. Use an equirectangular (2:1) image: Radiance .hdr is best, JPG and PNG also work. HDR is tone
+  mapped to 8 bits. Image and setting are remembered. The surface does not reflect itself or cast shadows.
+- **Matcap** (bottom bar): surface looks for the smooth preview in Edit mode, with light, highlights and darkened edges
+  painted into a texture: Clay, Plastic, Black plastic, Ceramic, Metal. The texture is read per pixel, on smooth normals
+  of the surface (creases and very sharp breaks stay hard), so no blocks appear in curved areas. The choice is
+  remembered. Zebra takes over while it is on.
 - **Merge polygons** (Polygon, Shift+Z, LightWave Merge Polygons): selected adjacent polygons become one polygon;
   inner edges and points go, creases on the outline stay. Polygons that are not adjacent, or a selection with no single
   outline (a ring with a hole, a whole closed shape, mixed directions), give a warning and leave the cage untouched.
