@@ -7938,8 +7938,8 @@ def _quiet(fn):
 
 
 class _DocWatcher(object):
-    """Duzenlenen belge kapaninca modelleyiciyi de kapat: 3B gorunum silinince sol menu / alt cubuk onunla
-    gidiyor ama ana penceredeki Create / Modify arac cubugu ve oturum ortada kaliyordu."""
+    """Duzenlenen belge kapaninca modelleyiciyi de kapat: 3B gorunum silinince alt cubuk onunla gidiyor ama ana
+    penceredeki arac paneli ve oturum ortada kaliyordu."""
 
     def slotDeletedDocument(self, doc):
         s = _session
@@ -8420,46 +8420,81 @@ _align_icons = {}         # Align dugmelerinin simgeleri (yatay / dikey), bir ke
 _last_tab = ["create"]   # son secilen sekme; modelleyici yeniden acilinca (or. dil degisince) ayni sekme
 
 TAB_CSS = """
-QToolBar { spacing: 3px; }
 QToolButton { background: #5a5a5a; color: #ececec; border: 1px solid #2b2b2b; border-radius: 2px;
-              padding: 3px 18px; min-width: 47px; }
+              padding: 3px 10px; min-width: 46px; }
 QToolButton:hover { background: #6b6b6b; }
 QToolButton:checked { background: #3f6fb0; border-color: #24426b; }
 """
 
 
 class _TabBar(object):
-    """FreeCAD arac cubugunda Create / Modify sekme dugmeleri (LightWave'in ust sekmeleri gibi): sol arac
-    sutununda hangi menunun gorunecegini secer. Modelleyici kapaninca arac cubugu kaldirilir."""
+    """Arac panelinin ustunde Create / Modify sekme dugmeleri (LightWave'in ust sekmeleri gibi): panelde hangi
+    menunun gorunecegini secer."""
     TABS = (("create", "Create"), ("modify", "Modify"))
 
     def __init__(self, overlay):
-        self.mw = Gui.getMainWindow()
-        for old in self.mw.findChildren(QtWidgets.QToolBar, "SubDModelerTabs"):   # duzgun kapanmamis oturumdan
-            _quiet(lambda old=old: self.mw.removeToolBar(old))
-            _quiet(old.deleteLater)
-        self.tb = QtWidgets.QToolBar(T("SubD Modeler tabs"), self.mw)
-        self.tb.setObjectName("SubDModelerTabs")
-        self.tb.setStyleSheet(TAB_CSS)
+        self.w = QtWidgets.QWidget()
+        self.w.setStyleSheet(TAB_CSS)
+        lay = QtWidgets.QHBoxLayout(self.w)
+        lay.setContentsMargins(4, 4, 4, 3)
+        lay.setSpacing(3)
         self.buttons = {}
         for key, text in self.TABS:
             b = QtWidgets.QToolButton()
             b.setText(T(text))
             b.setCheckable(True)
             b.setFocusPolicy(QtCore.Qt.NoFocus)            # kisayollar gorunumde kalsin
-            b.clicked.connect(lambda checked=False, k=key: (overlay.set_tab(k), _later(overlay.s.gv.setFocus)))
-            self.tb.addWidget(b)
+            b.clicked.connect(lambda checked=False, k=key: (overlay.set_tab(k), overlay.refocus()))
+            lay.addWidget(b)
             self.buttons[key] = b
-        self.mw.addToolBar(self.tb)
-        self.tb.show()
+        lay.addStretch(1)
 
     def sync(self, tab):
         for k, b in self.buttons.items():
             b.setChecked(k == tab)
 
-    def close(self):
-        _quiet(lambda: self.mw.removeToolBar(self.tb))
-        _quiet(self.tb.deleteLater)
+
+class _ToolDock(QtWidgets.QDockWidget):
+    """Arac sutununu tasiyan FreeCAD paneli: kenara yerlesir, sekme olur ya da yuzer; kapatilamaz (araclar
+    kaybolmasin, modelleyiciyle gelir gider). Yeri ve yuzme durumu tercihlerde saklanir. Paneli surukleyince pencere
+    odagi ona gecer: kisayollar calismaya devam etsin diye _KeyFilter buraya da takilir, odak gorunume geri verilir."""
+
+    def __init__(self, overlay, content):
+        super().__init__(T("SubD tools"), Gui.getMainWindow())
+        self.setObjectName("SubDModelerTools")
+        self.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable)
+        self.setWidget(content)
+        self.topLevelChanged.connect(lambda floating: overlay.refocus())
+        mw = self.parent()
+        for old in mw.findChildren(QtWidgets.QDockWidget, "SubDModelerTools"):   # duzgun kapanmamis oturumdan
+            if old is not self:
+                _quiet(lambda old=old: mw.removeDockWidget(old))
+                _quiet(old.deleteLater)
+        p = _param()
+        area = QtCore.Qt.RightDockWidgetArea if p.GetInt("ToolDockArea", 1) == 2 else QtCore.Qt.LeftDockWidgetArea
+        mw.addDockWidget(area, self)
+        if p.GetBool("ToolDockFloating", False):
+            self.setFloating(True)
+            x, y, w, h = (p.GetInt("ToolDock" + n, -1) for n in "XYWH")
+            if w > 0 and h > 0 and QtWidgets.QApplication.screenAt(QtCore.QPoint(x + 20, y + 20)) is not None:
+                self.setGeometry(x, y, w, h)               # ekran sokulduysa eski yere acilip kaybolmasin
+        else:
+            near = [d for d in mw.findChildren(QtWidgets.QDockWidget) if d is not self and d.isVisible()
+                    and not d.isFloating() and mw.dockWidgetArea(d) == area]
+            if near:                                       # Model / Tasks yaninda sekme: tam yukseklik
+                mw.tabifyDockWidget(near[0], self)
+        self.show()
+        self.raise_()
+
+    def remember(self):
+        p = _param()
+        p.SetBool("ToolDockFloating", self.isFloating())
+        if self.isFloating():
+            g = self.geometry()
+            for n, v in zip("XYWH", (g.x(), g.y(), g.width(), g.height())):
+                p.SetInt("ToolDock" + n, v)
+        else:
+            p.SetInt("ToolDockArea", 2 if self.parent().dockWidgetArea(self) == QtCore.Qt.RightDockWidgetArea else 1)
 
 
 class _Overlay(object):
@@ -8470,10 +8505,10 @@ class _Overlay(object):
         self.gated = []      # (dugme, secim gerekir mi, yalniz hangi modda: None / "edit" / "object")
         self.tool_buttons = []  # kalici arac dugmeleri (Knife, Select loop): aciksa sari, yazi koyu
 
-        # Arac sutunu bolumlerden olusur (baslik + dugmeler). Bolumler LightWave gibi sekmelere ayrilir: FreeCAD
-        # arac cubugundaki Create / Modify dugmeleri hangisinin gorunecegini secer. Secili sekme gorunume
-        # sigmazsa relayout bolumlerini yan yana sutunlara akitir.
-        self.left = QtWidgets.QFrame(self.vp)
+        # Arac sutunu bolumlerden olusur (baslik + dugmeler). Bolumler LightWave gibi sekmelere ayrilir: panelin
+        # ustundeki Create / Modify dugmeleri hangisinin gorunecegini secer. Secili sekme panele sigmazsa relayout
+        # bolumlerini yan yana sutunlara akitir. Alt cubuk, islem paneli ve mesajlar gorunumde kalir.
+        self.left = QtWidgets.QFrame()
         self.left.setObjectName("lwPanel")
         self.left.setStyleSheet(OVERLAY_CSS)
         self.cols_lay = QtWidgets.QHBoxLayout(self.left)
@@ -8500,8 +8535,8 @@ class _Overlay(object):
 
         def btn(text, key, fn, toggle=None, sel=False, mode=None, tool=None):
             b = _lw_button(T(text), key, 112)
-            b.clicked.connect(lambda checked=False: (fn(), self.sync()))
-            if tool:                                       # kalici arac: acikken sari (mavi = acik modlar)
+            b.clicked.connect(lambda checked=False: (fn(), self.sync(), self.refocus()))
+            if tool:                                     # kalici arac: acikken sari (mavi = acik modlar)
                 b.setProperty("tool", True)
                 toggle = lambda: s.armed == tool
                 self.tool_buttons.append(b)
@@ -8519,7 +8554,7 @@ class _Overlay(object):
             m.setStyleSheet(MENU_CSS)
             for label, fn in items:
                 m.addAction(T(label)).triggered.connect(
-                    lambda checked=False, fn=fn: (fn(), self.sync(), _later(s.gv.setFocus)))
+                    lambda checked=False, fn=fn: (fn(), self.sync(), self.refocus()))
             b.clicked.connect(lambda checked=False: m.popup(b.mapToGlobal(QtCore.QPoint(b.width() + 2, 0))))
             cur["lay"].addWidget(b)
 
@@ -8633,29 +8668,54 @@ class _Overlay(object):
         self.tabs = _TabBar(self)
         self.tabs.sync(self.tab)
 
-        for w in (self.left, self.bar):
-            w.show()
-            w.raise_()
+        self.scroll = QtWidgets.QScrollArea()              # panel kisalinca sutun panel boyunu zorlamasin
+        self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.scroll.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.scroll.setWidget(self.left)
+        content = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(content)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(self.tabs.w)
+        lay.addWidget(self.scroll, 1)
+        self.tool_dock = _ToolDock(self, content)
+        s.key_targets.append(self.tool_dock)
+        self.tool_dock.installEventFilter(s.key_filter)    # boyut degisince sutunlar da yeniden akar
+
+        self.left.show()
+        self.bar.show()
+        self.bar.raise_()
         self.relayout()
+        self.refocus()
+
+    def refocus(self):
+        """Panele tiklandi: klavye yine gorunume gitsin (panel yuzuyorsa pencere odagi da ana pencereye donsun)."""
+        def back():
+            self.s.gv.window().activateWindow()
+            self.s.gv.setFocus()
+        _later(lambda: _quiet(back))
 
     def relayout(self):
         w, h = self.vp.width(), self.vp.height()
         self.bar.setFixedWidth(w)
         self.bar.adjustSize()
         self.bar.move(0, h - self.bar.height())
-        self._flow_columns(h - self.bar.height() - 6 - 6 - 8)   # ust bosluk, alt bosluk, cerceve kenarlari
-        self.left.move(6, 6)
-        # islem paneli: sol menunun sagi, alt cubugun hemen ustu
-        self.panel.move(self.left.x() + self.left.width() + 8, h - self.bar.height() - self.panel.height() - 8)
+        avail = self.scroll.viewport().height() - 8        # cerceve kenarlari
+        self._flow_columns(avail if avail > 100 else 1 << 30)   # sekmesi arkada / henuz acilmamis panel: tek sutun
+        bar = self.scroll.verticalScrollBar().sizeHint().width() if self.left.height() > avail > 92 else 0
+        self.scroll.setMinimumWidth(self.left.width() + bar)
+        # islem paneli: gorunumun solu, alt cubugun hemen ustu
+        self.panel.move(8, h - self.bar.height() - self.panel.height() - 8)
         self._place_info()
 
     def _place_info(self):
-        """Mesaj etiketi: sol menunun saginda, alt cubugun (panel aciksa panelin) hemen ustunde; bos ise gizli."""
+        """Mesaj etiketi: gorunumun solunda, alt cubugun (panel aciksa panelin) hemen ustunde; bos ise gizli."""
         lab = self.info_label
         if not lab.text():
             lab.hide()
             return
-        x = self.left.x() + self.left.width() + 8
+        x = 8
         maxw = max(200, self.vp.width() - x - 12)
         lab.setMaximumWidth(maxw)
         lab.setWordWrap(False)                             # sigiyorsa tek satir; sigmiyorsa satira bol
@@ -8750,8 +8810,11 @@ class _Overlay(object):
             self._place_info()
 
     def close(self):
-        self.tabs.close()                                  # ana pencerede: gorunum silinse de kalir, once kaldir
-        for w in (self.left, self.bar, self.panel, self.info_label):   # gorunumun cocuklari: gorunumle silinmis olabilir
+        d = self.tool_dock                                 # ana pencerede: gorunum silinse de kalir, once kaldir
+        _quiet(d.remember)
+        _quiet(lambda: d.parent().removeDockWidget(d))
+        _quiet(d.deleteLater)
+        for w in (self.bar, self.panel, self.info_label):  # gorunumun cocuklari: gorunumle silinmis olabilir
             _quiet(w.hide)
             _quiet(w.deleteLater)
 

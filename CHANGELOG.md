@@ -8,6 +8,9 @@
 - Deleting every polygon of an object now removes the object (with its solid) from the tree when you leave its cage:
   it used to stay there with its old shape. Ctrl+Z still works inside the edit, and FreeCAD's Undo brings the object
   back afterwards.
+- The tool column and the Create / Modify tabs now live in a FreeCAD panel (**SubD tools**) instead of on top of the 3D
+  view: it opens as a tab next to Model / Tasks and can be dragged to a side or floated, and its place is remembered.
+  The bottom bar, numeric panel and messages stay in the view.
 ### New tools
 - **Merge polygons** (Polygon, Shift+Z, LightWave Merge Polygons): selected adjacent polygons become one polygon;
   inner edges and points go, creases on the outline stay. Polygons that are not adjacent, or a selection with no single

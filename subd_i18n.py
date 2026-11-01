@@ -135,6 +135,7 @@ TR = {
     "Merge points": "Noktaları birleştir",
     "Merge points: %d merged": "Noktaları birleştir: %d nokta birleşti",
     "Fixed distance": "Sabit mesafe",
+    "SubD tools": "SubD araçları",
     "Merge polygons": "Çokgenleri birleştir",
     "Merge polygons: select at least two adjacent polygons": "Çokgenleri birleştir: en az iki bitişik çokgen seçin",
     "Merge polygons: the selected polygons are not adjacent": "Çokgenleri birleştir: seçili çokgenler bitişik değil",

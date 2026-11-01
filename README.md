@@ -65,7 +65,8 @@ Catmull-Clark limit surface is on the roadmap.
   faces are removed), with number of cuts, twist, smoothness (tangent to the surfaces) and profile factor
 - Mirror X / Y / Z (LightWave Mirror): mirrors the selected polygons (or the whole cage) across a world axis
   plane (exact center in the panel) and welds the points on the plane, so a half model becomes one piece
-- LightWave-style **Create / Modify** tabs in the FreeCAD toolbar choose which tool menu the viewport shows
+- The tools are in the **SubD tools** panel, a FreeCAD panel you can dock or float; its LightWave-style **Create /
+  Modify** tabs choose which tool menu it shows
 - X symmetry for every tool
 - Move / rotate / stretch / size gizmo (ported from FC YBT Raytracer), Ctrl = mm / degree steps
 - Exact numeric input for every operation, plus selection center / size in mm
