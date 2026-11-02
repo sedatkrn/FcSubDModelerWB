@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 (2026-11-02)
 
 - **Undo goes step by step everywhere while editing a cage**: FreeCAD's Undo / Redo buttons, the Edit menu and Ctrl+Z with the focus outside the 3D view now undo one modeling step. They used to take back the whole edit and lose the steps. The arrow on FreeCAD's toolbar button still lists the document's own steps.
 - **Redo**: Ctrl+Y or Ctrl+Shift+Z. **Undo / Redo buttons** are on the bottom bar.
