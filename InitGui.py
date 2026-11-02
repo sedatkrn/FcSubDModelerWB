@@ -41,24 +41,6 @@ class _RestoreObserver:
             subd_railpipe.repair_proxies(doc)
 
 
-class _PartDesignTools:
-    """Rail Pipe / Rail Groove dugmeleri PartDesign'in "Part Design Modeling Features" arac cubugunda da olsun
-    (Additive / Subtractive Pipe'in yaninda); FreeCAD 1.0+ workbench manipulator. Pimp My PartDesign kuruluysa
-    dugmeleri o ekler (ayni arac iki kez gorunmesin); SubD_RailPipe komutlari eski belgeler icin yine kayitli."""
-
-    def modifyToolBars(self):
-        try:
-            if Gui.activeWorkbench().name() != "PartDesignWorkbench":
-                return []
-            if "PDA_RailPipe" in Gui.listCommands():
-                return []
-        except Exception:
-            return []
-        return [{"append": c, "toolBar": "Part Design Modeling Features"} for c in ("SubD_RailPipe", "SubD_RailGroove")]
-
-
 import FreeCAD as App
 App.addDocumentObserver(_RestoreObserver())
 Gui.addWorkbench(SubDModelerWorkbench())
-if hasattr(Gui, "addWorkbenchManipulator"):
-    Gui.addWorkbenchManipulator(_PartDesignTools())

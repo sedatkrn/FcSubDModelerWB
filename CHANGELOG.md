@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- For the FreeCAD Addon Index rules: the workbench no longer changes `sys.path`, and it no longer adds Rail Pipe / Rail
+  Groove buttons to PartDesign's toolbar.
+- The Rail Pipe / Rail Groove buttons are gone from the SubD toolbar and menu too: install the **Pimp My PartDesign**
+  add-in to create them. Old documents with these features still open and recompute.
+
 ## 0.3.0 (2026-11-02)
 
 - **Snap** can be switched on and off with the **Q** key.
