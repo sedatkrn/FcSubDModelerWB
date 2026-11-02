@@ -5,6 +5,8 @@
 - **Undo goes step by step everywhere while editing a cage**: FreeCAD's Undo / Redo buttons, the Edit menu and Ctrl+Z with the focus outside the 3D view now undo one modeling step. They used to take back the whole edit and lose the steps. The arrow on FreeCAD's toolbar button still lists the document's own steps.
 - **Redo**: Ctrl+Y or Ctrl+Shift+Z. **Undo / Redo buttons** are on the bottom bar.
 - The steps survive a trip to object mode and back, as long as the object did not change in between.
+- Ghost mode is about 3x faster while the view or a drag is moving: the transparent surface is sorted triangle by triangle
+  only when everything stands still, so the still image stays clean.
 - Magnet: the right mouse button no longer opens FreeCAD's context menu.
 - **Tool tips** on all tool, menu and bottom bar buttons (English and Turkish).
 - **Circle on face** (Polygon, under Hole): works like Hole, but the circle stays filled and comes out selected, ready for

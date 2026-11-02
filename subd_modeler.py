@@ -4045,6 +4045,7 @@ class SubDSession:
         self.view.addEventCallbackPivy(coin.SoLocation2Event.getClassTypeId(), self._cb_mov)
         self.timer = QtCore.QTimer()      # yakinlastirinca gizmo ekranda ayni boyda kalsin
         self.timer.timeout.connect(self.gizmo.update_scale)
+        self.timer.timeout.connect(self._ghost_tick)
         self.timer.start(50)
         self.autosave = QtCore.QTimer()   # degisiklikler belgeye duzenli yazilsin (FreeCAD kapanirsa kaybolmasin)
         self.autosave.timeout.connect(self._autosave)
@@ -4543,6 +4544,11 @@ class SubDSession:
         # hayalet modunda bu iki malzeme yari saydam olur: arkadaki kenar / noktalar gorunur
         self.smooth_mat = material((0.72, 0.75, 0.80), (0.5, 0.5, 0.5), 0.6)
         self.cage_mat = material(tuple(self.cage_color.getRgbF()[:3]))
+        # FreeCAD saydam yuzeyleri her karede CPU'da ucgen ucgen siralar (21 bin dortgende 16 -> 55 ms): goruntu temiz ama
+        # dondururken agir. Yalniz bu yuzeylerde hareket surerken siralama kapanir (_ghost_tick), dururken geri gelir.
+        self.ghost_blend = coin.SoTransparencyType()
+        self.ghost_blend.value = coin.SoTransparencyType.SORTED_OBJECT_SORTED_TRIANGLE_BLEND
+        self._ghost_cam, self._ghost_still = None, 0
         self.s_switch = coin.SoSwitch()
         self.zebra_switch = coin.SoSwitch()             # yansima seritleri: ortam (kure) dokusu
         self.zebra_switch.addChild(_zebra_texture())
@@ -4564,7 +4570,7 @@ class SubDSession:
         self.env_metal_p.value = self.env_metal
         self.env_rough_p.value = self.env_rough
         self.env_switch.addChild(eg)
-        self.s_switch.addChild(_sep(hints(0.5), self.smooth_mat, offset(), self.zebra_switch, self.matcap_switch,
+        self.s_switch.addChild(_sep(self.ghost_blend, hints(0.5), self.smooth_mat, offset(), self.zebra_switch, self.matcap_switch,
                                     self.env_switch, self.s_coord, self.s_normal, nb, self.s_faces))
         if self.matcap not in MATCAPS:
             self.matcap = ""
@@ -4573,7 +4579,7 @@ class SubDSession:
         self._matcap_apply()
         self.c_switch = coin.SoSwitch()
         self.c_switch.addChild(_sep(
-            _sep(hints(0.0), self.cage_mat, offset(), self.c_coord, self.c_faces),
+            _sep(self.ghost_blend, hints(0.0), self.cage_mat, offset(), self.c_coord, self.c_faces),
             _sep(hints(0.0), material((1.0, 0.55, 0.15)), self.c_coord, self.sel_faces)))
 
         def lines(color, width, node):
@@ -5915,6 +5921,24 @@ class SubDSession:
         for m, t in ((self.smooth_mat, 0.7), (self.cage_mat, 0.75)):
             m.transparency = t if self.ghost else 0.0
         self.refresh()
+
+    def _ghost_tick(self):
+        """Zamanlayicidan: hayalet modunda kamera ya da surukleme hareket ederken hizli harmanlama, 200 ms durunca
+        ucgen siralamasi (temiz goruntu)."""
+        if not self.ghost or self.mode == "object":
+            return
+        cam = self.view.getCameraNode()
+        if cam is None:
+            return
+        key = (cam.orientation.getValue().getValue(), cam.position.getValue().getValue(),
+               cam.height.getValue() if hasattr(cam, "height") else cam.heightAngle.getValue())
+        moving = key != self._ghost_cam or self.drag is not None or self.grab is not None
+        self._ghost_cam = key
+        self._ghost_still = 0 if moving else self._ghost_still + 1
+        T_ = coin.SoTransparencyType
+        want = T_.SORTED_OBJECT_BLEND if self._ghost_still < 4 else T_.SORTED_OBJECT_SORTED_TRIANGLE_BLEND
+        if self.ghost_blend.value.getValue() != want:
+            self.ghost_blend.value = want
 
     def toggle_zebra(self):
         """Zebra seritleri: puruzsuz yuzeye yansiyan siyah / beyaz seritler. Kirik serit = kirik yuzey (G0),
