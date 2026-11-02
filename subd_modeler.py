@@ -3371,7 +3371,8 @@ def _matcap_shader():
     basamak basamak gorunuyordu. Yedek: shader derlenmezse ortam haritasi calismaya devam eder."""
     vs = coin.SoVertexShader()
     vs.sourceType = coin.SoShaderObject.GLSL_PROGRAM
-    vs.sourceProgram = "varying vec3 vN; void main(){ vN = gl_NormalMatrix * gl_Normal; gl_Position = ftransform(); }"
+    vs.sourceProgram = ("varying vec3 vN; void main(){ vN = gl_NormalMatrix * gl_Normal; "
+                        "gl_ClipVertex = gl_ModelViewMatrix * gl_Vertex; gl_Position = ftransform(); }")
     fs = coin.SoFragmentShader()
     fs.sourceType = coin.SoShaderObject.GLSL_PROGRAM
     fs.sourceProgram = ("uniform sampler2D tex; varying vec3 vN; void main(){ vec3 n = normalize(vN); "
@@ -3481,7 +3482,9 @@ def _env_atlas(px, hdr, rough):
     return W, 2 * H, data.tobytes()
 
 
-ENV_VERT = "varying vec3 vN; varying vec3 vP; void main(){ vN = gl_Normal; vP = gl_Vertex.xyz; gl_Position = ftransform(); }"
+# gl_ClipVertex: yoksa kesit duzlemleri bu golgelendiriciyle cizilen yuzeyi kesmez
+ENV_VERT = ("varying vec3 vN; varying vec3 vP; void main(){ vN = gl_Normal; vP = gl_Vertex.xyz; "
+            "gl_ClipVertex = gl_ModelViewMatrix * gl_Vertex; gl_Position = ftransform(); }")
 ENV_FRAG = """uniform sampler2D tex; uniform vec3 px; uniform vec3 py; uniform vec3 pz; uniform vec3 ctr; uniform float rad;
 uniform float rough; uniform float metal; uniform float texel; uniform vec3 base;
 varying vec3 vN; varying vec3 vP;
