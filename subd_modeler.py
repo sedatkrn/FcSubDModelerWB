@@ -14,7 +14,7 @@
 #   Knife (K / J) and Select loop stay on (yellow button) until K / J / the button / Esc / right click
 #   T: move gizmo   G: free move (mouse)   R: rotate gizmo   H: stretch / size gizmo   Y: X symmetry   Tab / S: SubPatch
 #   Ctrl+C / Ctrl+X / Ctrl+V: copy / cut / paste polygons (object mode Ctrl+V: as a new SubD object)
-#   Ctrl+Z: undo   F: save to the document   N: Options panel   Esc / right click: cancel
+#   Ctrl+Z: undo   Ctrl+Y: redo   F: save to the document   N: Options panel   Esc / right click: cancel
 #   After every operation the small panel in the viewport shows its values; type a value + Enter and the
 #   operation is redone with it. Ctrl while dragging = steps (mm / degrees).
 #
@@ -479,10 +479,10 @@ class Cage:
                 self.F.append(q[::-1] if flip else q)
         return list(range(nf, len(self.F)))
 
-    def hole(self, region, radius=0.0, segs=0, support=-1.0):
+    def hole(self, region, radius=0.0, segs=0, support=-1.0, cap=False):
         """Secili yuzlerin birbirine kenardan bagli her parcasina bir delik (karsilikli delikler icin). Otomatik
         degerler parcalarin hepsine sigan ortak degerlerdir: en kucuk yaricap ve destek, en cok segment. Bir parca
-        olmazsa kafes degismez. Donus: _hole_patch gibi."""
+        olmazsa kafes degismez. cap: delik yerine dolu daire (Circle on face). Donus: _hole_patch gibi."""
         ef = self.edge_faces()
         patches, left = [], set(region)
         while left:
@@ -498,26 +498,26 @@ class Cage:
                             todo.append(o)
             patches.append(patch)
         if len(patches) < 2:
-            return self._hole_patch(region, radius, segs, support)
-        res = self._hole_patches(patches, radius, segs, support)
+            return self._hole_patch(region, radius, segs, support, cap)
+        res = self._hole_patches(patches, radius, segs, support, cap)
         if isinstance(res, str):
             return res
         if radius <= 0 or segs < 3 or support < 0:
             used = res[2]
             res = self._hole_patches(patches, radius if radius > 0 else min(u[0] for u in used),
                                      segs if segs >= 3 else max(u[1] for u in used),
-                                     support if support >= 0 else min(u[2] for u in used))
+                                     support if support >= 0 else min(u[2] for u in used), cap)
             if isinstance(res, str):
                 return res
         self.__dict__.update(res[0].__dict__)
         return (res[1],) + res[2][0]
 
-    def _hole_patches(self, patches, radius, segs, support):
+    def _hole_patches(self, patches, radius, segs, support, cap=False):
         """Parcalari bir kopyada sirayla deler: (kopya, yeni yuzler, [(radius, segs, support)]) ya da hata metni."""
         c, new, used = self.copy(), [], []
         patches = [set(p) for p in patches]
         for i, p in enumerate(patches):
-            res = c._hole_patch(p, radius, segs, support)
+            res = c._hole_patch(p, radius, segs, support, cap)
             if isinstance(res, str):
                 return res
             gone = sorted(p)                               # silinenler kadar kayan indeksler
@@ -527,19 +527,21 @@ class Cage:
             used.append(tuple(res[1:]))
         return c, new, used
 
-    def _hole_patch(self, region, radius=0.0, segs=0, support=-1.0):
+    def _hole_patch(self, region, radius=0.0, segs=0, support=-1.0, cap=False):
         """Secili yuz bolgesinin ortasina daire delik acar (bolgenin yuzleri yeniden orulur). Bolgenin dis siniri
         (N nokta) delik cevresindeki M noktaya aci sirasiyla baglanir: M = N ise hepsi dortgen; M > N besgen,
         M < N ucgen olur. support > 0: delik kenarina destek halkasi (keskin, SubD'de daire kalir). radius / segs /
         support <= 0 ise otomatik. Daire bolge yuzeyine normal boyunca izdusurulur (hafif egri yuzeyde de olur).
-        Donus: (yeni yuz indeksleri, kullanilan radius, segs, support) ya da hata metni (kafes degismez)."""
+        cap: delik acilmaz, dairenin ici tek cokgenle kapanir. Donus: (yeni yuz indeksleri, cap ise yalniz daire yuzu;
+        kullanilan radius, segs, support) ya da hata metni (kafes degismez)."""
+        name = "Circle on face" if cap else "Hole"         # hata metinleri
         if not region:
-            return T("Hole: select faces")
+            return T(name + ": select faces")
         ef = self.edge_faces()
         edges = {e for e, fs in ef.items() if sum(f in region for f in fs) == 1}
         chains = self.edge_chains(edges)
         if not chains or len(chains) != 1 or not chains[0][1]:
-            return T("Hole: each selected patch must be closed, without holes inside")
+            return T(name + ": each selected patch must be closed, without holes inside")
         B = chains[0][0]
         # bolgenin normali ve gercek alan merkezi (ucgen yelpazeleri; kose ortalamasi simetrik bolgede bile
         # merkezi eksenden kaydiriyordu)
@@ -552,11 +554,11 @@ class Cage:
                 csum += (P[0] + P[k] + P[k + 1]) / 3 * a
                 asum += a
         if asum < 1e-12 or np.linalg.norm(nsum) < 1e-9:
-            return T("Hole: the selected faces are not flat")
+            return T(name + ": the selected faces are not flat")
         n = nsum / np.linalg.norm(nsum)
         c = csum / asum
         if any(self.normal(fi).dot(n) < 0.8 for fi in region):     # ortalamadan ~37 dereceden fazla sapan yuz
-            return T("Hole: the selected faces are not flat")
+            return T(name + ": the selected faces are not flat")
         # sinir sirasi bolge yuzleriyle ayni yonde olsun (yuzde B[0] -> B[1])
         f0 = next(self.F[f] for f in ef[_edge(B[0], B[1])] if f in region)
         if not any(f0[i] == B[0] and f0[(i + 1) % len(f0)] == B[1] for i in range(len(f0))):
@@ -573,9 +575,11 @@ class Cage:
         N = len(B)
         segs = int(segs) if segs and segs >= 3 else max(8, N + N % 2)
         radius = radius if radius > 0 else 0.5 * dmin
+        auto = support < 0                                 # otomatik destek yaricapla buyur: 0.2 * radius
         support = support if support >= 0 else 0.2 * radius
         if radius + support > 0.95 * dmin:
-            return T("Hole: radius too large for the selected faces (max %.2f mm)") % (0.95 * dmin - support)
+            return T(name + ": radius too large for the selected faces (max %.2f mm)") % (
+                0.95 * dmin / 1.2 if auto else 0.95 * dmin - support)
         th = np.unwrap(np.arctan2(D2[:, 1], D2[:, 0]))
         if th[-1] < th[0]:                                 # sinir normal etrafinda saat yonunde: aci azalir
             th = -th
@@ -606,8 +610,11 @@ class Cage:
             for k in range(segs):
                 k2 = (k + 1) % segs
                 self.F.append([S[k], S[k2], H[k2], H[k]])
+        if cap:
+            self.F.append(list(H))                         # bolgeyle ayni yonde
         self.delete(region)                                # yeni yuzler sonda: indeksleri silinenler kadar kayar
-        return list(range(nf - len(region), len(self.F))), radius, segs, support
+        new = [len(self.F) - 1] if cap else list(range(nf - len(region), len(self.F)))
+        return new, radius, segs, support
 
     def _project_on(self, region, p, n):
         """p noktasini n dogrultusunda bolge yuzeyine (ucgen yelpazeleri) izdusurur; kesmezse p."""
@@ -1319,6 +1326,7 @@ class Cage:
         t = thickness / 2.0 if mode == 2 else thickness
         sgn = 1.0 if mode == 1 else -1.0
         off = sgn * t * k_even[:, None] * Nv               # kopyanin kaydirmasi
+        out = t * k_even[:, None] * Nv                     # ortada: asil yuzeyin kaydirmasi
         if flat and open_e:
             # duvar yonu d: acik kenar noktasindan duvara (acik olmayan kenarlarla komsulara) giden ortalama yon.
             # Once kaydirmanin d bileseni atilir (kenar seridi duvara dik); halka duzlemselse ic kenar noktasi ic duvar
@@ -1340,6 +1348,7 @@ class Cage:
                 n_perp = Nv[k] - (Nv[k] @ d) * d
                 if np.linalg.norm(n_perp) > 1e-6:
                     off[k] = sgn * t * n_perp / np.linalg.norm(n_perp)
+                    out[k] = t * n_perp / np.linalg.norm(n_perp)
             for chain, closed in self.edge_chains(oset):
                 P = self.V[chain]
                 if len(chain) < 3:
@@ -1353,34 +1362,38 @@ class Cage:
                     if d is None or abs(d @ pn) < 0.2:
                         continue
                     k = ri[v]
-                    q = self.V[v] + off[k]
-                    sl = -((q - ctr) @ pn) / (d @ pn)      # ic duvar boyunca duzleme
-                    if abs(sl) <= 2 * t:
-                        off[k] = off[k] + sl * d
+                    for o in (off, out):                   # ic duvar boyunca duzleme (ortada dis duvar da)
+                        sl = -((self.V[v] + o[k] - ctr) @ pn) / (d @ pn)
+                        if abs(sl) <= 2 * t:
+                            o[k] = o[k] + sl * d
         base = self.V[R].copy()
         if mode == 2:                                      # ortada: asil yuzey de yarim disari
-            self.V[R] = base + t * k_even[:, None] * Nv
+            self.V[R] = base + out
         # kopyada kisa kenarlari birlestir (akilli suzgec): destek halkasi seritleri, kalinliktan dar basamaklar ic
         # tarafta kopyalanmaz. Yoksa keskin katlanmadaki kisa kenarlar kalinlik kadar kayinca kafesler kesisir.
         # Acik kenar (delik agzi, acik alt kenar) ve secim siniri noktalari birlesmez: Fill ve orme bozulmasin.
         pos0, off0 = base + delta, off
         bverts = {x for e in border for x in e}
         fixed = np.array([v in pinned or v in bverts for v in R])
-        par = list(range(len(R)))
-
-        def find(x):
-            while par[x] != x:
-                par[x] = par[par[x]]
-                x = par[x]
-            return x
         thr = max(0.5 * radius, thickness) if radius > 1e-9 else 0.0
-        if thr > 0:
-            P0 = pos0 + off0
+        P0 = pos0 + off0
+        cand = sorted((np.linalg.norm(P0[ri[x]] - P0[ri[y]]), ri[x], ri[y]) for x, y in (tuple(e) for e in redges_of(self, region))) if thr > 0 else []
+
+        def clusters(keep):
+            """Her nokta icin kume temsilcisi; keep'teki noktalar birlesmez."""
+            par = list(range(len(R)))
+
+            def find(x):
+                while par[x] != x:
+                    par[x] = par[par[x]]
+                    x = par[x]
+                return x
             lo, hi = P0.copy(), P0.copy()
-            cand = sorted((np.linalg.norm(P0[ri[x]] - P0[ri[y]]), ri[x], ri[y]) for x, y in (tuple(e) for e in redges_of(self, region)))
             for ln, x, y in cand:
                 if ln >= thr:
                     break
+                if x in keep or y in keep:
+                    continue
                 rx, ry = find(x), find(y)
                 if rx == ry or (fixed[rx] and fixed[ry]):
                     continue
@@ -1391,9 +1404,30 @@ class Cage:
                     rx, ry = ry, rx
                 par[ry] = rx                               # sabit nokta kume temsilcisi olur
                 lo[rx], hi[rx] = l2, h2
-        roots = sorted({find(k) for k in range(len(R))})
+            return [find(k) for k in range(len(R))]
+        keep = set()
+        while True:                                        # birlesme bir kenari ikiden cok yuze ortak ediyorsa o kumeler
+            root = clusters(keep)                          # birlesmesin: kafes manifold kalsin (Solid gecerli cikar)
+            count = {}
+            for fi in region:
+                g = []                                     # asagidaki kopya yuzle ayni: ust uste gelenler tek nokta,
+                for v in self.F[fi]:                       # ikiden az kenari kalan yuz yok sayilir
+                    w = root[ri[v]]
+                    if not g or g[-1] != w:
+                        g.append(w)
+                if len(g) > 1 and g[0] == g[-1]:
+                    g.pop()
+                if len(g) >= 3:
+                    for a, b in zip(g, g[1:] + g[:1]):
+                        count[_edge(a, b)] = count.get(_edge(a, b), 0) + 1
+            over = {r for e, n in count.items() if n > 2 for r in e}
+            add = {k for k in range(len(R)) if root[k] in over and k not in keep}
+            if not add:
+                break
+            keep |= add
+        roots = sorted(set(root))
         rid = {r: j for j, r in enumerate(roots)}
-        grp = np.array([rid[find(k)] for k in range(len(R))])
+        grp = np.array([rid[r] for r in root])
         cnt = np.bincount(grp, minlength=len(roots)).astype(float)[:, None]
         cpos, coff = np.zeros((len(roots), 3)), np.zeros((len(roots), 3))
         np.add.at(cpos, grp, pos0)
@@ -3920,7 +3954,7 @@ HELP = ("1 / 2 / 3: point / edge / polygon mode\n"
         "T: move gizmo  |  G: free move (mouse)  |  Tab / S: SubPatch\n"
         "A: select all  |  Del: delete  |  P: make polygon\n"
         "Ctrl+C / X / V: copy / cut / paste polygons\n"
-        "Ctrl+Z: undo  |  F: save to document\n"
+        "Ctrl+Z: undo  |  Ctrl+Y: redo  |  F: save to document\n"
         "Ctrl + gizmo / T: stepped (mm, degrees)\n"
         "Esc / right click: cancel")
 
@@ -3969,6 +4003,8 @@ class SubDSession:
         self.rules = obj_rules(obj) if obj is not None else RULES
         self.edit_levels = _param().GetInt("EditLevels", 3)      # duzenlerken gorunen seviye (hiz icin dusuk)
         self.undo = []
+        self.redo = []
+        self.histories = {}  # nesne adi -> (undo, redo, cage_key): Object moduna gidip donunce adimlar kaybolmasin
         self.splits = []     # Knife "Split into two objects": (geri alma derinligi, yeni nesnenin adi)
         self.grab = None     # klavyeyle tasima (G, extrude)
         self.drag = None     # gizmo tutamagiyla tasima
@@ -4009,6 +4045,7 @@ class SubDSession:
         self.view.addEventCallbackPivy(coin.SoLocation2Event.getClassTypeId(), self._cb_mov)
         self.timer = QtCore.QTimer()      # yakinlastirinca gizmo ekranda ayni boyda kalsin
         self.timer.timeout.connect(self.gizmo.update_scale)
+        self.timer.timeout.connect(self._ghost_tick)
         self.timer.start(50)
         self.autosave = QtCore.QTimer()   # degisiklikler belgeye duzenli yazilsin (FreeCAD kapanirsa kaybolmasin)
         self.autosave.timeout.connect(self._autosave)
@@ -4023,6 +4060,8 @@ class SubDSession:
         self.overlay = _Overlay(self)
         self.wheel_guard = _WheelGuard(gv.viewport())
         QtWidgets.QApplication.instance().installEventFilter(self.wheel_guard)
+        self.history_guard = _HistoryGuard(self)
+        QtWidgets.QApplication.instance().installEventFilter(self.history_guard)
         self.geo_switch.whichChild = -1 if object_mode else 0
         self.refresh()
         if not object_mode:
@@ -4098,7 +4137,8 @@ class SubDSession:
         self.geo_switch.whichChild = -1
         self.op = self.last_op = None
         self.rail = None
-        self.undo, self.splits = [], []
+        self._keep_history()
+        self.undo, self.redo, self.splits = [], [], []
         self.set_object_selection([self.obj] if self.obj is not None else [])
         self.refresh()
 
@@ -4117,7 +4157,9 @@ class SubDSession:
         self.levels = o.Levels
         self.rules = obj_rules(o)
         self._sync_surface_widgets()
-        self.undo, self.op, self.last_op = [], None, None
+        h = self.histories.pop(o.Name, None)
+        self.undo, self.redo = h[:2] if h is not None and h[2] == cage_key(o) else ([], [])
+        self.op, self.last_op = None, None
         self.splits = []
         self.rail = None
         self.sel, self.sel_v, self.sel_e = set(), set(), set()
@@ -4502,8 +4544,13 @@ class SubDSession:
         # hayalet modunda bu iki malzeme yari saydam olur: arkadaki kenar / noktalar gorunur
         self.smooth_mat = material((0.72, 0.75, 0.80), (0.5, 0.5, 0.5), 0.6)
         self.cage_mat = material(tuple(self.cage_color.getRgbF()[:3]))
+        # FreeCAD saydam yuzeyleri her karede CPU'da ucgen ucgen siralar (21 bin dortgende 16 -> 55 ms): goruntu temiz ama
+        # dondururken agir. Yalniz bu yuzeylerde hareket surerken siralama kapanir (_ghost_tick), dururken geri gelir.
+        self.ghost_blend = coin.SoTransparencyType()
+        self.ghost_blend.value = coin.SoTransparencyType.SORTED_OBJECT_SORTED_TRIANGLE_BLEND
+        self._ghost_cam, self._ghost_still = None, 0
         self.s_switch = coin.SoSwitch()
-        self.zebra_switch = coin.SoSwitch()                # yansima seritleri: ortam (kure) dokusu
+        self.zebra_switch = coin.SoSwitch()             # yansima seritleri: ortam (kure) dokusu
         self.zebra_switch.addChild(_zebra_texture())
         self.matcap_switch = coin.SoSwitch()               # matcap: isik dokuda, sahne isiklari yerine (REPLACE)
         mc = coin.SoGroup()
@@ -4523,7 +4570,7 @@ class SubDSession:
         self.env_metal_p.value = self.env_metal
         self.env_rough_p.value = self.env_rough
         self.env_switch.addChild(eg)
-        self.s_switch.addChild(_sep(hints(0.5), self.smooth_mat, offset(), self.zebra_switch, self.matcap_switch,
+        self.s_switch.addChild(_sep(self.ghost_blend, hints(0.5), self.smooth_mat, offset(), self.zebra_switch, self.matcap_switch,
                                     self.env_switch, self.s_coord, self.s_normal, nb, self.s_faces))
         if self.matcap not in MATCAPS:
             self.matcap = ""
@@ -4532,7 +4579,7 @@ class SubDSession:
         self._matcap_apply()
         self.c_switch = coin.SoSwitch()
         self.c_switch.addChild(_sep(
-            _sep(hints(0.0), self.cage_mat, offset(), self.c_coord, self.c_faces),
+            _sep(self.ghost_blend, hints(0.0), self.cage_mat, offset(), self.c_coord, self.c_faces),
             _sep(hints(0.0), material((1.0, 0.55, 0.15)), self.c_coord, self.sel_faces)))
 
         def lines(color, width, node):
@@ -5259,6 +5306,7 @@ class SubDSession:
         if cut > 0:                                        # en eski adimlar dusuyor: ayirma kayitlari da kayar
             del self.undo[:cut]
             self.splits = [(k - cut, n, c) for k, n, c in self.splits if k - cut > 0]
+        self.redo = []
         self.dirty = True
 
     # --- son islem: paneldeki degerle yeniden uygulama (LightWave Numeric gibi) ---
@@ -5333,7 +5381,7 @@ class SubDSession:
         elif k == "merge":
             self._merge(v, a["verts"])
         elif k == "hole":
-            err = self._hole(v)
+            err = self._hole(v, a.get("cap", False))
             if err:
                 self.info = err
         elif k == "shell":
@@ -5429,7 +5477,7 @@ class SubDSession:
                 return T("Merge points"), [mm("Distance")] if v["Fixed"] else [], self.drag is None, \
                     [("Fixed distance", bool(v["Fixed"]), self.merge_option)]
             if k == "hole":
-                return T("Hole"), [mm("Radius"), ("Segments", v["Segments"], "", 0, r("Segments")), mm("Support")], \
+                return T("Circle on face" if a.get("cap") else "Hole"), [mm("Radius"), ("Segments", v["Segments"], "", 0, r("Segments")), mm("Support")], \
                     self.drag is None
             if k == "bridge":
                 return T("Bridge"), [(n, v[n], "", d, r(n)) for n, d in zip(self.BRIDGE, (0, 0, 2, 2))], \
@@ -5750,6 +5798,7 @@ class SubDSession:
             return
         o = self.obj
         if not _alive(o):                                  # nesnenin olusturulmasi geri alindi: kafes de gitsin
+            self.redo = []
             self.obj, self.undo, self.splits, self.dirty = None, [], [], False   # (yoksa Object moduna gecerken
             self.cage = Cage()                                                    # yeni nesne olarak yazilirdi)
             self.op = self.last_op = None
@@ -5761,7 +5810,7 @@ class SubDSession:
         self.cage = cage_from_obj(o)
         self.levels, self.rules = o.Levels, obj_rules(o)
         self._sync_surface_widgets()
-        self.undo, self.splits, self.op, self.last_op = [], [], None, None
+        self.undo, self.redo, self.splits, self.op, self.last_op = [], [], [], None, None
         self.rail = None
         self.sel, self.sel_v, self.sel_e = set(), set(), set()
         self.dirty = False
@@ -5774,29 +5823,59 @@ class SubDSession:
         if self.mode != "object" and self.dirty and self.drag is None and self.grab is None and self.cage.F:
             self.save(full=False)
 
-    def do_undo(self):
+    def do_undo(self, record=True):
+        """Son adimi geri alir. record=False: basarisiz islemin kendi kaydini atmak (Redo listesine girmez)."""
         if not self.undo:
             self.info = T("Nothing to undo in this edit (O: object mode, Ctrl+Z undoes whole edits)")
             self.refresh()
             return
-        if self.undo:
-            self.cage, self.sel, self.sel_v, self.sel_e = self.undo.pop()
-            self.grab = None
-            self.op = self.last_op = None
-            self.dirty = True                              # kafes kaydedilmis olabilir (or. Knife ayirma): yeniden yaz
-            r = self._rail()
-            if r is None:                                  # kilavuzun olusturulmasi geri alindi
-                self.rail = None
-            else:
-                self.rail["pick"] = []
-                if self.rail["sel"] is not None and self.rail["sel"] >= len(r["pts"]):
-                    self.rail["sel"] = None
-            self._undo_splits()
+        if record:
+            self.redo.append(self._history_state())
+        self._history_restore(self.undo.pop())
+        if self._undo_splits():                            # ayrilan nesne silindi: ileri alinacak kafes eksik kalirdi
+            self.redo = []
+        self.refresh()
+
+    def do_redo(self):
+        if not self.redo:
+            self.info = T("Nothing to redo")
             self.refresh()
+            return
+        self.undo.append(self._history_state())
+        self._history_restore(self.redo.pop())
+        self.refresh()
+
+    def step_history(self, redo=False):
+        """Undo / Redo dugmeleri: tuslarla ayni yol (Edit modunda adim adim, Object modunda belge)."""
+        self.key("redo" if redo else "z", True)
+
+    def _history_state(self):
+        return (self.cage.copy(), set(self.sel), set(self.sel_v), set(self.sel_e))
+
+    def _history_restore(self, state):
+        self.cage, self.sel, self.sel_v, self.sel_e = state
+        self.grab = None
+        self.op = self.last_op = None
+        self.dirty = True                                  # kafes kaydedilmis olabilir (or. Knife ayirma): yeniden yaz
+        r = self._rail()
+        if r is None:                                      # kilavuzun olusturulmasi geri alindi
+            self.rail = None
+        else:
+            self.rail["pick"] = []
+            if self.rail["sel"] is not None and self.rail["sel"] >= len(r["pts"]):
+                self.rail["sel"] = None
+
+    def _keep_history(self):
+        """Object moduna gecerken adimlar saklanir; nesne degismediyse geri donunce Ctrl+Z / Redo devam eder.
+        Ayirma kesiminin oncesi saklanmaz: ayrilan nesne artik belgenin kendi geri almasinda."""
+        if _alive(self.obj) and self.undo + self.redo:
+            k = self.splits[-1][0] if self.splits else 0
+            self.histories[self.obj.Name] = (self.undo[k:], self.redo, cage_key(self.obj))
 
     def _undo_splits(self):
         """Geri alma, "Split into two objects" kesiminin oncesine indiyse o kesimin olusturdugu nesneyi de sil
-        (yoksa ayrilan parca hem kafeste hem yeni nesnede kalirdi)."""
+        (yoksa ayrilan parca hem kafeste hem yeni nesnede kalirdi). Silinen olduysa True."""
+        removed = False
         while self.splits and len(self.undo) < self.splits[-1][0]:
             _, name, count = self.splits.pop()
             doc = self.obj.Document if _alive(self.obj) else App.ActiveDocument
@@ -5809,6 +5888,8 @@ class SubDSession:
                 doc.openTransaction("SubD split undo")
                 doc.removeObject(name)
                 doc.commitTransaction()
+            removed = True
+        return removed
 
     def clear_selection(self):
         self.sel.clear()
@@ -5840,6 +5921,24 @@ class SubDSession:
         for m, t in ((self.smooth_mat, 0.7), (self.cage_mat, 0.75)):
             m.transparency = t if self.ghost else 0.0
         self.refresh()
+
+    def _ghost_tick(self):
+        """Zamanlayicidan: hayalet modunda kamera ya da surukleme hareket ederken hizli harmanlama, 200 ms durunca
+        ucgen siralamasi (temiz goruntu)."""
+        if not self.ghost or self.mode == "object":
+            return
+        cam = self.view.getCameraNode()
+        if cam is None:
+            return
+        key = (cam.orientation.getValue().getValue(), cam.position.getValue().getValue(),
+               cam.height.getValue() if hasattr(cam, "height") else cam.heightAngle.getValue())
+        moving = key != self._ghost_cam or self.drag is not None or self.grab is not None
+        self._ghost_cam = key
+        self._ghost_still = 0 if moving else self._ghost_still + 1
+        T_ = coin.SoTransparencyType
+        want = T_.SORTED_OBJECT_BLEND if self._ghost_still < 4 else T_.SORTED_OBJECT_SORTED_TRIANGLE_BLEND
+        if self.ghost_blend.value.getValue() != want:
+            self.ghost_blend.value = want
 
     def toggle_zebra(self):
         """Zebra seritleri: puruzsuz yuzeye yansiyan siyah / beyaz seritler. Kirik serit = kirik yuzey (G0),
@@ -6054,7 +6153,7 @@ class SubDSession:
         st = self._extrude_build(op["before"], self.extrude_segs, axes, each)
         if st is None:
             self.op = None
-            self.do_undo()
+            self.do_undo(False)
             self.info = T("Extrude: select open (boundary) edges")
             self.refresh()
             return
@@ -7253,7 +7352,7 @@ class SubDSession:
         err = self._bridge(op["values"])
         if err:
             self.op = None
-            self.do_undo()
+            self.do_undo(False)
             self.info = err
         else:
             self.last_op, self.op = op, None
@@ -7929,7 +8028,7 @@ class SubDSession:
         err = self._shell(op["values"], op["args"]["faces"])
         if err:
             self.op = None
-            self.do_undo()
+            self.do_undo(False)
             self.info = err
         else:
             self.last_op, self.op = op, None
@@ -7961,29 +8060,30 @@ class SubDSession:
             v[name] = 1.0 if on else 0.0
         self._reapply(op)
 
-    def hole(self):
+    def hole(self, cap=False):
         if self.drag or self.grab or self.mode != "face":
             return
         self.drop_tool()
         self.push()
-        op = self.new_op("hole", dict(Radius=0.0, Segments=0.0, Support=-1.0))   # 0 / -1: otomatik
-        err = self._hole(op["values"])
+        op = self.new_op("hole", dict(Radius=0.0, Segments=0.0, Support=-1.0), cap=cap)   # 0 / -1: otomatik
+        err = self._hole(op["values"], cap)
         if err:
             self.op = None
-            self.do_undo()
+            self.do_undo(False)
             self.info = err
         else:
             self.last_op, self.op = op, None
         self.refresh()
 
-    def _hole(self, v):
-        res = self.cage.hole(set(self.sel), v["Radius"], int(round(v["Segments"])), v["Support"])
+    def _hole(self, v, cap=False):
+        res = self.cage.hole(set(self.sel), v["Radius"], int(round(v["Segments"])), v["Support"], cap)
         if isinstance(res, str):
             return res
         new, v["Radius"], segs, v["Support"] = res
         v["Segments"] = float(segs)
         self.sel, self.sel_v, self.sel_e = set(new), set(), set()
-        self.info = T("Hole: radius %.2f mm, %d segments") % (v["Radius"], segs)
+        self.info = T("Circle on face: radius %.2f mm, %d segments" if cap else "Hole: radius %.2f mm, %d segments") % (
+            v["Radius"], segs)
         return None
 
     def object_paste(self):
@@ -8181,7 +8281,7 @@ class SubDSession:
             self.refresh()
         else:
             self.op = None
-            self.do_undo()
+            self.do_undo(False)
 
     # --- gizmo ile tasima ---
     def drag_begin(self, key, pos):
@@ -8382,10 +8482,6 @@ class SubDSession:
             cb.setHandled()
             _later(self.magnet_end)
             return
-        if self.magnet_size is not None and not down and ev.getButton() == coin.SoMouseButtonEvent.BUTTON2:
-            cb.setHandled()
-            _later(self.magnet_size_end)
-            return
         if not down:
             return
         if self.grab:
@@ -8393,9 +8489,7 @@ class SubDSession:
             _later(lambda ok=left: self.end_grab(ok))
             return
         if not left:
-            if self.armed == "magnet" and ev.getButton() == coin.SoMouseButtonEvent.BUTTON2:
-                cb.setHandled()                            # surukleme: yaricap; kipirdamadan birakma: arac kapanir
-                self.magnet_size_start(pos)
+            if self.armed == "magnet":                     # sag tusu _KeyFilter aliyor (FreeCAD menusu acilmasin)
                 return
             if self.armed and ev.getButton() == coin.SoMouseButtonEvent.BUTTON2:   # sag tik: kalici araci kapat
                 self.drop_tool()
@@ -8537,7 +8631,7 @@ class SubDSession:
                 self.end_grab(True)
             elif k in ("b", "i") and self.grab.get("kind") == "bevel":
                 self.bevel_switch()
-            elif k in ("x", "y", "z") and self.grab.get("kind") == "extrude":
+            elif k in ("x", "y", "z") and not ctrl and self.grab.get("kind") == "extrude":
                 self.extrude_axis(k.upper())               # yalniz bu eksen; tekrar = normal yon
                 self.refresh()
             return
@@ -8545,10 +8639,10 @@ class SubDSession:
             self.toggle_snap()
             return
         if self.mode == "object":                          # Object modu: yalniz nesne komutlari
-            if ctrl and k == "z":
+            if ctrl and k in ("z", "redo"):
                 doc = App.ActiveDocument
-                if doc.UndoCount:
-                    doc.undo()
+                if doc.UndoCount if k == "z" else doc.RedoCount:
+                    doc.undo() if k == "z" else doc.redo()
                     doc.recompute()                       # katilar geri alinan kafese gore yenilensin
                 self.doc_undone()
             elif ctrl and k == "v":                       # panodaki cokgenler -> yeni SubD nesnesi
@@ -8597,7 +8691,7 @@ class SubDSession:
             if k not in ("t", "x", "s", "tab", "n", "y"):   # baska bir arac / mod: kilavuz duzenleme biter
                 self.rail_finish()
         if ctrl:                                           # LightWave: ^G nokta, ^H cokgen
-            {"z": self.do_undo, "g": lambda: self.set_mode("point"), "h": lambda: self.set_mode("face"),
+            {"z": self.do_undo, "redo": self.do_redo, "g": lambda: self.set_mode("point"), "h": lambda: self.set_mode("face"),
              "c": self.copy_faces, "x": lambda: self.copy_faces(cut=True), "v": self.paste_faces, "w": self.weld}[k]()
         elif k == "n":
             self.toggle_options()
@@ -8677,6 +8771,7 @@ class SubDSession:
         for w in self.key_targets:
             _quiet(lambda w=w: w.removeEventFilter(self.key_filter))
         _quiet(lambda: QtWidgets.QApplication.instance().removeEventFilter(self.wheel_guard))
+        _quiet(lambda: QtWidgets.QApplication.instance().removeEventFilter(self.history_guard))
         _quiet(lambda: self.parent.removeChild(self.root))
         if self.overlay is not None:
             _quiet(self.overlay.close)
@@ -8848,8 +8943,8 @@ _KEYS = {
     QtCore.Qt.Key_M: "m", QtCore.Qt.Key_W: "w", QtCore.Qt.Key_Q: "q",
 }
 # Ctrl+Z geri al, Ctrl+G nokta modu, Ctrl+H cokgen modu (LightWave), Ctrl+C / X / V cokgen kopyala / kes / yapistir,
-# Ctrl+W weld
-_CTRL_KEYS = ("z", "g", "h", "c", "x", "v", "w")
+# Ctrl+W weld, Ctrl+Y / Ctrl+Shift+Z ileri al
+_CTRL_KEYS = ("z", "redo", "g", "h", "c", "x", "v", "w")
 _CTRL_ONLY = ("z", "v", "w")   # tek basina bizim degil (FreeCAD'e gider)
 
 
@@ -8875,10 +8970,23 @@ class _KeyFilter(QtCore.QObject):
                 and g.get("kind") == "magnet":             # birakma sahneye ulasmayabilir (kutu secimi gibi)
             _later(self.session.magnet_end)
             return False
+        # Magnet'in sag tusu Qt duzeyinde: FreeCAD menusunu gezinme kodu sag tus birakilinca Coin geri cagrisindan once
+        # aciyor (setHandled yetmez); basis ve birakmayi gormezse menu de acilmaz.
+        if t in (QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseButtonDblClick) \
+                and ev.button() == QtCore.Qt.RightButton and self.session.armed == "magnet" \
+                and g is None and self.session.drag is None:
+            s = self.session
+            vp = s.gv.viewport()
+            dpr = vp.devicePixelRatioF()
+            p = vp.mapFrom(obj, ev.position().toPoint()) if obj is not vp else ev.position().toPoint()
+            s.mouse = (int(round(p.x() * dpr)), int(round(s.view.getSize()[1] - p.y() * dpr)))
+            if s.magnet_size is None:
+                s.magnet_size_start(s.mouse)
+            return True
         if t == QtCore.QEvent.MouseButtonRelease and ev.button() == QtCore.Qt.RightButton \
                 and self.session.magnet_size is not None:
             _later(self.session.magnet_size_end)
-            return False
+            return True
         if t == QtCore.QEvent.ContextMenu and self.session.armed == "magnet":
             return True                                    # sag tus Magnet'in: FreeCAD menusu acilmasin
         if t == QtCore.QEvent.Resize and self.session.overlay is not None:
@@ -8899,6 +9007,8 @@ class _KeyFilter(QtCore.QObject):
         ctrl = bool(ev.modifiers() & QtCore.Qt.ControlModifier)
         if k == "f" and ev.modifiers() & QtCore.Qt.ShiftModifier:
             k = "F"                                        # Shift+F: Flip (F: kaydet)
+        if ctrl and (k == "y" or (k == "z" and ev.modifiers() & QtCore.Qt.ShiftModifier)):
+            k = "redo"
         extr = g is not None and g.get("kind") == "extrude"   # extrude surerken Z = eksen (Ctrl+Z degil)
         if k == "z" and not ctrl and not extr and ev.modifiers() & QtCore.Qt.ShiftModifier:
             k = "Z"                                        # Shift+Z: Merge polygons
@@ -8909,6 +9019,75 @@ class _KeyFilter(QtCore.QObject):
             return True
         if not ev.isAutoRepeat():
             self.session.key(k, ctrl)
+        return True
+
+
+def _std_history(action):
+    """FreeCAD'in Undo / Redo eylemi mi: "z" / "redo" / None. Arac cubugundaki eylemin adi bos, komut adi ipucunda."""
+    if action is None:
+        return None
+    for name, k in (("Std_Undo", "z"), ("Std_Redo", "redo")):
+        if action.objectName() == name or name in action.toolTip():
+            return k
+    return None
+
+
+class _HistoryGuard(QtCore.QObject):
+    """Edit modunda FreeCAD'in Undo / Redo'su (Edit menusu, arac cubugu, odak gorunumde degilken Ctrl+Z / Ctrl+Y)
+    belgeyi degil kafesi bir adim geri alir: oturum belgeye tek adim olarak yaziliyor, belge geri alinsa butun
+    duzenleme ve adimlar giderdi. Araç cubugu dugmesinin oku (liste) belgenin kendi adimlarini gostermeye devam eder."""
+    INPUT = (QtWidgets.QLineEdit, QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit, QtWidgets.QAbstractSpinBox)
+
+    def __init__(self, session):
+        super().__init__()
+        self.session = session
+
+    def _active(self):
+        s = self.session
+        doc = App.ActiveDocument
+        return (s.mode != "object" and doc is not None and doc.Name == s.doc_name
+                and QtWidgets.QApplication.activeModalWidget() is None)
+
+    def _key(self, obj, ev):
+        mods = ev.modifiers()
+        if not mods & QtCore.Qt.ControlModifier or mods & QtCore.Qt.AltModifier:
+            return None
+        if not isinstance(obj, QtWidgets.QWidget) or isinstance(obj, self.INPUT) or obj in self.session.key_targets:
+            return None
+        if ev.key() == QtCore.Qt.Key_Y:
+            return "redo"
+        if ev.key() == QtCore.Qt.Key_Z:
+            return "redo" if mods & QtCore.Qt.ShiftModifier else "z"
+        return None
+
+    def eventFilter(self, obj, ev):
+        t = ev.type()
+        if t in (QtCore.QEvent.ShortcutOverride, QtCore.QEvent.KeyPress):
+            k = self._key(obj, ev)
+            if k is None or not self._active():
+                return False
+            if t == QtCore.QEvent.ShortcutOverride:
+                ev.accept()
+            elif not ev.isAutoRepeat():
+                self.session.key(k, True)
+            return True
+        if t not in (QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseButtonRelease):
+            return False
+        if ev.button() != QtCore.Qt.LeftButton:
+            return False
+        pos = ev.position().toPoint()
+        if isinstance(obj, QtWidgets.QToolButton):
+            k = None if pos.x() >= obj.width() - 16 else _std_history(obj.defaultAction())   # sagdaki ok: belge listesi
+        elif isinstance(obj, QtWidgets.QMenu):
+            k = _std_history(obj.actionAt(pos))
+        else:
+            return False
+        if k is None or not self._active():
+            return False
+        if t == QtCore.QEvent.MouseButtonRelease:
+            if isinstance(obj, QtWidgets.QMenu):
+                obj.close()
+            _later(lambda: _quiet(lambda: self.session.key(k, True)))
         return True
 
 
@@ -8931,6 +9110,7 @@ QLabel:disabled { color: #7a7a7a; }
 QLabel { color: #e0e0e0; background: transparent; }
 QLabel#lwInfo { color: #f59e0b; font-weight: bold; background: rgba(40, 40, 40, 200); border-radius: 3px;
                 padding: 3px 8px; }
+QToolTip { color: #f0f0f0; background: #2a2a2a; border: 1px solid #1e1e1e; padding: 2px; }
 """
 
 
@@ -8939,6 +9119,74 @@ QMenu { background: #3a3a3a; color: #ececec; border: 1px solid #1e1e1e; padding:
 QMenu::item { padding: 3px 18px 3px 10px; }
 QMenu::item:selected { background: #3f6fb0; }
 """
+
+
+# Arac sutunu ve alt cubuk dugmelerinin ipuclari; acilir menu ogeleri "Dugme>Oge". Kisayol dugmenin uzerinde yaziyor.
+TOOL_TIPS = {
+    "Save": "Write the cage to the document now (it is also saved automatically every 20 s)",
+    "Solid (STEP)": "Make a parametric B-rep solid from the SubD surface, ready for STEP export and PartDesign",
+    "Close": "Write the cage to the document and close the modeler",
+    "Box": "Add a box; set its size and segments in the panel",
+    "Cylinder": "Add a new cylinder object along Z",
+    "Cylinder>Cylinder": "Cylinder with triangle-fan caps",
+    "Cylinder>Topo cylinder": "Cylinder with all-quad caps (segments are a multiple of 4)",
+    "From face": "Make a cage from selected Part / PartDesign elements",
+    "From face>Face": "Turn the selected faces into one cage",
+    "From face>Edge": "Each chain of selected edges becomes one polygon",
+    "From face>Point": "The selected points become one polygon, in the order they were picked",
+    "Make polygon": "Make a polygon from 3 or more selected points, a closed edge loop, or two edges",
+    "Duplicate": "Duplicate the selected objects",
+    "Select all": "Select everything, or deselect if all is already selected",
+    "Deselect": "Clear the selection; also cancels the running tool",
+    "Select loop": "Stays on: click to select the loop under the cursor",
+    "Extrude": "Pull out the selected faces or open edges; mouse wheel = segments, X / Y / Z = axis",
+    "Bevel": "Polygon mode: inset and shift the selected faces. Edge mode: round the selected edges",
+    "Inset": "Inset the selected faces into their own plane",
+    "Knife (loop)": "Stays on: click an edge to cut a loop around the model, then slide it",
+    "Knife (line)": "Stays on: draw a line to cut the model live with the plane through it",
+    "Bridge": "Connect two open edge loops or two face regions",
+    "Bridge>Bridge": "Connect two open edge loops / chains or two face regions with a strip",
+    "Bridge>Rail bridge": "Pipe with an editable guide curve, between two regions or growing out of one",
+    "Hole": "Cut a round hole in the middle of the selected faces and re-mesh around it",
+    "Circle on face": "Like Hole, but the circle stays filled and selected, ready for Extrude or Bevel",
+    "Merge polygons": "Merge the selected adjacent polygons into one",
+    "Delete": "Delete the selected elements (object mode: the selected objects)",
+    "Copy": "Copy the selected polygons with their creases",
+    "Cut": "Copy the selected polygons, then remove them",
+    "Paste": "Paste polygons in place into this cage",
+    "Paste as object": "Paste the copied polygons as a new SubD object",
+    "Move": "Move gizmo: arrows along X / Y / Z, squares in a plane, cube in the screen plane",
+    "Rotate": "Rotate gizmo",
+    "Stretch / Size": "Stretch the selection along an axis or size it uniformly",
+    "Magnet": "Stays on: drag on the cage to pull it softly inside the radius; a selection limits it",
+    "Crease": "Make the selected edges sharp, or soft again; exact dimensions need sharp edges",
+    "Reduce points": "Remove in-between points along nearly straight edges (selection or whole cage)",
+    "Merge points": "Merge points at the same position (selection or whole cage)",
+    "Weld": "Weld the selected points into the last one clicked",
+    "Flip": "Flip the normals of the selected polygons (no selection: all)",
+    "Shell": "Give the object or selected polygons a wall thickness",
+    "Mirror": "Mirror the selected polygons (no selection: whole cage) across a world plane and weld; "
+              "object mode: mirrored copies",
+    "Mirror>Mirror X": "Mirror across the plane perpendicular to X",
+    "Mirror>Mirror Y": "Mirror across the plane perpendicular to Y",
+    "Mirror>Mirror Z": "Mirror across the plane perpendicular to Z",
+    "Undo": "Undo one step (object mode: one whole edit)",
+    "Redo": "Redo the step you undid (object mode: one whole edit)",
+    "Object": "Switch between object mode and editing the cage",
+    "Point": "Point selection mode",
+    "Edge": "Edge selection mode",
+    "Polygon": "Polygon selection mode",
+    "Symmetry": "X symmetry: tools also act on the mirrored side",
+    "Subpatch": "Show the smooth SubD surface or only the cage",
+    "Ghost": "See through the model and select hidden elements",
+    "Snap": "Free moves snap to the vertices and edges of visible Part / PartDesign shapes",
+    "Options": "Show or hide the Options panel",
+}
+
+
+def _tool_tip(name):
+    tip = TOOL_TIPS.get(name)
+    return T(tip) if tip else ""
 
 
 def _lw_button(text, key="", width=None):
@@ -9402,6 +9650,7 @@ class _Overlay(object):
 
         def btn(text, key, fn, toggle=None, sel=False, mode=None, tool=None):
             b = _lw_button(T(text), key, 112)
+            b.setToolTip(_tool_tip(text))
             b.clicked.connect(lambda checked=False: (fn(), self.sync(), self.refocus()))
             if tool:                                     # kalici arac: acikken sari (mavi = acik modlar)
                 b.setProperty("tool", True)
@@ -9417,11 +9666,14 @@ class _Overlay(object):
         def menu_btn(text, items):
             """Acilir dugme (LightWave alt menusu gibi): tiklayinca secenekler dugmenin saginda acilir."""
             b = _lw_button(T(text), "▸", 112)
+            b.setToolTip(_tool_tip(text))
             m = QtWidgets.QMenu(b)
             m.setStyleSheet(MENU_CSS)
+            m.setToolTipsVisible(True)
             for label, fn in items:
-                m.addAction(T(label)).triggered.connect(
-                    lambda checked=False, fn=fn: (fn(), self.sync(), self.refocus()))
+                a = m.addAction(T(label))
+                a.setToolTip(_tool_tip(text + ">" + label))
+                a.triggered.connect(lambda checked=False, fn=fn: (fn(), self.sync(), self.refocus()))
             b.clicked.connect(lambda checked=False: m.popup(b.mapToGlobal(QtCore.QPoint(b.width() + 2, 0))))
             cur["lay"].addWidget(b)
 
@@ -9451,6 +9703,7 @@ class _Overlay(object):
         btn("Knife (line)", "J", lambda: s.toggle_tool("line"), mode="edit", tool="line")
         menu_btn("Bridge", [("Bridge", s.bridge), ("Rail bridge", s.rail_bridge)])
         btn("Hole", "", s.hole, sel=True, mode="edit")
+        btn("Circle on face", "", lambda: s.hole(cap=True), sel=True, mode="edit")
         btn("Merge polygons", "⇧Z", s.merge_polygons, sel=True, mode="edit")
         btn("Delete", "Del", lambda: s.object_delete() if obj() else s.delete(), sel=True)
         head("Clipboard")
@@ -9482,9 +9735,18 @@ class _Overlay(object):
         self.sel_label = QtWidgets.QLabel()
         self.sel_label.setMinimumWidth(60)
         row.addWidget(self.sel_label)
+        self.history_buttons = []
+        for name, key, redo in (("Undo", "^Z", False), ("Redo", "^Y", True)):
+            b = _lw_button(T(name), key)
+            b.setToolTip(_tool_tip(name))
+            b.clicked.connect(lambda checked=False, redo=redo: (s.step_history(redo), self.sync(), self.refocus()))
+            row.addWidget(b)
+            self.history_buttons.append((b, redo))
+        row.addSpacing(6)
 
         def tog(text, key, fn, state):
             b = _lw_button(text, key)
+            b.setToolTip(_tool_tip(text))
             b.setCheckable(True)
             b.clicked.connect(lambda checked=False: (fn(), self.sync()))
             self.toggles[text] = (b, state)
@@ -9678,6 +9940,12 @@ class _Overlay(object):
                 name.setStyleSheet("color:#1a1a1a;" if lit else "")
                 key.setStyleSheet("color:#4a3a00;" if lit else "color:#a8a8a8;")
         is_obj = s.mode == "object"
+        doc = App.ActiveDocument
+        for b, redo in self.history_buttons:
+            if is_obj:
+                b.setEnabled(doc is not None and bool(doc.RedoCount if redo else doc.UndoCount))
+            else:
+                b.setEnabled(bool(s.redo if redo else s.undo))
         nobj = len(s.selected_objects()) if is_obj else 0
         has = nobj > 0 if is_obj else bool(s.selected_verts())
         for b, sel, mode in self.gated:

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Undo goes step by step everywhere while editing a cage**: FreeCAD's Undo / Redo buttons, the Edit menu and Ctrl+Z with the focus outside the 3D view now undo one modeling step. They used to take back the whole edit and lose the steps. The arrow on FreeCAD's toolbar button still lists the document's own steps.
+- **Redo**: Ctrl+Y or Ctrl+Shift+Z. **Undo / Redo buttons** are on the bottom bar.
+- The steps survive a trip to object mode and back, as long as the object did not change in between.
+- Ghost mode is about 3x faster while the view or a drag is moving: the transparent surface is sorted triangle by triangle
+  only when everything stands still, so the still image stays clean.
+- Magnet: the right mouse button no longer opens FreeCAD's context menu.
+- **Tool tips** on all tool, menu and bottom bar buttons (English and Turkish).
+- **Circle on face** (Polygon, under Hole): works like Hole, but the circle stays filled and comes out selected, ready for
+  Extrude or Bevel. It takes several separate patches too.
+- Shell *Detail filter*: merging short inner edges could leave an edge shared by four polygons, which can make the solid
+  invalid. Points that would do this are no longer merged.
+- Shell *Centered* with *Flat rim*: the outer rim edge now stays in the plane of the opening too. It used to dip with the
+  surface normal (0.5 mm on a mouse housing with a 2 mm wall), so the rim was not flat.
 - For the FreeCAD Addon Index rules: the workbench no longer changes `sys.path`, and it no longer adds Rail Pipe / Rail
   Groove buttons to PartDesign's toolbar.
 - The Rail Pipe / Rail Groove buttons are gone from the SubD toolbar and menu too: install the **Pimp My PartDesign**

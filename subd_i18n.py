@@ -125,6 +125,14 @@ TR = {
     "Radius": "Yarıçap",
     "Support": "Destek",
     "Hole: select faces": "Delik: yüz seçin",
+    "Circle on face": "Yüzeye daire",
+    "Circle on face: select faces": "Yüzeye daire: yüz seçin",
+    "Circle on face: each selected patch must be closed, without holes inside":
+        "Yüzeye daire: seçili her parça kapalı ve içi deliksiz olmalı",
+    "Circle on face: the selected faces are not flat": "Yüzeye daire: seçili yüzler düz değil",
+    "Circle on face: radius too large for the selected faces (max %.2f mm)":
+        "Yüzeye daire: yarıçap seçili yüzler için çok büyük (en çok %.2f mm)",
+    "Circle on face: radius %.2f mm, %d segments": "Yüzeye daire: yarıçap %.2f mm, %d segment",
     "Hole: each selected patch must be closed, without holes inside":
         "Delik: seçili her parça kapalı ve içi deliksiz olmalı",
     "Hole: the selected faces are not flat": "Delik: seçili yüzler düz değil",
@@ -420,7 +428,7 @@ TR = {
         "T: move gizmo  |  G: free move (mouse)  |  Tab / S: SubPatch\n"
     "A: select all  |  Del: delete  |  P: make polygon\n"
     "Ctrl+C / X / V: copy / cut / paste polygons\n"
-    "Ctrl+Z: undo  |  F: save to document\n"
+    "Ctrl+Z: undo  |  Ctrl+Y: redo  |  F: save to document\n"
     "Ctrl + gizmo / T: stepped (mm, degrees)\n"
     "Esc / right click: cancel":
         "1 / 2 / 3: nokta / kenar / yüz modu\n"
@@ -439,7 +447,7 @@ TR = {
         "T: taşıma gizmosu  |  G: serbest taşı (fare)  |  Tab / S: SubPatch\n"
         "A: tümünü seç  |  Del: sil  |  P: poligon ör\n"
         "Ctrl+C / X / V: çokgen kopyala / kes / yapıştır\n"
-        "Ctrl+Z: geri al  |  F: belgeye kaydet\n"
+        "Ctrl+Z: geri al  |  Ctrl+Y: ileri al  |  F: belgeye kaydet\n"
         "Ctrl + gizmo / T: adımlı (mm, derece)\n"
         "Esc / sağ tık: işlemi iptal",
     # --- workbench commands ---
@@ -451,4 +459,125 @@ TR = {
         "Seçili SubD nesnesinden parametrik B-rep katı (STEP) oluştur",
     "Select a SubD object first.\n": "Önce bir SubD nesnesi seçin.\n",
     "Interface language": "Arayüz dili",
+    # --- tool tips ---
+    "Nothing to redo":
+        "İleri alınacak bir şey yok",
+    "Undo":
+        "Geri al",
+    "Redo":
+        "İleri al",
+    "Write the cage to the document now (it is also saved automatically every 20 s)":
+        "Kafesi şimdi belgeye yaz (20 sn'de bir kendiliğinden de kaydedilir)",
+    "Make a parametric B-rep solid from the SubD surface, ready for STEP export and PartDesign":
+        "SubD yüzeyinden parametrik B-rep katı oluştur (STEP ve PartDesign için hazır)",
+    "Write the cage to the document and close the modeler":
+        "Kafesi belgeye yaz ve modelleyiciyi kapat",
+    "Add a box; set its size and segments in the panel":
+        "Kutu ekle; boyut ve segmentler panelde",
+    "Add a new cylinder object along Z":
+        "Z ekseni boyunca yeni silindir nesnesi ekle",
+    "Cylinder with triangle-fan caps":
+        "Kapakları üçgen yelpaze olan silindir",
+    "Cylinder with all-quad caps (segments are a multiple of 4)":
+        "Kapakları tamamen dörtgen silindir (segment 4'ün katı)",
+    "Make a cage from selected Part / PartDesign elements":
+        "Seçili Part / PartDesign elemanlarından kafes oluştur",
+    "Turn the selected faces into one cage":
+        "Seçili yüzleri tek kafese çevir",
+    "Each chain of selected edges becomes one polygon":
+        "Seçili kenarların her zinciri bir çokgen olur",
+    "The selected points become one polygon, in the order they were picked":
+        "Seçili noktalar, seçim sırasıyla bir çokgen olur",
+    "Make a polygon from 3 or more selected points, a closed edge loop, or two edges":
+        "3 ya da daha çok seçili noktadan, kapalı kenar halkasından ya da iki kenardan çokgen oluştur",
+    "Duplicate the selected objects":
+        "Seçili nesneleri çoğalt",
+    "Select everything, or deselect if all is already selected":
+        "Tümünü seç; zaten hepsi seçiliyse seçimi kaldır",
+    "Clear the selection; also cancels the running tool":
+        "Seçimi temizle; çalışan aracı da iptal eder",
+    "Stays on: click to select the loop under the cursor":
+        "Açık kalır: imlecin altındaki halkayı seçmek için tıkla",
+    "Pull out the selected faces or open edges; mouse wheel = segments, X / Y / Z = axis":
+        "Seçili yüzleri ya da açık kenarları dışarı çek; tekerlek = segment, X / Y / Z = eksen",
+    "Polygon mode: inset and shift the selected faces. Edge mode: round the selected edges":
+        "Poligon modu: seçili yüzleri içeri al ve kaydır. Kenar modu: seçili kenarları yuvarla",
+    "Inset the selected faces into their own plane":
+        "Seçili yüzleri kendi düzlemlerinde içeri al",
+    "Stays on: click an edge to cut a loop around the model, then slide it":
+        "Açık kalır: modelin çevresinde halka kesmek için kenara tıkla, sonra kaydır",
+    "Stays on: draw a line to cut the model live with the plane through it":
+        "Açık kalır: çizgi çiz, model bu çizgiden geçen düzlemle canlı kesilir",
+    "Connect two open edge loops or two face regions":
+        "İki açık kenar halkasını ya da iki yüz bölgesini bağla",
+    "Connect two open edge loops / chains or two face regions with a strip":
+        "İki açık kenar halkasını / zincirini ya da iki yüz bölgesini şeritle bağla",
+    "Pipe with an editable guide curve, between two regions or growing out of one":
+        "Düzenlenebilir kılavuz eğrili boru: iki bölge arasında ya da tek bölgeden uzayan",
+    "Cut a round hole in the middle of the selected faces and re-mesh around it":
+        "Seçili yüzlerin ortasına yuvarlak delik aç, çevresini yeniden ör",
+    "Like Hole, but the circle stays filled and selected, ready for Extrude or Bevel":
+        "Hole gibi, ama daire dolu ve seçili kalır; Extrude ya da Bevel'e hazır",
+    "Merge the selected adjacent polygons into one":
+        "Seçili komşu çokgenleri tek çokgende birleştir",
+    "Delete the selected elements (object mode: the selected objects)":
+        "Seçili elemanları sil (Object modu: seçili nesneleri)",
+    "Copy the selected polygons with their creases":
+        "Seçili çokgenleri keskinlikleriyle kopyala",
+    "Copy the selected polygons, then remove them":
+        "Seçili çokgenleri kopyala, sonra kaldır",
+    "Paste polygons in place into this cage":
+        "Çokgenleri bu kafese aynı yerine yapıştır",
+    "Paste the copied polygons as a new SubD object":
+        "Kopyalanan çokgenleri yeni SubD nesnesi olarak yapıştır",
+    "Move gizmo: arrows along X / Y / Z, squares in a plane, cube in the screen plane":
+        "Taşıma gizmosu: oklar X / Y / Z boyunca, kareler bir düzlemde, küp ekran düzleminde",
+    "Rotate gizmo":
+        "Döndürme gizmosu",
+    "Stretch the selection along an axis or size it uniformly":
+        "Seçimi bir eksende uzat ya da orantılı boyutlandır",
+    "Stays on: drag on the cage to pull it softly inside the radius; a selection limits it":
+        "Açık kalır: yarıçap içinde yumuşakça çekmek için kafesi sürükle; seçim etkiyi sınırlar",
+    "Make the selected edges sharp, or soft again; exact dimensions need sharp edges":
+        "Seçili kenarları keskinleştir ya da yeniden yumuşat; tam ölçü için keskin kenar gerekir",
+    "Remove in-between points along nearly straight edges (selection or whole cage)":
+        "Neredeyse düz kenarlardaki ara noktaları çıkar (seçim ya da bütün kafes)",
+    "Merge points at the same position (selection or whole cage)":
+        "Aynı konumdaki noktaları birleştir (seçim ya da bütün kafes)",
+    "Weld the selected points into the last one clicked":
+        "Seçili noktaları son tıklanan noktada birleştir",
+    "Flip the normals of the selected polygons (no selection: all)":
+        "Seçili çokgenlerin normallerini çevir (seçim yoksa hepsi)",
+    "Give the object or selected polygons a wall thickness":
+        "Nesneye ya da seçili çokgenlere et kalınlığı ver",
+    "Mirror the selected polygons (no selection: whole cage) across a world plane and weld; object mode: mirrored copies":
+        "Seçili çokgenleri (seçim yoksa bütün kafes) dünya düzlemine göre aynala ve birleştir; Object modu: aynalı kopya",
+    "Mirror across the plane perpendicular to X":
+        "X'e dik düzleme göre aynala",
+    "Mirror across the plane perpendicular to Y":
+        "Y'ye dik düzleme göre aynala",
+    "Mirror across the plane perpendicular to Z":
+        "Z'ye dik düzleme göre aynala",
+    "Undo one step (object mode: one whole edit)":
+        "Bir adım geri al (Object modu: bütün bir düzenleme)",
+    "Redo the step you undid (object mode: one whole edit)":
+        "Geri alınan adımı ileri al (Object modu: bütün bir düzenleme)",
+    "Switch between object mode and editing the cage":
+        "Object modu ile kafes düzenleme arasında geç",
+    "Point selection mode":
+        "Nokta seçim modu",
+    "Edge selection mode":
+        "Kenar seçim modu",
+    "Polygon selection mode":
+        "Çokgen seçim modu",
+    "X symmetry: tools also act on the mirrored side":
+        "X simetrisi: araçlar aynalı tarafa da uygulanır",
+    "Show the smooth SubD surface or only the cage":
+        "Yumuşak SubD yüzeyini ya da yalnız kafesi göster",
+    "See through the model and select hidden elements":
+        "Modelin içini gör, gizli elemanları seç",
+    "Free moves snap to the vertices and edges of visible Part / PartDesign shapes":
+        "Serbest taşımalar görünür Part / PartDesign şekillerinin köşe ve kenarlarına yapışır",
+    "Show or hide the Options panel":
+        "Options panelini göster ya da gizle",
 }
