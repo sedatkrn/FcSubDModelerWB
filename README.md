@@ -84,7 +84,8 @@ Catmull-Clark limit surface is on the roadmap.
 - The cage is saved in the document (`SubD` object), auto-saved every 20 s
 - Parametric B-rep solid (`SubD to solid`), STEP export, booleans, PartDesign
 - Shows both the cage size and the real surface size
-- **Rail Pipe / Rail Groove** (toolbar, PartDesign): the exact B-rep counterpart of Rail bridge as a step in a
+- **Rail Pipe / Rail Groove** (the buttons now come with the [Pimp My PartDesign](https://github.com/sedatkrn/partdesign_addins)
+  add-in; documents that already use them keep working here): the exact B-rep counterpart of Rail bridge as a step in a
   PartDesign Body. Select one or two flat faces or closed sketches of the Body (a sketch: click its edge or pick it in the
   tree) and press Rail Pipe (adds) or Rail Groove (cuts): the start profile is swept along a guide curve to the
   second profile, or to a free end; in an empty Body the pipe is the first solid. The

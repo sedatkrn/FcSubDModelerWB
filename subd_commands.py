@@ -135,7 +135,7 @@ class _RailPipe:
         Gui.Selection.addSelection(new)
 
 
-COMMANDS = ["SubD_Modeler", "SubD_MakeSolid", "SubD_Zebra", "Separator", "SubD_RailPipe", "SubD_RailGroove"]
+COMMANDS = ["SubD_Modeler", "SubD_MakeSolid", "SubD_Zebra"]   # Rail Pipe / Groove dugmeleri: Pimp My PartDesign
 
 Gui.addCommand("SubD_Modeler", _OpenModeler())
 Gui.addCommand("SubD_MakeSolid", _MakeSolid())
