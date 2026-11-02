@@ -7,6 +7,7 @@
 - The steps survive a trip to object mode and back, as long as the object did not change in between.
 - Ghost mode is about 3x faster while the view or a drag is moving: the transparent surface is sorted triangle by triangle
   only when everything stands still, so the still image stays clean.
+- FreeCAD 27: tool and bottom bar buttons no longer get cut off (the theme forced every button to the same width).
 - Magnet: the right mouse button no longer opens FreeCAD's context menu.
 - **Tool tips** on all tool, menu and bottom bar buttons (English and Turkish).
 - **Circle on face** (Polygon, under Hole): works like Hole, but the circle stays filled and comes out selected, ready for

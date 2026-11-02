@@ -9189,6 +9189,12 @@ def _tool_tip(name):
     return T(tip) if tip else ""
 
 
+def _min_width(b, px):
+    """Dugmenin en az genisligi (kenarlik dahil). Stille: FreeCAD 27 temasinin QPushButton { min-width: 80px }
+    kurali setMinimumWidth / setFixedSize degerini eziyor, butun dugmeler 82 piksel oluyordu."""
+    b.setStyleSheet("QPushButton { min-width: %dpx; }" % max(px - 2, 0))
+
+
 def _lw_button(text, key="", width=None):
     """LightWave dugmesi: solda ad, sagda soluk kisayol."""
     b = QtWidgets.QPushButton()
@@ -9202,7 +9208,7 @@ def _lw_button(text, key="", width=None):
         lb.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
         lay.addWidget(lb, 1 if t is text else 0)
     fm = b.fontMetrics()
-    b.setMinimumWidth(max(width or 0, fm.horizontalAdvance(text + key) + 24))   # yazi hicbir zaman kesilmesin
+    _min_width(b, max(width or 0, fm.horizontalAdvance(text + key) + 24))       # yazi hicbir zaman kesilmesin
     return b
 
 
@@ -9787,6 +9793,7 @@ class _Overlay(object):
             b.setIcon(s._align_icon(vertical))
             b.setIconSize(QtCore.QSize(16, 16))
             b.setFixedSize(22, 22)
+            _min_width(b, 22)
             b.setToolTip(T(tip))
             b.clicked.connect(lambda checked=False, v=vertical: (s.align_points(v), self.sync()))
             row.addWidget(b)
