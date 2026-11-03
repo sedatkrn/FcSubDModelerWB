@@ -682,22 +682,59 @@ class Cage:
                 Ov[k] = m / max(cos, 0.25)
         return Nv, Ov
 
+    def _ring_exit(self, r):
+        """Halkanin n-gon'dan (n >= 5) cikis kenari: r[0]r[1] giris kenari; giris ortasindan, yuz duzleminde
+        girise dik ve ice dogru bir isin hangi kenara varirsa (r[j], r[j+1]) o. j dondurur (None = cikis yok).
+        Birlestirilmis dortgenler (Merge polygons) dogrusal noktali n-gon olur; isin karsi kenardaki dogru
+        yere varir (topolojik karsi kenar orada yanlis olurdu)."""
+        n = len(r)
+        P = self.V[r]
+        nrm = np.zeros(3)
+        for i in range(n):                                 # Newell normali
+            a, b = P[i], P[(i + 1) % n]
+            nrm += np.cross(a, b)
+        d = P[1] - P[0]
+        ln, dl = np.linalg.norm(nrm), np.linalg.norm(d)
+        if ln < 1e-12 or dl < 1e-12:
+            return n // 2 if n % 2 == 0 else None
+        x = d / dl
+        y = np.cross(nrm / ln, x)
+        m = (P[0] + P[1]) / 2
+        if (P.mean(0) - m).dot(y) < 0:
+            y = -y
+        Q = np.column_stack([(P - m).dot(x), (P - m).dot(y)])   # isin: (0, 0)'dan +y yonunde
+        best, bt = None, None
+        for j in range(2, n - 1):
+            (ax, ay), (bx, by) = Q[j], Q[(j + 1) % n]
+            if abs(bx - ax) < 1e-12:
+                continue
+            s = -ax / (bx - ax)
+            if -1e-6 <= s <= 1 + 1e-6:
+                t = ay + s * (by - ay)
+                if t > 1e-9 and (bt is None or t < bt):
+                    best, bt = j, t
+        return best
+
     def face_ring(self, fi, u, v):
-        """(u, v) kenarindan gecen dortgen halkasi: {yuz: dondurulmus dortgen (q0q1 giris, q2q3 cikis kenari)}."""
+        """(u, v) kenarindan gecen yuz halkasi: {yuz: (dondurulmus yuz r, j)}; r[0]r[1] giris, r[j]r[j+1] cikis
+        kenari. Dortgende j = 2 (karsi kenar); 5+ kenarli yuzde cikis _ring_exit ile bulunur; ucgende halka biter."""
         ef = self.edge_faces()
 
         def rotated(f, e):
             for i in range(len(f)):
                 if {f[i], f[(i + 1) % len(f)]} == e:
-                    return f[i:] + f[:i]
+                    return list(f[i:]) + list(f[:i])
 
         ring = {}
 
         def walk(f, e):
-            while f is not None and f not in ring and len(self.F[f]) == 4:
+            while f is not None and f not in ring and len(self.F[f]) >= 4:
                 q = rotated(self.F[f], e)
-                ring[f] = q
-                e = {q[2], q[3]}
+                j = 2 if len(q) == 4 else self._ring_exit(q)
+                if j is None:
+                    break
+                ring[f] = (q, j)
+                e = {q[j], q[(j + 1) % len(q)]}
                 nb = [g for g in ef[_edge(*e)] if g != f]
                 f = nb[0] if nb else None
 
@@ -743,14 +780,15 @@ class Cage:
         return self._split_ring(ring, u)
 
     def _split_ring(self, ring, seed):
-        """Halkadaki her dortgeni giris / cikis kenarlarinin ortasindan ikiye boler."""
-        # taraf: dortgende q0-q3 ve q1-q2 ayni tarafta; halka sirasiyla seed'in tarafi yayilir
+        """Halkadaki her yuzu giris / cikis kenarlarinin ortasindan ikiye boler."""
+        # taraf: q0 ile q[j+1], q1 ile q[j] ayni tarafta; halka sirasiyla seed'in tarafi yayilir
         side = {seed}
-        for q in ring.values():
-            if q[1] in side or q[2] in side:
-                side |= {q[1], q[2]}
+        for q, j in ring.values():
+            k = (j + 1) % len(q)
+            if q[1] in side or q[j] in side:
+                side |= {q[1], q[j]}
             else:
-                side |= {q[0], q[3]}
+                side |= {q[0], q[k]}
         mids, extra = {}, []
 
         def mid(a, b):
@@ -763,9 +801,9 @@ class Cage:
         split = []
         for i, f in enumerate(self.F):
             if i in ring:
-                q = ring[i]
-                m, n = mid(q[0], q[1]), mid(q[2], q[3])
-                split += [[q[0], m, n, q[3]], [m, q[1], q[2], n]]
+                q, j = ring[i]
+                m, n = mid(q[0], q[1]), mid(q[j], q[(j + 1) % len(q)])
+                split += [[q[0], m, n] + q[j + 1:], [m] + q[1:j + 1] + [n]]
             else:
                 split.append(f)
         self.V = np.vstack([self.V, extra])
