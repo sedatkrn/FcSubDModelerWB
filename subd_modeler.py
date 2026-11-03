@@ -1242,6 +1242,80 @@ class Cage:
                 self.F[fi] = [dup.get(v, v) for v in self.F[fi]]
         return sorted(side), closed
 
+    def split_edges(self, edges, count=1, at=None):
+        """Kenarlara nokta ekler (LightWave Add Points): edges'teki her kenar count + 1 esit parcaya bolunur; at
+        {kenar: (a, t)}: o kenara a ucundan t oraninda tek nokta. Kenari paylasan butun cokgenler yeni noktalari
+        alir (bosluk kalmaz), keskin kenarin parcalari da keskin. Nokta indeksleri sabit, yeniler sona eklenir.
+        Dondurur: {kenar: (a, [a'dan diger uca yeni noktalar])}."""
+        spec = {e: (min(e), [k / (count + 1.0) for k in range(1, count + 1)]) for e in edges}
+        for e, (a, t) in (at or {}).items():
+            spec[e] = (a, [t])
+        new, extra = {}, []
+        for e, (a, ts) in spec.items():
+            b = next(iter(e - {a}))
+            ids = list(range(len(self.V) + len(extra), len(self.V) + len(extra) + len(ts)))
+            extra += [self.V[a] + t * (self.V[b] - self.V[a]) for t in ts]
+            new[e] = (a, ids)
+        if not extra:
+            return {}
+        self.V = np.vstack([self.V, extra])
+        out = []
+        for f in self.F:
+            g = []
+            for i in range(len(f)):
+                u, w = f[i], f[(i + 1) % len(f)]
+                g.append(u)
+                s = new.get(_edge(u, w))
+                if s:
+                    g += s[1] if u == s[0] else s[1][::-1]
+            out.append(g)
+        self.F = out
+        for e, (a, ids) in new.items():
+            if e in self.C:
+                sh = self.C.pop(e)
+                chain = [a] + ids + [next(iter(e - {a}))]
+                for p, q in zip(chain, chain[1:]):
+                    self.C[_edge(p, q)] = sh
+        return new
+
+    def connect(self, pairs):
+        """Ayni cokgendeki iki nokta arasina kenar (LightWave Split): cokgen ikiye bolunur, yon korunur. pairs
+        sirayla uygulanir; komsu ya da ayni cokgende olmayan cift atlanir. Dondurur: eklenen kenarlar."""
+        done = []
+        for u, v in pairs:
+            for fi, f in enumerate(self.F):
+                if u not in f or v not in f:
+                    continue
+                i, j = sorted((f.index(u), f.index(v)))
+                if j - i in (0, 1, len(f) - 1):
+                    continue
+                self.F[fi] = f[i:j + 1]
+                self.F.append(f[j:] + f[:i + 1])
+                done.append(_edge(u, v))
+                break
+        return done
+
+    def subdivide_faces(self, faces):
+        """Cokgenleri dortgenlere boler (LightWave Subdivide, faceted): her kenarin ortasina ve cokgenin ortasina
+        nokta; n kenarli cokgen n dortgen olur. Komsu cokgenler kenar ortalarini alir. Dondurur: yeni cokgenler."""
+        faces = sorted(set(faces))
+        old = {fi: list(self.F[fi]) for fi in faces}
+        E = {_edge(f[i], f[(i + 1) % len(f)]) for f in old.values() for i in range(len(f))}
+        mid = {e: ids[0] for e, (a, ids) in self.split_edges(E, 1).items()}
+        centers = [self.V[f].mean(0) for f in old.values()]
+        c0 = len(self.V)
+        self.V = np.vstack([self.V, centers])
+        out = []
+        for k, (fi, f) in enumerate(old.items()):
+            n = len(f)
+            quads = [[f[i], mid[_edge(f[i], f[(i + 1) % n])], c0 + k, mid[_edge(f[i - 1], f[i])]] for i in range(n)]
+            self.F[fi] = quads[0]
+            out.append(fi)
+            for q in quads[1:]:
+                out.append(len(self.F))
+                self.F.append(q)
+        return out
+
     def limit_frame(self, rules=RULES, levels=2):
         """Kafes noktalarinin SubD limit yuzeyindeki yerleri ve birim normalleri (levels adim bolup limit
         kurali; Catmull-Clark'ta bir noktanin cocugu hep ayni indekstedir)."""
@@ -5646,6 +5720,23 @@ class SubDSession:
         elif k == "knife":
             items, maxt = self._knife_cut(*a["edge"])
             self.slide_set(items, min(max(v["t"], 0.0), maxt))
+        elif k == "addpoints":
+            n = min(max(int(round(v["Count"])), 1), 32)
+            v["Count"] = float(n)
+            self.add_count = n
+            new = self.cage.split_edges(a["edges"], n)
+            self.sel, self.sel_e = set(), set()
+            self.sel_v = {p for _, ids in new.values() for p in ids}
+            self.info = T("Add points: %d points") % len(self.sel_v)
+        elif k == "addpoint":
+            t = min(max(v["Position"], 0.1), 99.9) / 100.0
+            v["Position"] = t * 100.0
+            at = {a["edge"]: (a["a"], t)}
+            if a["mirror"] is not None:
+                at[a["medge"]] = (a["mirror"], t)
+            new = self.cage.split_edges((), at=at)
+            self.sel, self.sel_e = set(), set()
+            self.sel_v = {p for _, ids in new.values() for p in ids}
 
     def panel_spec(self):
         """Viewport'taki arac panelinin icerigi: (baslik, [(ad, deger, birim, ondalik, geri cagri)], duzenlenebilir)."""
@@ -5729,6 +5820,10 @@ class SubDSession:
                                                        ("Normal Y", v["Ny"], "", 4, r("Ny")),
                                                        ("Normal Z", v["Nz"], "", 4, r("Nz")),
                                                        mm("Offset")], self.drag is None, self._knife_checks()
+            if k == "addpoints":
+                return T("Add points"), [("Count", v["Count"], "", 0, r("Count"))], self.drag is None
+            if k == "addpoint":
+                return T("Add points"), [("Position", v["Position"], " %", 2, r("Position"))], self.drag is None
             if k == "knife":
                 t, L = v["t"], a["L"]
                 return "Knife", [("Position", t * 100, " %", 2, r("Position")),
@@ -5881,6 +5976,136 @@ class SubDSession:
             self.op = self.last_op = None
             self.sel, self.sel_v, self.sel_e = set(new) if self.mode == "face" else set(), set(), set()
             self.info = T("Merge polygons: %d polygons merged") % sum(len(r) for r in regions)
+        self.refresh()
+
+    # --- Add points / Connect / Subdivide (LightWave Add Points, Split, Subdivide): kenar ekleme (#3, #6) ---
+    # Add points: secili kenarlar (nokta modunda iki ucu secili kenarlar) esit bolunur; secim yoksa arac acilir,
+    # tiklanan kenarin o yerine nokta duser. Connect: ayni cokgendeki iki noktayi (ya da iki kenarin ortasini)
+    # kenarla baglar, cokgen ikiye bolunur. Subdivide: secili cokgenler dortgenlere bolunur. Komsu cokgenler yeni
+    # kenar noktalarini alir, yuzeyde bosluk kalmaz.
+
+    def _mirror_edges(self, edges):
+        M = self.mirror_map()
+        alive = self.cage.edges()
+        out = set(edges)
+        for e in edges:
+            me = frozenset(M.get(v) for v in e)
+            if None not in me and me in alive:
+                out.add(me)
+        return out
+
+    def add_points(self):
+        if self.mode == "object" or self.drag or self.grab:
+            return
+        edges = self.selected_edges() if self.mode in ("edge", "point") else set()
+        if not edges:
+            self.toggle_tool("addpoint")
+            return
+        if self.sym:
+            edges = self._mirror_edges(edges)
+        self.drop_tool()
+        self.push()
+        op = self.new_op("addpoints", {"Count": float(getattr(self, "add_count", 1))}, edges=edges)
+        self._apply_op(op)
+        self.last_op, self.op = op, None
+        self.refresh()
+
+    def add_point_at(self, pos):
+        """Add points araci: imlecin altindaki kenara, tiklanan yere nokta (ortaya yakinsa ortaya)."""
+        h = self.hover_edge(pos)
+        if h is None:
+            return
+        fi, u, w = h
+        su, sw = self.project(self.cage.V[[u, w]])
+        d = sw - su
+        t = float(np.clip((np.array(pos[:2], float) - su).dot(d) / max(d.dot(d), 1e-12), 0.0, 1.0))
+        if abs(t - 0.5) < 0.08:
+            t = 0.5
+        self.push()
+        mirror = None
+        if self.sym:
+            M = self.mirror_map()
+            mu, mw = M.get(u), M.get(w)
+            if mu is not None and mw is not None and _edge(mu, mw) != _edge(u, w) and _edge(mu, mw) in self.cage.edges():
+                mirror = mu
+        op = self.new_op("addpoint", {"Position": t * 100.0}, edge=_edge(u, w), a=u, mirror=mirror,
+                         medge=None if mirror is None else _edge(M[u], M[w]))
+        self._apply_op(op)
+        self.last_op, self.op = op, None
+        self.refresh()
+
+    def _connect_pairs(self, pts):
+        """Secili noktalardan baglanacak ciftler: bir cokgende tam iki secili nokta varsa ve komsu degillerse."""
+        pairs = set()
+        for f in self.cage.F:
+            s = [i for i, v in enumerate(f) if v in pts]
+            if len(s) == 2 and s[1] - s[0] not in (1, len(f) - 1):
+                pairs.add(tuple(sorted((f[s[0]], f[s[1]]))))
+        return sorted(pairs)
+
+    def connect(self):
+        """Polygon > Connect (LightWave Split, Ctrl+L): nokta modu: ayni cokgendeki iki secili nokta arasina kenar;
+        kenar modu: ayni cokgenin iki secili kenarinin ortalari arasina kenar."""
+        if self.mode == "object" or self.drag or self.grab:
+            return
+        cage = self.cage
+        if self.mode == "point":
+            pts = set(self.sel_v)
+            if self.sym:
+                M = self.mirror_map()
+                pts |= {M[v] for v in list(pts) if M.get(v) is not None}
+            pairs = self._connect_pairs(pts)
+            if not pairs:
+                self.info = T("Connect: select two points of one polygon that are not neighbours")
+                self.refresh()
+                return
+            self.drop_tool()
+            self.push()
+            new = cage.connect(pairs)
+        elif self.mode == "edge":
+            E = self._mirror_edges(self.sel_e) if self.sym else set(self.sel_e)
+            pairs = []
+            for f in cage.F:
+                s = [e for e in (_edge(f[i], f[(i + 1) % len(f)]) for i in range(len(f))) if e in E]
+                if len(s) == 2:
+                    pairs.append(tuple(s))
+            if not pairs:
+                self.info = T("Connect: select two edges of one polygon")
+                self.refresh()
+                return
+            self.drop_tool()
+            self.push()
+            mid = {e: ids[0] for e, (a, ids) in cage.split_edges({e for p in pairs for e in p}, 1).items()}
+            new = cage.connect([(mid[a], mid[b]) for a, b in pairs])
+        else:
+            self.info = T("Connect: select points or edges")
+            self.refresh()
+            return
+        self.op = self.last_op = None
+        self.sel, self.sel_v = set(), set()
+        self.sel_e = set(new) if self.mode == "edge" else set()
+        if self.mode == "point":
+            self.sel_v = {v for e in new for v in e}
+        self.info = T("Connect: %d edges added") % len(new)
+        self.refresh()
+
+    def subdivide(self):
+        """Polygon > Subdivide (LightWave, Shift+D): secili cokgenler dortgenlere bolunur (n kenarli -> n dortgen)."""
+        if self.mode == "object" or self.drag or self.grab:
+            return
+        sel = self.selected_faces()
+        if not sel:
+            self.info = T("Subdivide: select polygons")
+            self.refresh()
+            return
+        if self.sym:
+            sel = self.mirror_faces(sel, self.mirror_map())
+        self.drop_tool()
+        self.push()
+        new = self.cage.subdivide_faces(sel)
+        self.op = self.last_op = None
+        self.sel, self.sel_v, self.sel_e = set(new) if self.mode == "face" else set(), set(), set()
+        self.info = T("Subdivide: %d polygons -> %d") % (len(sel), len(new))
         self.refresh()
 
     def weld(self):
@@ -7029,6 +7254,8 @@ class SubDSession:
                      "knife": T("Knife: click edges to cut (K / Esc / right click: off)"),
                      "line": T("Knife: drag cut lines (Ctrl: 15° steps; J / Esc / right click: off)"),
                      "loop": T("Loop: click edges to select loops (Esc / right click: off)"),
+                     "addpoint": T("Add points: click an edge to add a point there, near the middle it snaps to "
+                                   "the middle (Esc / right click: off)"),
                      "magnet": T("Magnet: drag to pull the surface softly, a selection limits it "
                                  "(right drag: radius; Esc / right click: off)")}[self.armed]
         self.refresh()
@@ -8776,9 +9003,9 @@ class SubDSession:
             if hit is not None:                            # cizgi yakalanan hedeften baslar
                 self.box.update(p0=hit[0], w0=hit[1])
             return
-        if self.armed in ("knife", "loop"):
+        if self.armed in ("knife", "loop", "addpoint"):
             cb.setHandled()
-            fn = self.knife if self.armed == "knife" else self.loop_select
+            fn = {"knife": self.knife, "loop": self.loop_select, "addpoint": self.add_point_at}[self.armed]
             _later(lambda: fn(pos))
             return
         if self.armed == "magnet":
@@ -8919,7 +9146,7 @@ class SubDSession:
                 self.doc_undone()
             elif ctrl and k == "v":                       # panodaki cokgenler -> yeni SubD nesnesi
                 self.paste_faces()
-            elif ctrl and k in ("c", "x", "w"):           # nesne modunda kopyalanacak cokgen / nokta yok
+            elif ctrl and k in ("c", "x", "w", "l"):      # nesne modunda kopyalanacak / baglanacak nokta yok
                 pass
             elif ctrl:
                 self.set_mode({"g": "point", "h": "face"}.get(k, "face"))
@@ -8964,7 +9191,8 @@ class SubDSession:
                 self.rail_finish()
         if ctrl:                                           # LightWave: ^G nokta, ^H cokgen
             {"z": self.do_undo, "redo": self.do_redo, "g": lambda: self.set_mode("point"), "h": lambda: self.set_mode("face"),
-             "c": self.copy_faces, "x": lambda: self.copy_faces(cut=True), "v": self.paste_faces, "w": self.weld}[k]()
+             "c": self.copy_faces, "x": lambda: self.copy_faces(cut=True), "v": self.paste_faces, "w": self.weld,
+             "l": self.connect}[k]()
         elif k == "n":
             self.toggle_options()
         elif k == "escape" and self.armed:
@@ -8992,6 +9220,8 @@ class SubDSession:
             self.save()
         elif k == "F":                                     # Shift+F: LightWave Flip
             self.flip_faces()
+        elif k == "D":                                     # Shift+D: LightWave Subdivide
+            self.subdivide()
         elif k in ("1", "2", "3"):
             self.set_mode({"1": "point", "2": "edge", "3": "face"}[k])
         elif k == "y":
@@ -9251,7 +9481,7 @@ _KEYS = {
 }
 # Ctrl+Z geri al, Ctrl+G nokta modu, Ctrl+H cokgen modu (LightWave), Ctrl+C / X / V cokgen kopyala / kes / yapistir,
 # Ctrl+W weld, Ctrl+Y / Ctrl+Shift+Z ileri al
-_CTRL_KEYS = ("z", "redo", "g", "h", "c", "x", "v", "w")
+_CTRL_KEYS = ("z", "redo", "g", "h", "c", "x", "v", "w", "l")
 _CTRL_ONLY = ("z", "v", "w")   # tek basina bizim degil (FreeCAD'e gider)
 
 
@@ -9312,8 +9542,8 @@ class _KeyFilter(QtCore.QObject):
             return False
         k = _KEYS.get(ev.key())
         ctrl = bool(ev.modifiers() & QtCore.Qt.ControlModifier)
-        if k == "f" and ev.modifiers() & QtCore.Qt.ShiftModifier:
-            k = "F"                                        # Shift+F: Flip (F: kaydet)
+        if k in ("f", "d") and ev.modifiers() & QtCore.Qt.ShiftModifier:
+            k = k.upper()                                  # Shift+F: Flip (F: kaydet), Shift+D: Subdivide
         if ctrl and (k == "y" or (k == "z" and ev.modifiers() & QtCore.Qt.ShiftModifier)):
             k = "redo"
         extr = g is not None and g.get("kind") == "extrude"   # extrude surerken Z = eksen (Ctrl+Z degil)
@@ -9451,6 +9681,10 @@ TOOL_TIPS = {
     "Inset": "Inset the selected faces into their own plane",
     "Knife (loop)": "Stays on: click an edge to cut a loop around the model, then slide it",
     "Knife (line)": "Stays on: draw a line to cut the model live with the plane through it",
+    "Add points": "Split the selected edges into equal parts (Count in the panel); with nothing selected it stays on: "
+                  "click an edge to add a point there",
+    "Connect": "Add an edge between two points of one polygon, or between the middles of two of its edges",
+    "Subdivide": "Split the selected polygons into quads (a polygon with n sides becomes n quads)",
     "Bridge": "Connect two open edge loops or two face regions",
     "Bridge>Bridge": "Connect two open edge loops / chains or two face regions with a strip",
     "Bridge>Rail bridge": "Pipe with an editable guide curve, between two regions or growing out of one",
@@ -10055,6 +10289,9 @@ class _Overlay(object):
         btn("Inset", "I", lambda: s.bevel(inset_only=True, lazy=True), sel=True, mode="edit")
         btn("Knife (loop)", "K", lambda: s.toggle_tool("knife"), mode="edit", tool="knife")
         btn("Knife (line)", "J", lambda: s.toggle_tool("line"), mode="edit", tool="line")
+        btn("Add points", "", s.add_points, mode="edit", tool="addpoint")
+        btn("Connect", "^L", s.connect, sel=True, mode="edit")
+        btn("Subdivide", "⇧D", s.subdivide, sel=True, mode="edit")
         menu_btn("Bridge", [("Bridge", s.bridge), ("Rail bridge", s.rail_bridge)])
         btn("Hole", "", s.hole, sel=True, mode="edit")
         btn("Circle on face", "", lambda: s.hole(cap=True), sel=True, mode="edit")

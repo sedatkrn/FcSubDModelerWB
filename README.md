@@ -40,6 +40,13 @@ Catmull-Clark limit surface is on the roadmap.
 - **Knife (loop)**: loop cut that slides along the ring, exact position in % or mm
 - **Knife (line)**: LightWave knife — draw a line and the model is cut **live** by the plane through it;
   then set the plane exactly (normal + offset)
+- **Add points** (LightWave Add Points): selected edges are split into equal parts (*Count* in the panel); with
+  nothing selected the tool stays on and a click on an edge adds a point there (it snaps to the middle, exact
+  *Position* % in the panel). Neighbouring polygons take the new points, creased edges stay creased
+- **Connect** (Ctrl+L, LightWave Split): an edge between two selected points of one polygon, or between the
+  middles of two selected edges of one polygon; the polygon is split in two
+- **Subdivide** (Shift+D, LightWave Subdivide): the selected polygons are split into quads (n sides → n quads);
+  neighbouring polygons take the edge middles, so the cage stays closed
 - Crease (sharp or semi-sharp edges) — makes the surface hit exact dimensions
 - Copy / cut / paste polygons (with their creases): paste in place into the same cage, into another SubD
   object, or as a new object (e.g. copy the neck of a bottle to start its cap)
