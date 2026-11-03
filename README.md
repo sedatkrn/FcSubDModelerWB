@@ -53,7 +53,13 @@ Catmull-Clark limit surface is on the roadmap.
     4 mm thick filleted box)
   - *Edge*: each chain of selected edges becomes one polygon (flat or not, e.g. a mating line). Edges whose ends
     meet (within 0.01 mm, also from different objects) form one chain; an open chain is closed with a straight
-    edge; separate chains give separate polygons. *Arc Segments* / *Max Length* set the sampling.
+    edge; separate chains give separate polygons. *Arc Segments* / *Max Length* set the sampling. The polygon
+    stays **linked to its source** (e.g. a Sketcher sketch): when the sketch changes, the linked points follow it,
+    and so do the points straight above / below them (an extruded profile); a point you moved by hand leaves the
+    link. A cage that is still just that polygon is rebuilt, with a point count to suit the new curve. With
+    *Exact Edge* the linked points are solved so the SubD surface passes through the curve samples; this is
+    redone when you leave the cage, so an extruded profile's bottom edge sits on the sketch curve. Options >
+    *Follow sketch* (or the object's *SketchLink* property) turns the link off.
   - *Point*: the selected points become one polygon, in the order they were picked.
 - **Make polygon** (P, LightWave Make Polygon / Blender F): a polygon from 3 or more selected points, a closed
   edge loop (fills a hole), or two edges / an open chain (bridges their ends); faces its neighbours
