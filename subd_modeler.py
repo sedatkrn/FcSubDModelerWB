@@ -10,7 +10,8 @@
 #   1 / 2 / 3: point / edge / polygon mode     Ctrl+G / Ctrl+H: point / polygon mode (LightWave)
 #   Click: select   Shift+click: add/remove   Drag: box select   A: select all   L: select loop   X: ghost
 #   E: extrude (edge mode: open edges; wheel = segments; X / Y / Z key or panel = axis lock, none = normal)   B: bevel / Smooth Shift (edge mode: edge bevel, wheel = segments)   I: inset
-#   K: loop cut + slide   J: LightWave knife (draw a line, live plane cut)   C: crease   Del: delete
+#   K: loop cut + slide   J: LightWave knife (draw a line, live plane cut)   Shift+V: mirror across a drawn line
+#   C: crease   Del: delete
 #   Knife (K / J) and Select loop stay on (yellow button) until K / J / the button / Esc / right click
 #   T: move gizmo   G: free move (mouse)   R: rotate gizmo   H: stretch / size gizmo   Y: X symmetry   Tab / S: SubPatch
 #   Ctrl+C / Ctrl+X / Ctrl+V: copy / cut / paste polygons (object mode Ctrl+V: as a new SubD object)
@@ -3591,6 +3592,7 @@ def _param():
 
 _last_shell = {"Thickness": 2.0, "Detail filter": 6.0, "Mode": 0.0, "Fill": 1.0, "Sharp": 1.0, "Flat rim": 1.0}   # Shell paneli
 _knife_opts = {"split": False, "objects": False}   # Knife (line) secenekleri (ikisi kapali: yalniz keser)
+_mline_opts = {"flip": False}                       # Mirror (line): kaynak yan ters
 _last_reduce = {"Degrees": 5.0, "Delete points": 1.0}   # Reduce points paneli
 _last_merge = {"Fixed": 0.0, "Distance": 1.0}   # Merge points paneli
 MERGE_AUTO = 1e-3       # Merge points, Automatic: bu kadar mm yakin noktalar "ayni yerde" sayilir
@@ -4236,7 +4238,7 @@ HELP = ("1 / 2 / 3: point / edge / polygon mode\n"
         "Click: select  |  Shift+click: add\n"
         "Drag: box select (Shift add, Ctrl remove)\n"
         "L: loop from the selection (or under the cursor)  |  X: ghost\n"
-        "E: extrude  |  K: knife (loop cut)  |  J: knife (line / plane)\n"
+        "E: extrude  |  K: knife (loop cut)  |  J: knife (line / plane)  |  Shift+V: mirror (line)\n"
         "Knife / loop stay on (yellow) until K / J / Esc / right click\n"
         "B: bevel (right = inset, up = shift)  |  I: inset\n"
         "Edge mode B: edge bevel (right = width)\n"
@@ -4308,6 +4310,7 @@ class SubDSession:
         self.op = None       # surmekte olan islem (panelde canli degerler)
         self.ebevel_segs = 1  # kenar bevel segment sayisi (son kullanilan)
         self.extrude_segs = 1        # extrude dilim sayisi (son kullanilan)
+        self.bevel_each = False      # Bevel "Individual": her yuz ayri (son kullanilan)
         self.extrude_each = False    # extrude: her yuz kendi normalinde (son kullanilan)
         self.rail = None             # Rail bridge duzenleniyor: dict(i=kilavuz, sel=ara nokta, span=parca)
         self.rail_segs = 4           # Rail bridge baslangic ara halka sayisi (son kullanilan)
@@ -5670,7 +5673,8 @@ class SubDSession:
                 st["op"] = op
                 self.extrude_set(st, v)
         elif k == "bevel":
-            self.bevel(inset_only=a["inset_only"], values=(v["Inset"], v.get("Shift", 0.0)), push=False)
+            self.bevel(inset_only=a["inset_only"], values=(v["Inset"], v.get("Shift", 0.0)), push=False,
+                       each=bool(v.get("Individual")))
         elif k == "ebevel":
             segs = min(max(int(round(v["Segments"])), 1), 32)
             v["Segments"] = float(segs)
@@ -5717,6 +5721,13 @@ class SubDSession:
                 a["side"] = self._plane_cut(n / np.linalg.norm(n), v["Offset"], a["verts"],
                                            _knife_opts["split"] or _knife_opts["objects"])
             self.sel, self.sel_v, self.sel_e = set(), set(), set()   # clear_selection son islemi de silerdi
+        elif k == "mplane":
+            n = np.array([v["Nx"], v["Ny"], v["Nz"]], float)
+            if np.linalg.norm(n) > 1e-9:
+                ln = np.linalg.norm(n)
+                if not self._mirror_line(n / ln, v["Offset"] / ln, a["src"]):
+                    self.info = T("Mirror: no polygons on the source side (Flip side)")
+            self.sel, self.sel_v, self.sel_e = set(), set(), set()
         elif k == "knife":
             items, maxt = self._knife_cut(*a["edge"])
             self.slide_set(items, min(max(v["t"], 0.0), maxt))
@@ -5750,6 +5761,8 @@ class SubDSession:
         op = self.op if live else self.last_op
         if self.armed == "line" and not live and (op is None or op["kind"] != "plane"):
             return T("Knife (line)"), [], True, self._knife_checks()   # cizmeden once secenekler
+        if self.armed == "mline" and not live and (op is None or op["kind"] != "mplane"):
+            return T("Mirror (line)"), [], True, self._mline_checks()
         if self.armed == "magnet" and not live and (op is None or op["kind"] != "magnet"):
             return T("Magnet"), [("Radius", self.magnet_radius, " mm", 3, self.magnet_set_radius)], True, \
                 self._magnet_checks()                      # surtmeden once secenekler
@@ -5776,7 +5789,8 @@ class SubDSession:
                 return "Extrude", fields, self.drag is None, checks, "Axis (none = normal)"
             if k == "bevel":
                 return ("Inset" if a["inset_only"] else "Bevel"), \
-                    [mm("Inset")] + ([] if a["inset_only"] else [mm("Shift")]), self.drag is None
+                    [mm("Inset")] + ([] if a["inset_only"] else [mm("Shift")]), self.drag is None, \
+                    [("Individual polygons", bool(v.get("Individual")), self.bevel_individual)]
             if k == "ebevel":
                 return T("Edge bevel"), [mm("Width"), ("Segments", v["Segments"], "", 0, r("Segments"))], \
                     self.drag is None
@@ -5820,6 +5834,11 @@ class SubDSession:
                                                        ("Normal Y", v["Ny"], "", 4, r("Ny")),
                                                        ("Normal Z", v["Nz"], "", 4, r("Nz")),
                                                        mm("Offset")], self.drag is None, self._knife_checks()
+            if k == "mplane":
+                return T("Mirror (plane: N.p = Offset)"), [("Normal X", v["Nx"], "", 4, r("Nx")),
+                                                         ("Normal Y", v["Ny"], "", 4, r("Ny")),
+                                                         ("Normal Z", v["Nz"], "", 4, r("Nz")),
+                                                         mm("Offset")], self.drag is None, self._mline_checks()
             if k == "addpoints":
                 return T("Add points"), [("Count", v["Count"], "", 0, r("Count"))], self.drag is None
             if k == "addpoint":
@@ -6607,14 +6626,30 @@ class SubDSession:
 
     # --- simetri (X = 0 duzlemi) ---
     def mirror_map(self):
-        """Her nokta icin X'e gore aynadaki esini dondurur (duzlemdekiler kendisi)."""
+        """Her nokta icin X'e gore aynadaki esini dondurur (duzlemdekiler kendisi). Es, aynalanmis konuma tol
+        icindeki en yakin noktadir; komsu hucrelere de bakilir, yoksa hucre sinirina dusen kucuk kaymalar
+        (orn. 0.006 mm) esi kacirir."""
         V = self.cage.V
         if not len(V):
             return {}
         tol = 1e-4 * max(np.ptp(V, 0).max(), 1.0)
-        key = lambda p: tuple(np.round(p / tol).astype(np.int64))
-        index = {key(p): i for i, p in enumerate(V)}
-        return {i: index.get(key(p * [-1, 1, 1])) for i, p in enumerate(V)}
+        cells = np.floor(V / tol).astype(np.int64)
+        grid = {}
+        for i, c in enumerate(map(tuple, cells)):
+            grid.setdefault(c, []).append(i)
+        Q = V * MIRROR
+        qcells = np.floor(Q / tol).astype(np.int64)
+        offs = [(a, b, c) for a in (-1, 0, 1) for b in (-1, 0, 1) for c in (-1, 0, 1)]
+        out = {}
+        for i, (cx, cy, cz) in enumerate(qcells.tolist()):
+            cand = [j for a, b, c in offs for j in grid.get((cx + a, cy + b, cz + c), ())]
+            if not cand:
+                out[i] = None
+                continue
+            d = np.linalg.norm(V[cand] - Q[i], axis=1)
+            k = int(np.argmin(d))
+            out[i] = cand[k] if d[k] <= tol else None
+        return out
 
     def mirror_faces(self, faces, M):
         lookup = {frozenset(f): i for i, f in enumerate(self.cage.F)}
@@ -6871,20 +6906,19 @@ class SubDSession:
         self.dirty = True
         self.refresh()
 
-    def bevel(self, inset_only=False, values=None, lazy=False, push=True):
+    def bevel(self, inset_only=False, values=None, lazy=False, push=True, each=None):
         """LightWave Bevel / Smooth Shift: secili yuzleri bolge olarak extrude eder; yeni noktalar yuz
         normalleri boyunca kaydirilir (Shift) ve sinirdan iceri alinir (Inset). values=(inset, shift) mm
-        verilirse dogrudan uygular; verilmezse fareyle: saga = inset, yukari = shift (I: yalniz inset)."""
+        verilirse dogrudan uygular; verilmezse fareyle: saga = inset, yukari = shift (I: yalniz inset).
+        each (Individual): her yuz kendi basina bevel'lenir (None = son kullanilan)."""
         if not self.sel or self.mode != "face" or self.drag or self.grab:
             return
+        each = self.bevel_each if each is None else bool(each)
         if push:                                           # push=False: son islem yeniden uygulaniyor
             self.drop_tool()
             self.push()
-            self.new_op("bevel", dict(Inset=0.0, Shift=0.0), inset_only=inset_only)
-        region = self.mirror_faces(self.sel, self.mirror_map()) if self.sym else set(self.sel)
-        Nv, Ov = self.cage.bevel_dirs(region)
-        new = self.cage.extrude(region)
-        st = dict(kind="bevel", new=new, base=self.cage.V[new].copy(), n=Nv, o=Ov, inset_only=inset_only)
+            self.new_op("bevel", dict(Inset=0.0, Shift=0.0, Individual=float(each)), inset_only=inset_only)
+        st = self._bevel_build(inset_only, each)
         if values is not None:
             self.bevel_set(st, *values)
             if push:
@@ -6961,6 +6995,41 @@ class SubDSession:
         w = (self.mouse[0] - g["p0"][0]) * g["wpp"] * _gain() * BEVEL_WEIGHT
         self.ebevel_set(g, max(_snap(w, step), 0.0))
 
+    def _bevel_build(self, inset_only, each):
+        """Secili yuzleri extrude eder, bevel durumunu dondurur. each: her yuz ayri extrude edilir ve yonleri
+        yalniz kendisinden hesaplanir (komsu secili yuzlerle ortak kenarda da kendi yan duvari olur)."""
+        region = self.mirror_faces(self.sel, self.mirror_map()) if self.sym else set(self.sel)
+        groups = [{fi} for fi in sorted(region)] if each else [region]
+        new, N, O = [], [], []
+        for g in groups:
+            Nv, Ov = self.cage.bevel_dirs(g)
+            new += self.cage.extrude(g)
+            N.append(Nv)
+            O.append(Ov)
+        return dict(kind="bevel", new=new, base=self.cage.V[new].copy(), n=np.vstack(N), o=np.vstack(O),
+                    inset_only=inset_only)
+
+    def bevel_individual(self, on):
+        """Bevel panelindeki "Individual": surerken ya da son bevel'de hemen uygulanir, sonrakiler icin hatirlanir."""
+        self.bevel_each = bool(on)
+        g = self.grab if self.grab is not None and self.grab.get("kind") == "bevel" else None
+        op = self.op if g is not None else self.last_op
+        if op is None or op["kind"] != "bevel" or self.drag:
+            return
+        v = op["values"]
+        v["Individual"] = float(on)
+        if g is None:
+            self._reapply(op)
+            return
+        c, a, b, e = op["before"]                          # surerken: bevel oncesine don, yeniden kur
+        self.cage, self.sel, self.sel_v, self.sel_e = c.copy(), set(a), set(b), set(e)
+        st = self._bevel_build(g["inset_only"], self.bevel_each)
+        for k in ("wpp", "p0", "lazy", "param", "vals0"):
+            if k in g:
+                st[k] = g[k]
+        self.grab = st
+        self.bevel_set(st, v["Inset"], v["Shift"])
+
     def bevel_set(self, st, inset, shift):
         self.cage.V[st["new"]] = st["base"] + st["n"] * shift + st["o"] * inset
         p = st.get("param")
@@ -7024,6 +7093,45 @@ class SubDSession:
             if verts is not None:
                 verts |= set(new)
         return self.cage.split_plane(n, d, verts) if split else None
+
+    def _mirror_line(self, n, d, src=None):
+        """Mirror (line): n.p = d duzlemine (yerel) gore ayna. Kafes once duzlemle kesilir, kaynak olmayan yandaki
+        yuzler silinir, kalan yari duzleme gore aynalanir; duzlemdeki noktalar ortak kalir (iki yari tek parca).
+        Kaynak yan: src (secimin merkezi) hangi yandaysa o, yoksa duzlemin negatif yani (Front'ta yukaridan asagi
+        cizilen cizgide sol); Flip ters cevirir. Yeni yuz sayisini dondurur (0: kaynak yanda yuz yok)."""
+        c = self.cage
+        n = np.asarray(n, float)
+        if src is not None and float(n.dot(src)) - d > 0:
+            n, d = -n, -d
+        if _mline_opts["flip"]:
+            n, d = -n, -d
+        size = max(np.ptp(c.V, 0).max(), 1.0)
+        tol, eps = 1e-4 * size, 1e-7 * size
+        s = c.V @ n - d
+        near = np.abs(s) < tol
+        c.V[near] -= np.outer(s[near], n)                  # duzleme cok yakin noktalar tam duzleme
+        c.plane_cut(n, d)
+        s = c.V @ n - d
+        far = {fi for fi, f in enumerate(c.F) if (s[f] > eps).any()}
+        if len(far) == len(c.F):
+            return 0
+        if far:
+            c.delete(far)
+            s = c.V @ n - d
+        keep = np.abs(s) < 10 * eps
+        return len(c.mirror(set(range(len(c.F))), c.V - 2.0 * np.outer(s, n), keep))
+
+    def _mline_checks(self):
+        return [("Flip side", _mline_opts["flip"], self.mline_option)]
+
+    def mline_option(self, on):
+        """Mirror (line) Flip: sonraki aynalarda gecerli; son islem bir ayna ise hemen ona da uygulanir."""
+        _mline_opts["flip"] = bool(on)
+        op = self.last_op
+        if op is None or op["kind"] != "mplane" or self.box is not None:
+            self.refresh()
+            return
+        self._reapply(op)
 
     def _knife_checks(self):
         """Knife (line) panelindeki secenekler: (ad, isaretli, fn(on))."""
@@ -7139,9 +7247,12 @@ class SubDSession:
         self._pending = False
         if b.get("cancelled"):
             return
+        mline = b.get("tool") == "mline"
         if "before" not in b:                              # ilk hareket: geri alma noktasi ve kesilecek yuzler
             verts = set(self.selected_verts()) if self.mode == "face" and self.sel else None
-            if verts is not None and self.sym:
+            sv = self.selected_verts()                     # Mirror (line): secim kaynak yani belirler
+            b["src"] = self.cage.V[sv].mean(0) if mline and sv else None
+            if verts is not None and self.sym and not mline:
                 M = self.mirror_map()
                 verts |= {M[v] for v in list(verts) if M.get(v) is not None}
             self.push()
@@ -7154,7 +7265,13 @@ class SubDSession:
         self._line_mark(hit)
         pl = self.line_plane(b["p0"], hit[0] if hit else pos, b.get("w0"), hit[1] if hit else None)
         b["plane"] = pl
-        if pl is not None:
+        if pl is not None and mline:
+            n, d, p1 = pl
+            b["new"] = self._mirror_line(n, d, b["src"])
+            self._line_show(b["p0"], p1)
+            self.info = (T("Mirror  N (%.3f, %.3f, %.3f)   Offset %.3f mm") % (n[0], n[1], n[2], d) if b["new"]
+                         else T("Mirror: no polygons on the source side (Flip side)"))
+        elif pl is not None:
             n, d, p1 = pl
             b["side"] = self._plane_cut(n, d, b["verts"], _knife_opts["split"] or _knife_opts["objects"])
             self._line_show(b["p0"], p1)
@@ -7172,6 +7289,18 @@ class SubDSession:
             return
         c = b["before"][0]
         pl = b.get("plane")
+        if b.get("tool") == "mline":
+            if pl is None or not b.get("new"):
+                self.cage, self.sel, self.sel_v, self.sel_e = self.undo.pop()
+                self.info = T("Mirror: no polygons on the source side (Flip side)") if pl is not None else ""
+                self.refresh()
+                return
+            n, d, _ = pl
+            self.last_op = dict(kind="mplane", before=b["before"], args=dict(src=b["src"]),
+                                values=dict(Nx=n[0], Ny=n[1], Nz=n[2], Offset=d))
+            self.info = T("Mirror: %d polygons") % b["new"]
+            self.refresh()
+            return
         if pl is None or (len(self.cage.F) == len(c.F) and len(self.cage.V) == len(c.V)):
             self.cage, self.sel, self.sel_v, self.sel_e = self.undo.pop()
             self.info = T("Knife: the line does not cut the model")
@@ -7233,7 +7362,7 @@ class SubDSession:
     def _line_hover(self):
         """Knife (line) acik, cizgi cekilmiyor: imlecin altindaki hedefi goster."""
         self._pending = False
-        on = self.armed == "line" and self.box is None and self.mode != "object"
+        on = self.armed in ("line", "mline") and self.box is None and self.mode != "object"
         self._line_mark(self.line_snap(self.mouse, self.line_snap_data(self.cage)) if on else None)
 
     # --- kalici araclar (LightWave gibi): dugme sari yanar, kapatilana kadar her tiklama araci uygular ---
@@ -7253,6 +7382,8 @@ class SubDSession:
         self.info = {None: "",
                      "knife": T("Knife: click edges to cut (K / Esc / right click: off)"),
                      "line": T("Knife: drag cut lines (Ctrl: 15° steps; J / Esc / right click: off)"),
+                     "mline": T("Mirror: drag the mirror line, the other side is replaced by the mirror "
+                                "(Ctrl: 15° steps; Shift+V / Esc / right click: off)"),
                      "loop": T("Loop: click edges to select loops (Esc / right click: off)"),
                      "addpoint": T("Add points: click an edge to add a point there, near the middle it snaps to "
                                    "the middle (Esc / right click: off)"),
@@ -8995,9 +9126,9 @@ class SubDSession:
                 _later(self.refresh)
             return
         # kalici arac (sari dugme) acik kaldikca her tiklama onu uygular; secim / kutu secimi yapilmaz
-        if self.armed == "line":                           # knife cizgisi baslar; birakinca kesilir
+        if self.armed in ("line", "mline"):                # knife / ayna cizgisi baslar; birakinca kesilir / aynalanir
             cb.setHandled()
-            self.box = dict(p0=pos, press=pos, moved=False, kind="line", shift=False, ctrl=False)
+            self.box = dict(p0=pos, press=pos, moved=False, kind="line", tool=self.armed, shift=False, ctrl=False)
             self.box["snap"] = data = self.line_snap_data(self.cage)
             hit = self.line_snap(pos, data)
             if hit is not None:                            # cizgi yakalanan hedeften baslar
@@ -9077,7 +9208,7 @@ class SubDSession:
             _later(lambda: self.gizmo.set_hover(key))
             if self.armed == "magnet":                     # imlec / isaret Magnet'in: _line_hover silmesin
                 self._schedule(self._magnet_hover)
-            elif self.armed == "line" or self._line_cursor is not None:
+            elif self.armed in ("line", "mline") or self._line_cursor is not None:
                 self._schedule(self._line_hover)
 
     def finish_box(self, pos):
@@ -9236,6 +9367,8 @@ class SubDSession:
             self.loop_select()
         elif k == "j":
             self.toggle_tool("line")
+        elif k == "V":                                     # Shift+V: Mirror (line), LightWave Mirror gibi
+            self.toggle_tool("mline")
         elif k == "p":                                     # LightWave Make Polygon
             self.make_polygon()
         elif k == "x":
@@ -9544,6 +9677,8 @@ class _KeyFilter(QtCore.QObject):
         ctrl = bool(ev.modifiers() & QtCore.Qt.ControlModifier)
         if k in ("f", "d") and ev.modifiers() & QtCore.Qt.ShiftModifier:
             k = k.upper()                                  # Shift+F: Flip (F: kaydet), Shift+D: Subdivide
+        if k == "v" and not ctrl and ev.modifiers() & QtCore.Qt.ShiftModifier:
+            k = "V"                                        # Shift+V: Mirror (line) (Ctrl+V FreeCAD'in)
         if ctrl and (k == "y" or (k == "z" and ev.modifiers() & QtCore.Qt.ShiftModifier)):
             k = "redo"
         extr = g is not None and g.get("kind") == "extrude"   # extrude surerken Z = eksen (Ctrl+Z degil)
@@ -9681,6 +9816,8 @@ TOOL_TIPS = {
     "Inset": "Inset the selected faces into their own plane",
     "Knife (loop)": "Stays on: click an edge to cut a loop around the model, then slide it",
     "Knife (line)": "Stays on: draw a line to cut the model live with the plane through it",
+    "Mirror (line)": "Stays on: draw a line, the model is mirrored across the plane through it; the far side is "
+                     "replaced (source: the selection's side, else left of a downward line; Flip side in the panel)",
     "Add points": "Split the selected edges into equal parts (Count in the panel); with nothing selected it stays on: "
                   "click an edge to add a point there",
     "Connect": "Add an edge between two points of one polygon, or between the middles of two of its edges",
@@ -10316,6 +10453,7 @@ class _Overlay(object):
         # kafeste: secili cokgenler (secim yoksa hepsi) ayni kafese aynalanir; Object modunda: secili nesnelerin kopyasi
         menu_btn("Mirror", [("Mirror X", lambda: s.mirror_polygons(0)), ("Mirror Y", lambda: s.mirror_polygons(1)),
                             ("Mirror Z", lambda: s.mirror_polygons(2))])
+        btn("Mirror (line)", "⇧V", lambda: s.toggle_tool("mline"), mode="edit", tool="mline")
 
         self.bar = QtWidgets.QFrame(self.vp)
         self.bar.setObjectName("lwBar")

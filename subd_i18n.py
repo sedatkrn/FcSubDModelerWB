@@ -432,6 +432,21 @@ TR = {
         "Knife: kesim çizgilerini sürükleyerek çek (Ctrl: 15° adım; J / Esc / sağ tık: kapat)",
     "Knife  N (%.3f, %.3f, %.3f)   Offset %.3f mm": "Knife  N (%.3f, %.3f, %.3f)   Konum %.3f mm",
     "Knife: the line does not cut the model": "Knife: çizgi modeli kesmiyor",
+    "Mirror: drag the mirror line, the other side is replaced by the mirror "
+    "(Ctrl: 15° steps; Shift+V / Esc / right click: off)":
+        "Ayna: ayna çizgisini sürükleyerek çek, öbür taraf aynayla değiştirilir "
+        "(Ctrl: 15° adım; Shift+V / Esc / sağ tık: kapat)",
+    "Mirror  N (%.3f, %.3f, %.3f)   Offset %.3f mm": "Ayna  N (%.3f, %.3f, %.3f)   Konum %.3f mm",
+    "Mirror: no polygons on the source side (Flip side)": "Ayna: kaynak tarafta çokgen yok (Tarafı çevir)",
+    "Mirror: %d polygons": "Ayna: %d çokgen",
+    "Mirror (line)": "Ayna (çizgi)",
+    "Mirror (plane: N.p = Offset)": "Ayna (düzlem: N.p = Konum)",
+    "Flip side": "Tarafı çevir",
+    "Individual polygons": "Her çokgen ayrı",
+    "Stays on: draw a line, the model is mirrored across the plane through it; the far side is replaced "
+    "(source: the selection's side, else left of a downward line; Flip side in the panel)":
+        "Açık kalır: bir çizgi çiz, model içinden geçen düzleme göre aynalanır; öbür taraf değiştirilir "
+        "(kaynak: seçimin olduğu taraf, yoksa aşağı çizilen çizginin solu; paneldeki Tarafı çevir)",
     "Loop: click edges to select loops (Esc / right click: off)":
         "Loop: halka seçmek için kenarlara tıkla (Esc / sağ tık: kapat)",
     "Knife: click edges to cut (K / Esc / right click: off)":
@@ -451,7 +466,7 @@ TR = {
     "Click: select  |  Shift+click: add\n"
     "Drag: box select (Shift add, Ctrl remove)\n"
     "L: loop from the selection (or under the cursor)  |  X: ghost\n"
-    "E: extrude  |  K: knife (loop cut)  |  J: knife (line / plane)\n"
+    "E: extrude  |  K: knife (loop cut)  |  J: knife (line / plane)  |  Shift+V: mirror (line)\n"
     "Knife / loop stay on (yellow) until K / J / Esc / right click\n"
     "B: bevel (right = inset, up = shift)  |  I: inset\n"
     "Edge mode B: edge bevel (right = width)\n"
@@ -470,7 +485,7 @@ TR = {
         "Tık: seç  |  Shift+Tık: ekle\n"
         "Sürükle: kutu seçimi (Shift ekle, Ctrl çıkar)\n"
         "L: seçimden halka (ya da imlecin altındaki)  |  X: hayalet\n"
-        "E: extrude  |  K: knife (loop cut)  |  J: knife (çizgi / düzlem)\n"
+        "E: extrude  |  K: knife (loop cut)  |  J: knife (çizgi / düzlem)  |  Shift+V: ayna (çizgi)\n"
         "Knife / loop açık kalır (sarı): K / J / Esc / sağ tık kapatır\n"
         "B: bevel (sağa inset, yukarı shift)  |  I: inset\n"
         "Kenar modunda B: kenar bevel (sağa = genişlik)\n"
