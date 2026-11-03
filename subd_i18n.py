@@ -159,8 +159,9 @@ TR = {
     "Sketch link: %s is gone": "Sketch bağı: %s yok",
     "Sketch link: %s.%s is gone": "Sketch bağı: %s.%s yok",
     "Sketch link: the curve no longer gives the same points": "Sketch bağı: eğri artık aynı noktaları vermiyor",
-    "Sketch link: none of the linked points is where it was": "Sketch bağı: bağlı noktaların hiçbiri yerinde değil",
     "Sketch link: the linked points followed the sketch": "Sketch bağı: bağlı noktalar sketch'i izledi",
+    "Sketch link ended: none of the linked points is where it was":
+        "Sketch bağı bitti: bağlı noktaların hiçbiri yerinde değil",
     "Color of the cage faces when Subpatch is off": "Subpatch kapalıyken kafes yüzlerinin rengi",
     "Surface color for the plastic look (no effect at Metal 1)": "Plastik görünümün yüzey rengi (Metal 1'de etkisiz)",
     "0: mirror, 1: fully blurred reflections": "0: ayna, 1: tamamen bulanık yansıma",
