@@ -58,6 +58,27 @@ TR = {
     "Polygon": "Çokgen",
     "Knife (loop)": "Knife (halka)",
     "Knife (line)": "Knife (çizgi)",
+    "Add points": "Nokta ekle",
+    "Connect": "Bağla",
+    "Subdivide": "Böl",
+    "Split the selected edges into equal parts (Count in the panel); with nothing selected it stays on: "
+    "click an edge to add a point there":
+        "Seçili kenarları eşit parçalara böler (panelde Count); seçim yoksa açık kalır: tıkladığın kenarın o yerine "
+        "nokta ekler",
+    "Add an edge between two points of one polygon, or between the middles of two of its edges":
+        "Bir çokgenin iki noktası ya da iki kenarının ortası arasına kenar ekler",
+    "Split the selected polygons into quads (a polygon with n sides becomes n quads)":
+        "Seçili çokgenleri dörtgenlere böler (n kenarlı çokgen n dörtgen olur)",
+    "Add points: click an edge to add a point there, near the middle it snaps to the middle (Esc / right click: off)":
+        "Nokta ekle: kenara tıkla, oraya nokta eklenir; ortaya yakınsa ortaya oturur (Esc / sağ tık: kapat)",
+    "Add points: %d points": "Nokta ekle: %d nokta",
+    "Connect: select two points of one polygon that are not neighbours":
+        "Bağla: aynı çokgenin komşu olmayan iki noktasını seç",
+    "Connect: select two edges of one polygon": "Bağla: aynı çokgenin iki kenarını seç",
+    "Connect: select points or edges": "Bağla: nokta ya da kenar seç",
+    "Connect: %d edges added": "Bağla: %d kenar eklendi",
+    "Subdivide: select polygons": "Böl: çokgen seç",
+    "Subdivide: %d polygons -> %d": "Böl: %d çokgen -> %d",
     "Delete": "Sil",
     "Modify": "Değiştir",
     "SubD Modeler tabs": "SubD Modeler sekmeleri",
