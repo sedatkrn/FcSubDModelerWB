@@ -232,6 +232,7 @@ class Cage:
         self.F = [] if F is None else F
         self.C = {} if C is None else C   # keskin kenarlar: frozenset((a, b)) -> keskinlik
         self.rails = []                   # Rail bridge kilavuzlari (rail_* fonksiyonlari; nokta indeksleriyle)
+        self.links = []                   # Sketch baglari (link_update; nokta konumlariyla, From face > Edge)
 
     @staticmethod
     def cube(size=20.0):
@@ -311,6 +312,7 @@ class Cage:
     def copy(self):
         c = Cage(self.V.copy(), [list(f) for f in self.F], dict(self.C))
         c.rails = copy.deepcopy(self.rails)
+        c.links = copy.deepcopy(self.links)
         return c
 
     def edges(self):
@@ -2603,6 +2605,30 @@ def cage_to_obj(cage, obj):
         txt = json.dumps(cage.rails) if cage.rails else ""
         if obj.Rails != txt:
             obj.Rails = txt
+    if cage.links or "SketchLinks" in obj.PropertiesList:
+        _link_props(obj)
+        txt = json.dumps(cage.links) if cage.links else ""
+        if obj.SketchLinks != txt:
+            obj.SketchLinks = txt
+        doc = obj.Document
+        srcs = []
+        for l in cage.links:
+            for name, _ in l["src"]:
+                o = doc.getObject(name)
+                if o is not None and o not in srcs:
+                    srcs.append(o)
+        if list(obj.SketchSources) != srcs:               # bagimlilik: kaynak degisince nesne yeniden hesaplanir
+            obj.SketchSources = srcs
+
+
+def _link_props(obj):
+    if "SketchLinks" not in obj.PropertiesList:
+        obj.addProperty("App::PropertyString", "SketchLinks", "SubD", "Sketch links of From edge polygons (JSON)")
+        obj.setEditorMode("SketchLinks", 2)
+        obj.addProperty("App::PropertyLinkListGlobal", "SketchSources", "SubD", "Objects the linked edges come from")
+        obj.setEditorMode("SketchSources", 1)
+        obj.addProperty("App::PropertyBool", "SketchLink", "SubD",
+                        "Linked points follow the source sketch / edges when they change; off = unlinked").SketchLink = True
 
 
 def cage_from_obj(obj):
@@ -2625,6 +2651,11 @@ def cage_from_obj(obj):
             cage.rails = json.loads(obj.Rails)
         except ValueError:
             cage.rails = []
+    if "SketchLinks" in obj.PropertiesList and obj.SketchLinks:
+        try:
+            cage.links = json.loads(obj.SketchLinks)
+        except ValueError:
+            cage.links = []
     return cage
 
 
@@ -3163,25 +3194,35 @@ def _on_line(P):
     return s[1] <= 1e-9 * max(s[0], 1.0)
 
 
-def cage_from_edges(edges, arc_segs=4, max_len=0.0):
-    """Secili kenarlardan (dunya) zincir basina bir cokgen: Cage ya da hata metni. max_len <= 0: auto_max_len."""
+def cage_from_edges(edges, arc_segs=4, max_len=0.0, counts=None):
+    """Secili kenarlardan (dunya) zincir basina bir cokgen: Cage ya da hata metni. max_len <= 0: auto_max_len.
+    counts: {"edges": kenar basina parca, "close": acik zincir basina kapatma parcasi} verilirse onlar kullanilir
+    (Sketch bagi: ayni noktalar ayni sirada); kullanilan sayilar donen kafesin .counts'una yazilir."""
     chains = _edge_chains(edges)
     if isinstance(chains, str):
         return chains
     if max_len <= 0:
         max_len = auto_max_len(edges, arc_segs)
-    V, F = [], []
+    ecount = list(counts["edges"]) if counts else [_edge_count(e, arc_segs, max_len) for e in edges]
+    close = list(counts["close"]) if counts else []
+    pos = {id(e): k for k, e in enumerate(edges)}
+    V, F, nclose = [], [], 0
     for chain, closed in chains:
         P = []
         for e, rev in chain:
-            q = _edge_points(e, _edge_count(e, arc_segs, max_len))
+            q = _edge_points(e, ecount[pos[id(e)]])
             q = list(q[::-1] if rev else q)
             P += q[1:] if P else q
         if closed:
             P = P[:-1]
         else:                                              # uclari duz kenarla kapat
             a, b = P[-1], P[0]
-            n = int(math.ceil(np.linalg.norm(b - a) / max_len - 1e-9)) if max_len > 0 else 1
+            if counts:
+                n = close[nclose] if nclose < len(close) else 1
+            else:
+                n = int(math.ceil(np.linalg.norm(b - a) / max_len - 1e-9)) if max_len > 0 else 1
+                close.append(n)
+            nclose += 1
             P += [a + (b - a) * k / n for k in range(1, n)]
         P = np.array(P)
         if _on_line(P):
@@ -3190,7 +3231,9 @@ def cage_from_edges(edges, arc_segs=4, max_len=0.0):
         V += list(P)
     if not F:
         return T("From face: no polygon can be made from the selected edges")
-    return Cage(np.array(V), F)
+    c = Cage(np.array(V), F)
+    c.counts = {"edges": ecount, "close": close}
+    return c
 
 
 def cage_from_points(points):
@@ -3206,6 +3249,141 @@ def cage_from_points(points):
     if _on_line(P):
         return T("From face: select 3 or more points that are not on one line")
     return Cage(P, [list(range(len(P)))])
+
+
+# ---------- Sketch bagi (From face > Edge) ----------
+# From edge ile kurulan cokgen kaynak kenarlarini hatirlar (Cage.links, belgede SketchLinks): kaynak (or. Sketcher
+# cizimi) degisince bagli noktalar egrinin yeni yerine gider. Bagli nokta, kaydedilen yerinde duran kafes noktasidir
+# (elle tasinan nokta bagdan cikar); onun cokgen normali boyunca tam ustunde / altinda duran noktalar (extrude
+# kopyalari) ayni kadar kayar. Kafes yalniz o cokgense bastan kurulur (nokta sayisi da degisebilir). Exact: bagli
+# noktalar, SubD limit yuzeyi egri orneklerinden gecsin diye duzeltilir; tek cokgende noktalar kose kuraliyla zaten
+# sabittir, extrude edilince alt halka iceri cekiliyordu. Kayit (yerel koordinat): src [[nesne, alt eleman]], segs,
+# max, counts, exact, pts (bagli noktalarin son yeri), tgt (son egri ornekleri), fit (son duzeltilen kafesin ozeti).
+
+def _cage_sig(cage):
+    return hash((cage.V.round(9).tobytes(), tuple(tuple(f) for f in cage.F), tuple(sorted(
+        (tuple(sorted(e)), s) for e, s in cage.C.items()))))
+
+
+def link_new(src, vals, cage, verts):
+    """From edge kafesinden bag kaydi: verts = cokgenin noktalari (yerel, kafesteki indeksleri, sirayla)."""
+    P = cage.V[verts]
+    return dict(src=[list(s) for s in src], segs=int(vals["Arc Segments"]), max=float(vals["Max Length"]),
+                counts=cage_counts(cage), exact=int(vals.get("Exact Edge", 1.0) >= 0.5),
+                pts=P.tolist(), tgt=P.tolist(), fit=None)
+
+
+def cage_counts(cage):
+    return copy.deepcopy(getattr(cage, "counts", None))
+
+
+def link_edges(link, doc):
+    """Bagin kaynak kenarlari (dunya) ya da hata metni (nesne silindi / kenar yok)."""
+    import Part
+    out = []
+    for name, sub in link["src"]:
+        o = doc.getObject(name)
+        if o is None:
+            return T("Sketch link: %s is gone") % name
+        try:
+            sh = Part.getShape(o, sub, needSubElement=True)
+        except Exception:
+            sh = None
+        if sh is None or sh.isNull() or sh.ShapeType != "Edge":
+            return T("Sketch link: %s.%s is gone") % (o.Label, sub)
+        out.append(sh)
+    return out
+
+
+def link_update(cage, link, edges, to_local, rules, alone=False, fit_edits=True):
+    """Bagi kaynagin simdiki haline getirir (kafes ve kayit degisir). alone: kafeste baska bag yok. fit_edits:
+    kaynak ayni kalsa da kafes son duzeltmeden beri degistiyse yeniden duzelt (modelleyici duzenlerken kapali:
+    her ara kayitta noktalar kaymasin). Dondurur: None (degisiklik yok), True (degisti) ya da hata metni."""
+    c = cage_from_edges(edges, link["segs"], link["max"], link["counts"])
+    if isinstance(c, str):
+        return c
+    new = to_local(c.V)
+    old, tgt = np.array(link["pts"], float), np.array(link["tgt"], float)
+    if len(new) != len(old):
+        return T("Sketch link: the curve no longer gives the same points")
+    moved = not np.allclose(new, tgt, atol=1e-9, rtol=0)
+    if not moved and (not fit_edits or link["fit"] == _cage_sig(cage)):
+        return None
+    scale = max(np.ptp(cage.V, 0).max() if len(cage.V) else 1.0, 1.0)
+    tol = 1e-6 * scale
+    if moved and alone and len(cage.F) == 1 and len(cage.V) == len(old) and np.allclose(cage.V, old, atol=tol):
+        # duzenlenmemis kafes: bastan kur (egri uzayip kisalinca nokta sayisi da ayarlanir)
+        fresh = cage_from_edges(edges, link["segs"], link["max"])
+        if isinstance(fresh, str):
+            return fresh
+        cage.V, cage.F, cage.C = to_local(fresh.V), fresh.F, {}
+        link.update(counts=cage_counts(fresh), pts=cage.V.tolist(), tgt=cage.V.tolist())
+        link["fit"] = _cage_sig(cage)
+        return True
+    n = np.linalg.svd(old - old.mean(0), full_matrices=False)[2][-1]   # cokgen normali: kopyalar bu yonde
+    flat = lambda X: X - np.outer(X.dot(n), n)
+    Pf, Of = flat(cage.V), flat(old)
+    groups, bidx, keep = [], [], []
+    for k in range(len(old)):
+        b = np.nonzero(np.linalg.norm(cage.V - old[k], axis=1) < tol)[0]
+        if not len(b):
+            continue                                       # elle tasinmis: bagdan cikti
+        groups.append(np.nonzero(np.linalg.norm(Pf - Of[k], axis=1) < tol)[0])
+        bidx.append(int(b[0]))
+        keep.append(k)
+    if not keep:
+        return T("Sketch link: none of the linked points is where it was")
+    P = cage.V.copy()
+    for g, k in zip(groups, keep):
+        P[g] += new[k] - old[k]
+    if link["exact"]:                                      # limit yuzeyi egri orneklerinden gecsin
+        T0 = new[keep]
+        for _ in range(30):
+            V1, F1, C1 = catmull_clark(P, cage.F, cage.C, rules)   # bir adim sonra dortgen: tam limit yeri
+            d = T0 - _limit(V1, F1, C1, rules)[bidx]
+            if np.abs(d).max() < 1e-7 * scale:
+                break
+            for g, dk in zip(groups, d):
+                P[g] += dk
+    cage.V = P
+    pts = new.copy()
+    pts[keep] = P[bidx]
+    link.update(pts=pts.tolist(), tgt=new.tolist())
+    link["fit"] = _cage_sig(cage)
+    return True
+
+
+def links_update(cage, doc, to_local, rules, fit_edits=True):
+    """Kafesin butun baglarini kaynaklarina getirir: (degisti mi, [hata metinleri])."""
+    changed, errs = False, []
+    for link in cage.links:
+        edges = link_edges(link, doc)
+        r = edges if isinstance(edges, str) else link_update(cage, link, edges, to_local, rules,
+                                                             alone=len(cage.links) == 1, fit_edits=fit_edits)
+        if isinstance(r, str):
+            errs.append(r)
+        elif r:
+            changed = True
+    return changed, errs
+
+
+def obj_links_update(obj):
+    """Nesne yeniden hesaplanirken: bagli kaynak degistiyse (ya da kafes son duzeltmeden beri degistiyse) kafes
+    guncellenir. Modelleyici bu nesnenin kafesini duzenliyorsa o yapar (SubDSession.links_refresh)."""
+    if "SketchLinks" not in obj.PropertiesList or not obj.SketchLinks or not obj.SketchLink:
+        return
+    s = _session
+    if s is not None and s.mode != "object" and s.obj is obj:
+        _later(lambda: _quiet(s.links_refresh))
+        return
+    cage = cage_from_obj(obj)
+    inv = obj.Placement.inverse()
+    to_local = lambda X: np.array([tuple(inv.multVec(App.Vector(*p))) for p in X], float).reshape(-1, 3)
+    changed, errs = links_update(cage, obj.Document, to_local, obj_rules(obj))
+    for e in errs:
+        App.Console.PrintWarning("%s: %s\n" % (obj.Label, e))
+    if changed or json.dumps(cage.links) != obj.SketchLinks:
+        cage_to_obj(cage, obj)
 
 
 def cage_key(obj):
@@ -3229,6 +3407,10 @@ class SubDObject:
         obj.Proxy = self
 
     def execute(self, obj):
+        try:
+            obj_links_update(obj)
+        except Exception as e:                             # bag hatasi yuzeyi engellemesin
+            App.Console.PrintWarning("%s: sketch link: %s\n" % (obj.Label, e))
         # Nesne yalniz tasindiysa (kafes ayni) yuzeyi yeniden uretme: FreeCAD mesh'i Placement ile zaten tasir.
         # Yeniden atamak hem gereksiz hem de geri almayi bozuyordu (eski mesh yeni Placement'i geri getiriyordu).
         key = cage_key(obj)
@@ -4977,6 +5159,11 @@ class SubDSession:
         self.cage_color_btn.clicked.connect(lambda checked=False: self.cage_pick_color())
         grid.addWidget(QtWidgets.QLabel(T("Cage color")), 7, 0, 1, 2)
         grid.addWidget(self.cage_color_btn, 7, 2, 1, 2)
+        self.link_box = QtWidgets.QCheckBox(T("Follow sketch"))
+        self.link_box.setToolTip(T("From edge polygons follow their source sketch / edges when it changes; off = "
+                                   "unlinked (the cage keeps its shape)"))
+        grid.addWidget(self.link_box, 8, 0, 1, 4)
+        self.link_box.toggled.connect(self.set_sketch_link)
         self.env_box.toggled.connect(lambda on: self.set_env(bool(on)))
         self.env_btn.clicked.connect(lambda checked=False: self.env_pick())
         self._sync_surface_widgets()
@@ -5053,10 +5240,20 @@ class SubDSession:
                            BOUNDARY_RULES.index(self.rules[0]) if self.rules[0] in BOUNDARY_RULES else 0)),
                       (self.smooth_tri_box, lambda: b.setChecked(self.rules[1])),
                       (self.zebra_box, lambda: b.setChecked(self.zebra)),
-                      (self.env_box, lambda: b.setChecked(self.env_on))):
+                      (self.env_box, lambda: b.setChecked(self.env_on)),
+                      (self.link_box, lambda: b.setChecked(bool(getattr(self.obj, "SketchLink", True))))):
             b.blockSignals(True)
             fn()
             b.blockSignals(False)
+
+    def set_sketch_link(self, on):
+        """Options > Follow sketch: duzenlenen nesnenin bagi acik / kapali (nesnenin SketchLink ozelligi)."""
+        if self.obj is None or not _alive(self.obj):
+            return
+        _link_props(self.obj)
+        self.obj.SketchLink = bool(on)
+        if on:
+            self.links_refresh()
 
     def set_edit_levels(self, v):
         self.edit_levels = min(max(int(v), 1), 5)
@@ -5437,10 +5634,14 @@ class SubDSession:
                 self.info = c
                 return
             c.V = self.w2l(c.V)
+            n0 = len(self.cage.V) if a["append"] else 0
             if a["append"]:
                 new = self.cage.append(c)
             else:
                 self.cage, new = c, list(range(len(c.F)))
+            if k == "fromedge" and a.get("src"):           # kaynak degisince bagli noktalar onu izler
+                v["Exact Edge"] = 1.0 if v.get("Exact Edge", 1.0) >= 0.5 else 0.0
+                self.cage.links.append(link_new(a["src"], v, self.cage, list(range(n0, n0 + len(c.V)))))
             self.sel, self.sel_v, self.sel_e = set(new) if self.mode == "face" else set(), set(), set()
             self.info = T("From face: %d polygons, %d points") % (len(c.F), len(c.V))
         elif k == "plane":
@@ -5503,7 +5704,8 @@ class SubDSession:
                     self.drag is None
             if k == "fromedge":
                 return T("From edges"), [("Arc Segments", v["Arc Segments"], "", 0, r("Arc Segments")),
-                                         mm("Max Length")], self.drag is None
+                                         mm("Max Length")] + ([("Exact Edge", v["Exact Edge"], "", 0, r("Exact Edge"))]
+                                                              if "Exact Edge" in v else []), self.drag is None
             if k == "frompoint":
                 return T("From points"), [], self.drag is None
             if k == "shell":
@@ -5779,6 +5981,11 @@ class SubDSession:
         bitiyor, oturumdaki degisiklikler FreeCAD'in geri alma listesine tek adim olarak girer; yoksa sessiz yazar."""
         if not _alive(self.obj):
             self.obj = None
+        if commit and self.mode != "object":               # duzenleme bitiyor: bagli noktalar egriye otursun
+            try:
+                self.links_refresh(fit=True)
+            except Exception as e:
+                App.Console.PrintWarning("SubD sketch link: %s\n" % e)
         doc = App.ActiveDocument if self.obj is None else self.obj.Document
         if self.obj is None:                               # yeni nesne: olusturma her zaman geri alinabilir
             doc.openTransaction("SubD")
@@ -5803,6 +6010,30 @@ class SubDSession:
             self._write(full)
         self.dirty = False
         return self.obj
+
+    def links_refresh(self, fit=False):
+        """Sketch baglari (obj_links_update'in modelleyicideki esi): kaynak degistiyse bagli noktalar onu izler
+        (geri alinabilir adim). fit: duzenleme bitiyor, kafes degistiyse bagli noktalar egriye yeniden oturur."""
+        if self.mode == "object" or not self.cage.links or self.drag or self.grab:
+            return
+        if self.obj is not None and not getattr(self.obj, "SketchLink", True):
+            return
+        doc = self.obj.Document if self.obj is not None else App.ActiveDocument
+        c = self.cage.copy()
+        changed, errs = links_update(c, doc, self.w2l, self.rules, fit_edits=fit)
+        if errs:
+            self.info = errs[0]
+        if changed:
+            if not fit:
+                self.push()
+                self.op = self.last_op = None
+                self.info = T("Sketch link: the linked points followed the sketch")
+            self.cage = c
+            self.dirty = True
+        elif json.dumps(c.links) != json.dumps(self.cage.links):
+            self.cage.links = c.links
+        if (changed or errs) and not fit:
+            self.refresh()
 
     def _restore_start(self):
         """Nesneyi sessizce oturum basindaki haline dondurur (geri alma listesine girmez)."""
@@ -7829,9 +8060,10 @@ class SubDSession:
     # Length. Point (cage_from_points): secim sirasiyla tek cokgen. Edge / Point cokgenleri kameraya bakar.
     FACE = ("Arc Segments", "Max Length", "Exact Edge")
 
-    def _selected_part(self):
+    def _selected_part(self, names=None):
         """FreeCAD secimindeki Part / PartDesign alt elemanlari, dunya koordinatinda (Body yerlesimi dahil), secim
-        sirasiyla: {"Face": [...], "Edge": [...], "Vertex": [...]}."""
+        sirasiyla: {"Face": [...], "Edge": [...], "Vertex": [...]}. names (sozluk): ayni sirayla (nesne, alt eleman)
+        adlari da doldurulur (Sketch bagi)."""
         import Part
         items = [(so.Object, sub) for so in Gui.Selection.getSelectionEx("", 0) if not is_subd(so.Object)
                  for sub in so.SubElementNames]
@@ -7845,6 +8077,8 @@ class SubDSession:
                 continue
             if not sh.isNull() and sh.ShapeType in out:
                 out[sh.ShapeType].append(sh)
+                if names is not None:
+                    names.setdefault(sh.ShapeType, []).append((obj.Name, sub))
         return out
 
     def _selected_part_faces(self):
@@ -7878,12 +8112,14 @@ class SubDSession:
     def from_edges(self):
         if self.drag or self.grab:
             return
-        edges = self._selected_part()["Edge"]
+        names = {}
+        edges = self._selected_part(names)["Edge"]
         if not edges:
             self.info = T("From face: select edges of a Part / PartDesign object")
             self.refresh()
             return
-        self._create_from("fromedge", {"Arc Segments": 4.0, "Max Length": 0.0}, edges=edges, look=self._look())
+        self._create_from("fromedge", {"Arc Segments": 4.0, "Max Length": 0.0, "Exact Edge": 1.0}, edges=edges,
+                          look=self._look(), src=names.get("Edge", []))
 
     def from_points(self):
         if self.drag or self.grab:
