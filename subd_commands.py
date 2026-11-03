@@ -21,7 +21,7 @@ class _OpenModeler:
     def GetResources(self):
         return {"Pixmap": ICON,
                 "MenuText": T("SubD Modeler"),
-                "ToolTip": T("Open the SubD modeler (edits the selected SubD object, or starts with a box)")}
+                "ToolTip": T("Open the SubD modeler (edits the selected SubD object, otherwise opens in object mode)")}
 
     def IsActive(self):
         return True

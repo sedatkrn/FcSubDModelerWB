@@ -299,6 +299,8 @@ TR = {
     "Segments Y": "Segment Y",
     "Segments Z": "Segment Z",
     "Box: size / segments in the panel": "Kutu: ölçü / segment panelde",
+    "SubD Modeler is ready: Create > Box or Cylinder to start":
+        "SubD Modeler hazır: başlamak için Oluştur > Kutu ya da Silindir",
     "Segments": "Segment",
     "SubD surface": "SubD yüzeyi",
     "Edit level": "Düzenleme seviyesi",
@@ -452,8 +454,8 @@ TR = {
         "Esc / sağ tık: işlemi iptal",
     # --- workbench commands ---
     "SubD Modeler": "SubD Modeler",
-    "Open the SubD modeler (edits the selected SubD object, or starts with a box)":
-        "SubD modelleyiciyi aç (seçili SubD nesnesini düzenler ya da kutuyla başlar)",
+    "Open the SubD modeler (edits the selected SubD object, otherwise opens in object mode)":
+        "SubD modelleyiciyi aç (seçili SubD nesnesini düzenler, yoksa Object modunda açılır)",
     "SubD to solid": "SubD'den katı",
     "Make a parametric B-rep solid (STEP) from the selected SubD object":
         "Seçili SubD nesnesinden parametrik B-rep katı (STEP) oluştur",

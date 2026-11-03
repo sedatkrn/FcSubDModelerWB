@@ -4008,7 +4008,7 @@ class SubDSession:
         self.dirty = False
         self.info = ""       # surukleme sirasinda gosterilen deger (delta / aci)
         self.cage = cage_from_obj(obj) if obj is not None else \
-            Cage.cube([_last_box[n] for n in self.BOX_SIZE])   # bos belge: Box olculerinde kutu
+            Cage.cube([_last_box[n] for n in self.BOX_SIZE])   # nesnesiz Object modu: gorunmeyen yer tutucu
         self.hidden = []     # duzenlerken gizlenen nesneler (SubD ve ondan uretilen katilar); kapatinca geri
         self._snapshot()
         if not object_mode:
@@ -4104,6 +4104,8 @@ class SubDSession:
         self.history_guard = _HistoryGuard(self)
         QtWidgets.QApplication.instance().installEventFilter(self.history_guard)
         self.geo_switch.whichChild = -1 if object_mode else 0
+        if object_mode and not any(is_subd(o) for o in App.getDocument(self.doc_name).Objects):
+            self.info = T("SubD Modeler is ready: Create > Box or Cylinder to start")   # bos acilis (issue #7)
         self.refresh()
         if not object_mode:
             self.view.viewIsometric()
@@ -10023,9 +10025,9 @@ _session = None
 
 
 def start(obj=None, object_mode=None):
-    """Modelleyiciyi acar. Tek SubD nesnesi secili (ya da verilmis) ise onun kafesini duzenler; birden fazla
-    secili ya da hic secili degilken belgede SubD nesneleri varsa Object modunda acar; hic yoksa yeni kutuyla
-    Edit modunda baslar."""
+    """Modelleyiciyi acar. Tek SubD nesnesi secili (ya da verilmis) ise onun kafesini duzenler; yoksa Object
+    modunda acar. Bos belgede de bos acar (LightWave gibi; eskiden kutuyla baslardi ve her seferinde silinmesi
+    gerekiyordu, issue #7): Create > Box / Cylinder yeni nesneyi kurar."""
     global _session
     if _session:
         _session.close()
@@ -10036,7 +10038,7 @@ def start(obj=None, object_mode=None):
         if obj is None:
             sel = [o for o in Gui.Selection.getSelection() if is_subd(o)]
             obj = sel[0] if len(sel) == 1 else None
-            object_mode = obj is None and any(is_subd(o) for o in App.ActiveDocument.Objects)
+            object_mode = obj is None
         else:
             object_mode = False
     if not object_mode and obj is not None:
