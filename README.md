@@ -123,8 +123,8 @@ Clone or unzip this repository into FreeCAD's user `Mod` folder and restart Free
 ## Usage
 
 Switch to the **SubD Modeler** workbench and press **SubD Modeler** (or run `macros/SubDModeler.FCMacro` from
-any workbench). With one `SubD` object selected its cage is opened for editing; if the document already has
-SubD objects and none is selected you start in object mode; in an empty document you start with a box.
+any workbench). With one `SubD` object selected its cage is opened for editing; otherwise you start in object
+mode, and an empty document stays empty until you create something (**Create > Box**, **Cylinder**, ...).
 **O** switches between object mode and editing the selected object (**Tab** toggles the SubPatch preview, as
 in LightWave). **Close** writes the cage back to the
 document; save the document as usual (Ctrl+S).

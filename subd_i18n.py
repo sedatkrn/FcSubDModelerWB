@@ -299,6 +299,8 @@ TR = {
     "Segments Y": "Segment Y",
     "Segments Z": "Segment Z",
     "Box: size / segments in the panel": "Kutu: ölçü / segment panelde",
+    "SubD Modeler is ready: Create > Box or Cylinder to start":
+        "SubD Modeler hazır: başlamak için Oluştur > Kutu ya da Silindir",
     "Segments": "Segment",
     "SubD surface": "SubD yüzeyi",
     "Edit level": "Düzenleme seviyesi",
@@ -452,8 +454,8 @@ TR = {
         "Esc / sağ tık: işlemi iptal",
     # --- workbench commands ---
     "SubD Modeler": "SubD Modeler",
-    "Open the SubD modeler (edits the selected SubD object, or starts with a box)":
-        "SubD modelleyiciyi aç (seçili SubD nesnesini düzenler ya da kutuyla başlar)",
+    "Open the SubD modeler (edits the selected SubD object, otherwise opens in object mode)":
+        "SubD modelleyiciyi aç (seçili SubD nesnesini düzenler, yoksa Object modunda açılır)",
     "SubD to solid": "SubD'den katı",
     "Make a parametric B-rep solid (STEP) from the selected SubD object":
         "Seçili SubD nesnesinden parametrik B-rep katı (STEP) oluştur",
@@ -466,6 +468,11 @@ TR = {
         "Geri al",
     "Redo":
         "İleri al",
+    "Edit": "Düzenle",
+    "Object mode: move, copy and select whole SubD objects":
+        "Nesne modu: SubD nesnelerini bütün olarak taşı, kopyala, seç",
+    "Edit the cage of the selected SubD object":
+        "Seçili SubD nesnesinin kafesini düzenle",
     "Write the cage to the document now (it is also saved automatically every 20 s)":
         "Kafesi şimdi belgeye yaz (20 sn'de bir kendiliğinden de kaydedilir)",
     "Make a parametric B-rep solid from the SubD surface, ready for STEP export and PartDesign":
@@ -562,8 +569,6 @@ TR = {
         "Bir adım geri al (Object modu: bütün bir düzenleme)",
     "Redo the step you undid (object mode: one whole edit)":
         "Geri alınan adımı ileri al (Object modu: bütün bir düzenleme)",
-    "Switch between object mode and editing the cage":
-        "Object modu ile kafes düzenleme arasında geç",
     "Point selection mode":
         "Nokta seçim modu",
     "Edge selection mode":

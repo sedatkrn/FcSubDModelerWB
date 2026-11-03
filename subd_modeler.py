@@ -4008,7 +4008,7 @@ class SubDSession:
         self.dirty = False
         self.info = ""       # surukleme sirasinda gosterilen deger (delta / aci)
         self.cage = cage_from_obj(obj) if obj is not None else \
-            Cage.cube([_last_box[n] for n in self.BOX_SIZE])   # bos belge: Box olculerinde kutu
+            Cage.cube([_last_box[n] for n in self.BOX_SIZE])   # nesnesiz Object modu: gorunmeyen yer tutucu
         self.hidden = []     # duzenlerken gizlenen nesneler (SubD ve ondan uretilen katilar); kapatinca geri
         self._snapshot()
         if not object_mode:
@@ -4104,6 +4104,8 @@ class SubDSession:
         self.history_guard = _HistoryGuard(self)
         QtWidgets.QApplication.instance().installEventFilter(self.history_guard)
         self.geo_switch.whichChild = -1 if object_mode else 0
+        if object_mode and not any(is_subd(o) for o in App.getDocument(self.doc_name).Objects):
+            self.info = T("SubD Modeler is ready: Create > Box or Cylinder to start")   # bos acilis (issue #7)
         self.refresh()
         if not object_mode:
             self.view.viewIsometric()
@@ -9213,7 +9215,8 @@ TOOL_TIPS = {
     "Mirror>Mirror Z": "Mirror across the plane perpendicular to Z",
     "Undo": "Undo one step (object mode: one whole edit)",
     "Redo": "Redo the step you undid (object mode: one whole edit)",
-    "Object": "Switch between object mode and editing the cage",
+    "Object": "Object mode: move, copy and select whole SubD objects",
+    "Edit": "Edit the cage of the selected SubD object",
     "Point": "Point selection mode",
     "Edge": "Edge selection mode",
     "Polygon": "Polygon selection mode",
@@ -9249,7 +9252,11 @@ def _lw_button(text, key="", width=None):
         lb.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
         lay.addWidget(lb, 1 if t is text else 0)
     fm = b.fontMetrics()
-    _min_width(b, max(width or 0, fm.horizontalAdvance(text + key) + 24))       # yazi hicbir zaman kesilmesin
+    full = max(width or 0, fm.horizontalAdvance(text + key) + 24)                # yazi hicbir zaman kesilmesin
+    _min_width(b, full)
+    # alt cubuk sigmayinca kisayol yazisi gizlenir (_Overlay._fit_bar): (kisayol etiketi, tam / kisa genislik)
+    b.lw_key = (b.findChildren(QtWidgets.QLabel)[1], full, max(width or 0, fm.horizontalAdvance(text) + 20)) \
+        if key else None
     return b
 
 
@@ -9579,6 +9586,42 @@ class _ToolPanel(QtWidgets.QFrame):
 
 
 _align_icons = {}         # Align dugmelerinin simgeleri (yatay / dikey), bir kez cizilir
+_mode_icons = {}          # Point / Edge / Polygon dugmelerinin simgeleri, bir kez cizilir
+
+
+def _mode_icon(kind):
+    """Secim modu simgesi (Blender'daki gibi): tel kup; "point" bir kose, "edge" bir kenar, "face" on yuz sari."""
+    if kind in _mode_icons:
+        return _mode_icons[kind]
+    pm = QtGui.QPixmap(40, 40)                             # 2x cizilir: olcekli ekranda da keskin
+    pm.setDevicePixelRatio(2.0)
+    pm.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.Antialiasing)
+    P = QtCore.QPointF
+    front = [P(2.5, 7.5), P(12.5, 7.5), P(12.5, 17.5), P(2.5, 17.5)]
+    back = [P(q.x() + 5, q.y() - 5) for q in front]
+    hi = QtGui.QColor("#f5c518")
+    if kind == "face":
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QColor(245, 197, 24, 170))
+        p.drawPolygon(QtGui.QPolygonF(front))
+    p.setPen(QtGui.QPen(QtGui.QColor("#a8a8a8"), 1.0))
+    p.setBrush(QtCore.Qt.NoBrush)
+    for sq in (back, front):
+        p.drawPolygon(QtGui.QPolygonF(sq))
+    for a, b in zip(front, back):
+        p.drawLine(a, b)
+    if kind == "edge":
+        p.setPen(QtGui.QPen(hi, 2.4))
+        p.drawLine(front[0], front[1])
+    elif kind == "point":
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(hi)
+        p.drawEllipse(front[1], 2.6, 2.6)
+    p.end()
+    _mode_icons[kind] = QtGui.QIcon(pm)
+    return _mode_icons[kind]
 _last_tab = ["create"]   # son secilen sekme; modelleyici yeniden acilinca (or. dil degisince) ayni sekme
 
 TAB_CSS = """
@@ -9776,12 +9819,21 @@ class _Overlay(object):
         self.bar = QtWidgets.QFrame(self.vp)
         self.bar.setObjectName("lwBar")
         self.bar.setStyleSheet(OVERLAY_CSS)
-        row = QtWidgets.QHBoxLayout(self.bar)
-        row.setContentsMargins(6, 3, 6, 3)
-        row.setSpacing(3)
-        self.sel_label = QtWidgets.QLabel()
-        self.sel_label.setMinimumWidth(60)
-        row.addWidget(self.sel_label)
+        # iki grup: gecmis ve gorunum anahtarlari; sigmayinca ikinci grup alt satira gecer (_fit_bar)
+        self.bar_lay = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.LeftToRight, self.bar)
+        self.bar_lay.setContentsMargins(6, 3, 6, 3)
+        self.bar_lay.setSpacing(3)
+        groups = []
+        for stretch in (0, 1):
+            g = QtWidgets.QWidget()
+            g.setObjectName("lwGroup")
+            g.setStyleSheet("QWidget#lwGroup { background: transparent; }")   # tema QWidget zeminini boyamasin
+            row = QtWidgets.QHBoxLayout(g)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(3)
+            self.bar_lay.addWidget(g, stretch)
+            groups.append(row)
+        row = groups[0]
         self.history_buttons = []
         for name, key, redo in (("Undo", "^Z", False), ("Redo", "^Y", True)):
             b = _lw_button(T(name), key)
@@ -9789,22 +9841,47 @@ class _Overlay(object):
             b.clicked.connect(lambda checked=False, redo=redo: (s.step_history(redo), self.sync(), self.refocus()))
             row.addWidget(b)
             self.history_buttons.append((b, redo))
-        row.addSpacing(6)
+        self.bar_gap = QtWidgets.QSpacerItem(10, 0)        # gruplar arasi (yan yanayken)
+        self.bar_lay.insertItem(1, self.bar_gap)
 
-        def tog(text, key, fn, state):
-            b = _lw_button(text, key)
+        def tog(text, key, fn, state, b=None):
+            b = b or _lw_button(text, key)
             b.setToolTip(_tool_tip(text))
             b.setCheckable(True)
-            b.clicked.connect(lambda checked=False: (fn(), self.sync()))
+            b.clicked.connect(lambda checked=False: (fn(), self.sync(), self.refocus()))
             self.toggles[text] = (b, state)
             row.addWidget(b)
+            return b
 
-        tog("Object", "O", s.toggle_object_mode, lambda: s.mode == "object")
-        row.addSpacing(6)
-        tog("Point", "^G", lambda: s.set_mode("point"), lambda: s.mode == "point")
-        tog("Edge", "2", lambda: s.set_mode("edge"), lambda: s.mode == "edge")
-        tog("Polygon", "^H", lambda: s.set_mode("face"), lambda: s.mode == "face")
+        # sol ust (Blender gibi): Object / Edit ve secim modlari, yaninda secim sayisi; alt cubuk tek satira sigsin
+        self.modes = QtWidgets.QFrame(self.vp)
+        self.modes.setObjectName("lwBar")
+        self.modes.setStyleSheet(OVERLAY_CSS)
+        row = QtWidgets.QHBoxLayout(self.modes)
+        row.setContentsMargins(4, 3, 8, 3)
+        row.setSpacing(0)                                  # iki parcali dugmeler bitisik
+        tog("Object", "", lambda: s.mode == "object" or s.enter_object_mode(), lambda: s.mode == "object",
+            _lw_button(T("Object"))).setToolTip(_tool_tip("Object") + " (O)")
+        tog("Edit", "", lambda: s.mode != "object" or s.edit_object(), lambda: s.mode != "object",
+            _lw_button(T("Edit"))).setToolTip(_tool_tip("Edit") + " (O)")
+        row.addSpacing(8)
+        for text, key, mode, tip in (("Point", "^G", "point", "Ctrl+G"), ("Edge", "2", "edge", "2"),
+                                     ("Polygon", "^H", "face", "Ctrl+H")):
+            b = QtWidgets.QPushButton()
+            b.setFocusPolicy(QtCore.Qt.NoFocus)
+            b.setIcon(_mode_icon(mode))
+            b.setIconSize(QtCore.QSize(20, 20))
+            b.setFixedSize(28, 24)
+            _min_width(b, 28)
+            tog(text, key, lambda m=mode: s.set_mode(m), lambda m=mode: s.mode == m, b)
+            b.setToolTip("%s (%s)" % (_tool_tip(text), tip))   # Object modunda: secili nesneye o modda girer
         row.addSpacing(10)
+        self.sel_label = QtWidgets.QLabel()
+        self.sel_label.setMinimumWidth(52)
+        row.addWidget(self.sel_label)
+        self.modes.show()
+
+        row = groups[1]
         tog("Symmetry", "Y", s.toggle_sym, lambda: s.sym)
         tog("Subpatch", "Tab", s.toggle_smooth, lambda: s.smooth)
         tog("Ghost", "X", s.toggle_ghost, lambda: s.ghost)
@@ -9838,9 +9915,9 @@ class _Overlay(object):
             b.setToolTip(T(tip))
             b.clicked.connect(lambda checked=False, v=vertical: (s.align_points(v), self.sync()))
             row.addWidget(b)
-        cc = QtWidgets.QLabel("Catmull-Clark")
-        cc.setStyleSheet("padding-left: 10px;")
-        row.addWidget(cc)
+        self.cc_label = QtWidgets.QLabel("Catmull-Clark")
+        self.cc_label.setStyleSheet("padding-left: 10px;")
+        row.addWidget(self.cc_label)
         row.addSpacing(14)
         self.step_label = QtWidgets.QLabel()
         self.step_label.setMinimumWidth(
@@ -9890,11 +9967,50 @@ class _Overlay(object):
             self.s.gv.setFocus()
         _later(lambda: _quiet(back))
 
+    def _fit_bar(self, w):
+        """Alt cubuk gorunume sigmazsa (125 % olcekli 1920 px ekranda sigmiyordu, yazilar kesiliyordu; modlar
+        sol uste tasindi) sirayla: Catmull-Clark yazisi, dugmelerdeki kisayol yazilari (ipucunda kalir), Step
+        yazisi gizlenir; yine sigmazsa gorunum anahtarlari Undo / Redo'nun altindaki satira gecer."""
+        if getattr(self, "_bar_fit_w", None) == w:
+            return
+        self._bar_fit_w = w
+        buttons = [b for b in self.bar.findChildren(QtWidgets.QPushButton) if getattr(b, "lw_key", None)
+                   and b.lw_key[0].text() != "▴"]
+        lay = self.bar_lay
+
+        def apply(level):
+            self.cc_label.setHidden(level >= 1)
+            for b in buttons:
+                lab, full, short = b.lw_key
+                if lab.isHidden() != (level >= 2) or not hasattr(b, "lw_tip"):
+                    tip = getattr(b, "lw_tip", None)
+                    if tip is None:
+                        tip = b.lw_tip = b.toolTip()
+                    lab.setHidden(level >= 2)
+                    _min_width(b, full if level < 2 else short)
+                    key = lab.text()
+                    b.setToolTip(tip if level < 2 else ("%s (%s)" % (tip, key) if tip else key))
+            self.step_label.setHidden(level >= 3)
+            two = level >= 4
+            lay.setDirection(QtWidgets.QBoxLayout.TopToBottom if two else QtWidgets.QBoxLayout.LeftToRight)
+            self.bar_gap.changeSize(0 if two else 10, 0)
+            lay.invalidate()
+            lay.activate()
+            return lay.minimumSize().width()
+
+        for level in range(5):
+            if apply(level) <= w:
+                break
+
     def relayout(self):
         w, h = self.vp.width(), self.vp.height()
+        self._fit_bar(w)
         self.bar.setFixedWidth(w)
         self.bar.adjustSize()
         self.bar.move(0, h - self.bar.height())
+        self.modes.adjustSize()                            # Object / Edit ve secim modlari: sol ust kose
+        self.modes.move(8, 8)
+        self.modes.raise_()
         avail = self.scroll.viewport().height() - 8        # cerceve kenarlari
         self._flow_columns(avail if avail > 100 else 1 << 30)   # sekmesi arkada / henuz acilmamis panel: tek sutun
         bar = self.scroll.verticalScrollBar().sizeHint().width() if self.left.height() > avail > 92 else 0
@@ -10014,7 +10130,7 @@ class _Overlay(object):
         _quiet(d.remember)
         _quiet(lambda: d.parent().removeDockWidget(d))
         _quiet(d.deleteLater)
-        for w in (self.bar, self.panel, self.info_label):  # gorunumun cocuklari: gorunumle silinmis olabilir
+        for w in (self.bar, self.modes, self.panel, self.info_label):   # gorunumun cocuklari: silinmis olabilir
             _quiet(w.hide)
             _quiet(w.deleteLater)
 
@@ -10023,9 +10139,9 @@ _session = None
 
 
 def start(obj=None, object_mode=None):
-    """Modelleyiciyi acar. Tek SubD nesnesi secili (ya da verilmis) ise onun kafesini duzenler; birden fazla
-    secili ya da hic secili degilken belgede SubD nesneleri varsa Object modunda acar; hic yoksa yeni kutuyla
-    Edit modunda baslar."""
+    """Modelleyiciyi acar. Tek SubD nesnesi secili (ya da verilmis) ise onun kafesini duzenler; yoksa Object
+    modunda acar. Bos belgede de bos acar (LightWave gibi; eskiden kutuyla baslardi ve her seferinde silinmesi
+    gerekiyordu, issue #7): Create > Box / Cylinder yeni nesneyi kurar."""
     global _session
     if _session:
         _session.close()
@@ -10036,7 +10152,7 @@ def start(obj=None, object_mode=None):
         if obj is None:
             sel = [o for o in Gui.Selection.getSelection() if is_subd(o)]
             obj = sel[0] if len(sel) == 1 else None
-            object_mode = obj is None and any(is_subd(o) for o in App.ActiveDocument.Objects)
+            object_mode = obj is None
         else:
             object_mode = False
     if not object_mode and obj is not None:
