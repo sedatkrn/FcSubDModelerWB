@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.3 (2026-11-03)
+
+- **Add points** (Polygon): the selected edges are split into equal parts (*Count* in the panel). With nothing selected
+  the tool stays on: a click on an edge adds a point there, snapping to the middle (exact *Position* % in the panel).
+  Neighbouring polygons take the new points, and creased edges stay creased. (#3)
+- **Connect** (Ctrl+L, LightWave Split): adds an edge between two selected points of one polygon, or between the
+  middles of two selected edges of one polygon. The polygon is split in two. (#3)
+- **Subdivide** (Shift+D, LightWave Subdivide): the selected polygons are split into quads (n sides become n quads).
+  Neighbouring polygons take the edge middles, so the cage stays closed. (#6)
+- **From edge polygons follow their sketch**: when a Sketcher sketch (or other source edges) changes size or
+  position, a cage that is still just the flat polygon is rebuilt on the new curve. In an extruded or bevelled cage
+  the linked points and the points straight above them move with the sketch, and other points stay where they are.
+  Cancelling a sketch edit brings the cage back. Options > *Follow sketch* (or the object's *SketchLink* property)
+  turns the link off.
+- From edge: straight edges stay one polygon edge, and curves are sampled by *Arc Segments*.
+- The modeler **opens empty** in object mode, with no default box, and shows "SubD Modeler is ready". (#7)
+- **Object / Edit and Point / Edge / Polygon** buttons moved to the top-left corner of the view, as in Blender, so
+  the bottom bar fits in one row. On narrow views the bottom bar hides labels step by step instead of cutting them off.
+- Knife (loop) and Select loop now pass through polygons that were merged with Merge polygons. (#5)
+
 ## 0.3.2 (2026-11-02)
 
 - Matcap and environment reflection in the modeler: section planes now cut the surface too.
