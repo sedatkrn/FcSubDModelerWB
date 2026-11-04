@@ -93,11 +93,11 @@ TR = {
     "Cut": "Kes",
     "Paste": "Yapıştır",
     "Paste as object": "Yeni nesneye",
-    "Copy: select polygons first": "Kopyala: önce çokgen seçin",
-    "Copied %d polygons": "%d çokgen kopyalandı",
-    "Cut %d polygons": "%d çokgen kesildi",
-    "Pasted %d polygons (T: move)": "%d çokgen yapıştırıldı (T: taşı)",
-    "Pasted %d polygons as a new object": "%d çokgen yeni nesneye yapıştırıldı",
+    "Copy: select polygons, edges or points first": "Kopyala: önce çokgen, kenar ya da nokta seçin",
+    "Copied: %d polygons, %d edges, %d points": "Kopyalandı: %d çokgen, %d kenar, %d nokta",
+    "Cut: %d polygons, %d edges, %d points": "Kesildi: %d çokgen, %d kenar, %d nokta",
+    "Pasted: %d polygons, %d edges (T: move)": "Yapıştırıldı: %d çokgen, %d kenar (T: taşı)",
+    "Pasted as a new object: %d polygons, %d edges": "Yeni nesneye yapıştırıldı: %d çokgen, %d kenar",
     # --- object mode ---
     "Object": "Nesne",
     "Duplicate": "Çoğalt",
@@ -574,14 +574,14 @@ TR = {
         "Seçili komşu çokgenleri tek çokgende birleştir",
     "Delete the selected elements (object mode: the selected objects)":
         "Seçili elemanları sil (Object modu: seçili nesneleri)",
-    "Copy the selected polygons with their creases":
-        "Seçili çokgenleri keskinlikleriyle kopyala",
-    "Copy the selected polygons, then remove them":
-        "Seçili çokgenleri kopyala, sonra kaldır",
-    "Paste polygons in place into this cage":
-        "Çokgenleri bu kafese aynı yerine yapıştır",
-    "Paste the copied polygons as a new SubD object":
-        "Kopyalanan çokgenleri yeni SubD nesnesi olarak yapıştır",
+    "Copy the selected polygons with their creases; edges and points are copied as free edges / points":
+        "Seçili çokgenleri keskinlikleriyle kopyala; kenarlar ve noktalar serbest kenar / nokta olarak kopyalanır",
+    "Copy the selected polygons, edges or points, then remove them":
+        "Seçili çokgen, kenar ya da noktaları kopyala, sonra kaldır",
+    "Paste polygons, edges and points in place into this cage":
+        "Çokgen, kenar ve noktaları bu kafese aynı yerine yapıştır",
+    "Paste the copied polygons, edges and points as a new SubD object":
+        "Kopyalanan çokgen, kenar ve noktaları yeni SubD nesnesi olarak yapıştır",
     "Move gizmo: arrows along X / Y / Z, squares in a plane, cube in the screen plane":
         "Taşıma gizmosu: oklar X / Y / Z boyunca, kareler bir düzlemde, küp ekran düzleminde",
     "Rotate gizmo":

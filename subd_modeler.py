@@ -228,10 +228,14 @@ def _edge(a, b):
 
 
 class Cage:
-    def __init__(self, V=None, F=None, C=None):
+    def __init__(self, V=None, F=None, C=None, W=None):
         self.V = np.zeros((0, 3)) if V is None else V
         self.F = [] if F is None else F
         self.C = {} if C is None else C   # keskin kenarlar: frozenset((a, b)) -> keskinlik
+        # serbest kenarlar (yuzsuz, LightWave 2 noktali cokgen gibi): kopyalanan kenarlar, uzerine yuzey kurulur.
+        # Bir yuz ayni kenari kullanmaya baslarsa burada kalmasi zararsiz (kayitta ayiklanir: free_edges).
+        # Hicbir yuz / kenarda olmayan noktalar da kafeste kalabilir (serbest noktalar).
+        self.W = set() if W is None else W
         self.rails = []                   # Rail bridge kilavuzlari (rail_* fonksiyonlari; nokta indeksleriyle)
         self.links = []                   # Sketch baglari (link_update; nokta konumlariyla, From face > Edge)
 
@@ -311,13 +315,39 @@ class Cage:
         return Cage(np.array(V, float), F)
 
     def copy(self):
-        c = Cage(self.V.copy(), [list(f) for f in self.F], dict(self.C))
+        c = Cage(self.V.copy(), [list(f) for f in self.F], dict(self.C), set(self.W))
         c.rails = copy.deepcopy(self.rails)
         c.links = copy.deepcopy(self.links)
         return c
 
-    def edges(self):
+    def face_edges(self):
         return {_edge(f[i], f[(i + 1) % len(f)]) for f in self.F for i in range(len(f))}
+
+    def edges(self):
+        """Butun kenarlar: yuz kenarlari ve serbest kenarlar (cizim, secim, yakalama icin)."""
+        return self.face_edges() | self.W if self.W else self.face_edges()
+
+    def free_edges(self):
+        """Hicbir yuzun kullanmadigi serbest kenarlar."""
+        return self.W - self.face_edges() if self.W else set()
+
+    def loose_points(self):
+        """Hicbir yuz ya da serbest kenarda olmayan noktalar."""
+        used = {v for f in self.F for v in f} | {v for e in self.W for v in e}
+        return [v for v in range(len(self.V)) if v not in used]
+
+    def delete_parts(self, edges=(), points=(), faces=()):
+        """Kenar / nokta silme (Blender Delete Edges / Vertices gibi): verilen kenarlar (serbest olanlar kalkar,
+        yuz kenariysa o kenari kullanan yuzler de silinir), noktalar (onlari kullanan yuzler, serbest kenarlar
+        da) ve yuzler. Bosa dusen noktalar gider; onceden serbest olanlar kalir (silinenler haric)."""
+        edges, points = set(edges), set(points)
+        before = {v for f in self.F for v in f} | {v for e in self.W for v in e}
+        self.W = {e for e in self.W if e not in edges and not e & points}
+        dead = {fi for fi, f in enumerate(self.F) if fi in faces or points.intersection(f)
+                or any(_edge(f[i], f[(i + 1) % len(f)]) in edges for i in range(len(f)))}
+        self.F = [f for fi, f in enumerate(self.F) if fi not in dead]
+        after = {v for f in self.F for v in f}
+        self._compact([v for v in range(len(self.V)) if v not in points and (v in after or v not in before)])
 
     def edge_faces(self):
         ef = {}
@@ -373,25 +403,60 @@ class Cage:
             layers.update(L)
         return [top[v] for v in verts]
 
-    def extrude_edges(self, edges, segs=1, layers=None):
+    def extrude_edges(self, edges, segs=1, layers=None, wire_dir=None):
         """Acik (tek yuzlu) kenarlari yuzeyin devami gibi disari uzatir: her kenardan segs dortgen. Ic kenarlar
         atlanir (SubD'de yuzgec / manifold olmayan kenar olurdu). (sirali taban noktalari, birim disari yonleri)
-        ya da hic acik kenar yoksa None dondurur; layers extrude'daki gibi doldurulur."""
+        ya da hic acik kenar yoksa None dondurur; layers extrude'daki gibi doldurulur. Serbest kenarlar (yuzsuz)
+        da uzar: duzlemsel kapali zincir kendi duzleminin normalinde, digerleri ekranda zincire dik (wire_dir:
+        bakis yonu, yerel; normal ona dogru cevrilir)."""
         directed = self._open_directed(edges)
-        if not directed:
+        ef = self.edge_faces()
+        wires = [e for e in edges if e in self.W and e not in ef]
+        if not directed and not wires:
             return None
-        verts = sorted({v for a, b, _ in directed for v in (a, b)})
         out = self._outward(directed)
-        dirs = np.array([out[v] for v in verts])
+        wired = []                                         # serbest kenarlar zincir sirasiyla: (a, b, None)
+        for chain, closed in self.edge_chains(wires) or [(list(e), False) for e in wires]:
+            pairs = list(zip(chain, chain[1:])) + ([(chain[-1], chain[0])] if closed else [])
+            wired += [(a, b, None) for a, b in pairs]
+            for v, d in self._wire_dirs(chain, closed, wire_dir).items():
+                out[v] = d if v not in out else out[v] + d
+        verts = sorted({v for a, b, _ in directed + wired for v in (a, b)})
+        dirs = np.array([out[v] / max(np.linalg.norm(out[v]), 1e-12) for v in verts])
         L = self._layers(verts, segs)
-        for a, b, fi in directed:                          # yeni yuz b -> a sirasiyla: komsu yuzle ayni yonde
+        for a, b, fi in directed + wired:                  # yeni yuz b -> a sirasiyla: komsu yuzle ayni yonde
             self.F += [[L[b][k], L[a][k], L[a][k + 1], L[b][k + 1]] for k in range(segs)]
             e = _edge(a, b)
+            self.W.discard(e)                              # artik yuz kenari
             if e in self.C:                                # keskinlik yeni acik kenara gecer
                 self.C[_edge(L[a][-1], L[b][-1])] = self.C.pop(e)
         if layers is not None:
             layers.update(L)
         return verts, dirs
+
+    def _wire_dirs(self, chain, closed, view=None):
+        """Serbest kenar zincirinin uzama yonleri {nokta: birim yon}: kapali ve duzlemsel zincirde duzlem normali
+        (hepsi ayni yon, bakisa dogru); yoksa her noktada zincire ve bakisa dik yon (ekranda yana)."""
+        P = self.V[chain]
+        view = np.array([0.0, 0.0, -1.0]) if view is None else np.asarray(view, float)
+        if closed and len(chain) >= 3:
+            c = P.mean(0)
+            _, s, vt = np.linalg.svd(P - c)
+            if s[1] > 1e-9 and s[2] < 0.05 * s[1]:         # duzleme yakin halka
+                n = vt[2] * (-1.0 if vt[2].dot(view) > 0 else 1.0)   # bakan tarafa (bakis yonunun tersi)
+                return {v: n for v in chain}
+        out = {}
+        for i, v in enumerate(chain):
+            a = chain[i - 1] if i > 0 or closed else v
+            b = chain[(i + 1) % len(chain)] if i < len(chain) - 1 or closed else v
+            t = self.V[b] - self.V[a]
+            d = np.cross(t, view)
+            ln = np.linalg.norm(d)
+            if ln < 1e-12:                                 # zincir bakis yonunde: herhangi bir dik yon
+                d = np.cross(t, [1.0, 0, 0] if abs(t[0]) < 0.9 * np.linalg.norm(t) else [0, 1.0, 0])
+                ln = np.linalg.norm(d)
+            out[v] = d / max(ln, 1e-12)
+        return out
 
     def _open_directed(self, edges):
         """Acik (tek yuzlu) kenarlar, yuzdeki sirayla: [(a, b, yuz)] (yuzde a -> b). Ic kenarlar atlanir."""
@@ -1072,11 +1137,12 @@ class Cage:
         Vn = np.vstack([V, extra]) if extra else V
         self.V, self.F = Vn, out
         # kullanilmayan (bolunen) noktalari at, indeksleri sikistir
-        used = sorted({x for f in self.F for x in f})
+        used = sorted({x for f in self.F for x in f} | {x for e in self.W for x in e})
         remap = {x: i for i, x in enumerate(used)}
         self.V = self.V[used]
         self.F = [[remap[x] for x in f] for f in self.F]
-        alive = self.edges()
+        self.W = {_edge(*(remap[x] for x in e)) for e in self.W}
+        alive = self.face_edges()
         C = {}
         for e, sh in self.C.items():
             if e in edges or not all(x in remap for x in e):
@@ -1664,15 +1730,18 @@ class Cage:
         Nv = Nv[pts] / np.maximum(np.linalg.norm(Nv[pts], axis=1, keepdims=True), 1e-12)
         return L[pts], Nv
 
-    def subset(self, sel):
+    def subset(self, sel, wires=(), points=()):
         """Secili yuzlerden yeni (bagimsiz) kafes: kullanilan noktalar yeniden numaralanir, iki ucu da kalan
-        keskin kenarlar keskin kalir. Kopyala / yapistir icin."""
+        keskin kenarlar keskin kalir. wires: serbest kenar olarak alinacak kenarlar, points: serbest noktalar.
+        Kopyala / yapistir icin."""
         faces = [self.F[fi] for fi in sorted(sel)]
-        used = sorted({v for f in faces for v in f})
+        wires = {e for e in wires if len(e) == 2}
+        used = sorted({v for f in faces for v in f} | {v for e in wires for v in e} | set(points))
         remap = {v: i for i, v in enumerate(used)}
         F = [[remap[v] for v in f] for f in faces]
-        sub = Cage(self.V[used].copy() if used else np.zeros((0, 3)), F)
-        alive = sub.edges()
+        sub = Cage(self.V[used].copy() if used else np.zeros((0, 3)), F,
+                   W={_edge(*(remap[v] for v in e)) for e in wires})
+        alive = sub.face_edges()
         for e, s in self.C.items():
             if all(v in remap for v in e):
                 me = _edge(*(remap[v] for v in e))
@@ -1710,6 +1779,7 @@ class Cage:
         self.F += [[v + n for v in f] for f in other.F]
         for e, s in other.C.items():
             self.C[_edge(*(v + n for v in e))] = s
+        self.W |= {_edge(*(v + n for v in e)) for e in other.W}
         return list(range(nf, len(self.F)))
 
     def reduce_points(self, verts, degrees):
@@ -1899,15 +1969,21 @@ class Cage:
         return new
 
     def delete(self, sel):
+        before = {v for f in self.F for v in f}
         self.F = [f for i, f in enumerate(self.F) if i not in sel]
-        self._compact(sorted({v for f in self.F for v in f}))
+        after = {v for f in self.F for v in f}             # bosa dusenler gider, onceden serbest noktalar kalir
+        self._compact([v for v in range(len(self.V)) if v in after or v not in before])
 
     def _compact(self, used):
-        """Yalniz used (sirali) noktalar kalir; yuzler, keskin kenarlar ve kilavuzlar yeni numaralara gecer."""
+        """Yalniz used noktalar (ve serbest kenarlarin noktalari) kalir; yuzler, keskin kenarlar, serbest kenarlar
+        ve kilavuzlar yeni numaralara gecer."""
+        if self.W:
+            used = sorted(set(used) | {v for e in self.W for v in e})
         remap = {v: i for i, v in enumerate(used)}
         self.V = self.V[used] if used else np.zeros((0, 3))
         self.F = [[remap[v] for v in f] for f in self.F]
-        alive = self.edges()
+        self.W = {_edge(*(remap[v] for v in e)) for e in self.W}
+        alive = self.face_edges()
         self.C = {_edge(*(remap[v] for v in e)): s for e, s in self.C.items()
                   if all(v in remap for v in e) and _edge(*(remap[v] for v in e)) in alive}
         self.rails = [r for r in (_rail_remap(r, remap) for r in self.rails) if r is not None]
@@ -2673,6 +2749,13 @@ def cage_to_obj(cage, obj):
     edges = list(cage.C.items())
     obj.CageCreases = [int(v) for e, _ in edges for v in sorted(e)]
     obj.CageSharpness = [float(s) for _, s in edges]
+    wires = sorted(sorted(e) for e in cage.free_edges())
+    if wires or "CageWires" in obj.PropertiesList:
+        if "CageWires" not in obj.PropertiesList:
+            obj.addProperty("App::PropertyIntegerList", "CageWires", "SubD", "Free edges without faces: point index pairs")
+        flat = [int(v) for e in wires for v in e]
+        if list(obj.CageWires) != flat:
+            obj.CageWires = flat
     if cage.rails or "Rails" in obj.PropertiesList:
         if "Rails" not in obj.PropertiesList:
             obj.addProperty("App::PropertyString", "Rails", "SubD", "Rail bridge guide curves (JSON)")
@@ -2720,7 +2803,11 @@ def cage_from_obj(obj):
         pairs = obj.CageCreases
         for k, s in enumerate(obj.CageSharpness):
             C[_edge(pairs[2 * k], pairs[2 * k + 1])] = s
-    cage = Cage(V, F, C)
+    W = set()
+    if "CageWires" in obj.PropertiesList:
+        w = obj.CageWires
+        W = {_edge(w[2 * k], w[2 * k + 1]) for k in range(len(w) // 2) if w[2 * k] != w[2 * k + 1]}
+    cage = Cage(V, F, C, W)
     if "Rails" in obj.PropertiesList and obj.Rails:
         try:
             cage.rails = json.loads(obj.Rails)
@@ -3459,7 +3546,7 @@ def cage_key(obj):
     """Kafesin degisip degismedigini anlamak icin ozet (Placement haric)."""
     return (hash(tuple((p.x, p.y, p.z) for p in obj.CagePoints)), tuple(obj.CageFaces),
             tuple(getattr(obj, "CageCreases", ())), tuple(getattr(obj, "CageSharpness", ())), obj.Levels,
-            obj_rules(obj))
+            obj_rules(obj), tuple(getattr(obj, "CageWires", ())))
 
 
 def is_subd(obj):
@@ -3489,6 +3576,11 @@ class SubDObject:
         if cage.F:
             m = subd_mesh(cage, max(1, min(obj.Levels, 5)), obj_rules(obj))
             m.Placement = obj.Placement                    # yeni mesh atanirken nesnenin Placement'i sifirlanmasin
+            obj.Mesh = m
+            self._key = key
+        elif obj.Mesh.CountPoints:                         # yalniz serbest kenar / nokta: eski yuzey kalmasin
+            m = Mesh.Mesh()
+            m.Placement = obj.Placement
             obj.Mesh = m
             self._key = key
 
@@ -4422,7 +4514,7 @@ class SubDSession:
         """Kafesi nesneye yaz, nesneyi goster, Object moduna gec (nesne secili kalir)."""
         if self.mode == "object" or self.drag or self.grab:
             return
-        if self.cage.F:
+        if len(self.cage.V):                               # yuzsuz (yalniz kenar / nokta) kafes de yazilir
             self.save(commit=True)
         else:
             self._drop_empty()
@@ -6296,7 +6388,7 @@ class SubDSession:
         c0, lv0, r0, _ = self.edit_start
         c = self.cage
         return (lv0 == self.levels and r0 == self.rules and c0.F == c.F and c0.C == c.C
-                and c0.V.shape == c.V.shape and np.array_equal(c0.V, c.V))
+                and c0.free_edges() == c.free_edges() and c0.V.shape == c.V.shape and np.array_equal(c0.V, c.V))
 
     def doc_undone(self):
         """FreeCAD'in Undo / Redo'su (Edit menusu, arac cubugu, Object modunda Ctrl+Z) belgeyi degistirdi.
@@ -6331,7 +6423,7 @@ class SubDSession:
         self.refresh()
 
     def _autosave(self):
-        if self.mode != "object" and self.dirty and self.drag is None and self.grab is None and self.cage.F:
+        if self.mode != "object" and self.dirty and self.drag is None and self.grab is None and len(self.cage.V):
             self.save(full=False)
 
     def do_undo(self, record=True):
@@ -6735,7 +6827,7 @@ class SubDSession:
                 alive = cage.edges()
                 edges |= {me for me in (frozenset(M.get(v) for v in e) for e in self.sel_e)
                           if None not in me and me in alive}
-            res = cage.extrude_edges(edges, segs, layers)
+            res = cage.extrude_edges(edges, segs, layers, self.view_dir())
             if res is None:
                 return None
             verts, dirs = res
@@ -7188,7 +7280,7 @@ class SubDSession:
     def line_snap_data(self, cage):
         """Snap aciksa knife cizgisinin yakalayacagi noktalar: kafes noktalari, kenar ortalari, kenarlar (ekran
         konumlariyla); kapaliysa None. Duzlem bakis yonunu icerdiginden arkada kalan noktalar da gecerli hedef."""
-        if not self.snap or not len(cage.V) or not cage.F:
+        if not self.snap or not len(cage.V) or not (cage.F or cage.W):
             return None
         E = np.array([sorted(e) for e in cage.edges()])
         return dict(V=cage.V.copy(), E=E, S=self.project(cage.V), M=self.project(cage.V[E].mean(1)))
@@ -7857,10 +7949,26 @@ class SubDSession:
         self.slide_set(g["items"], min(max(t, 0.0), g["maxt"]))
 
     def delete(self):
+        """Del: yuz modunda secili cokgenler; kenar modunda secili kenarlar (yuz kenariysa o yuzler de), nokta
+        modunda secili noktalar (onlari kullanan cokgen ve kenarlarla birlikte)."""
+        if self.drag or self.grab:
+            return
         if self.sel and self.mode == "face":
             self.drop_tool()
             self.push()
             self.cage.delete(self.mirror_faces(self.sel, self.mirror_map()) if self.sym else self.sel)
+            self.clear_selection()
+            self.refresh()
+        elif self.sel_e and self.mode == "edge" or self.sel_v and self.mode == "point":
+            self.drop_tool()
+            self.push()
+            edges, points = set(self.sel_e), set(self.sel_v)
+            if self.sym:
+                M = self.mirror_map()
+                points |= {M[v] for v in points if M.get(v) is not None}
+                edges |= {me for me in (frozenset(M.get(v) for v in e) for e in edges)
+                          if None not in me and len(me) == 2}
+            self.cage.delete_parts(edges if self.mode == "edge" else (), points if self.mode == "point" else ())
             self.clear_selection()
             self.refresh()
 
@@ -7876,31 +7984,50 @@ class SubDSession:
         return {fi for fi, f in enumerate(self.cage.F) if verts.issuperset(f)}
 
     def copy_faces(self, cut=False):
-        """Ctrl+C / Ctrl+X: secili cokgenleri (keskin kenarlariyla) panoya alir; cut: sonra siler."""
+        """Ctrl+C / Ctrl+X: secili cokgenleri (keskin kenarlariyla) panoya alir; cut: sonra siler. Kenar / nokta
+        modunda butun noktalari secili cokgenler cokgen, geri kalan secili kenarlar (nokta modunda iki ucu secili
+        kenarlar) serbest kenar, hicbirine girmeyen secili noktalar serbest nokta olarak alinir."""
         global _clipboard
         if self.mode == "object" or self.drag or self.grab:
             return
+        M = self.mirror_map() if self.sym else {}
         sel = self.selected_faces()
         if self.sym:
-            sel = self.mirror_faces(sel, self.mirror_map())
-        if not sel:
-            self.info = T("Copy: select polygons first")
+            sel = self.mirror_faces(sel, M)
+        fe = {_edge(f[i], f[(i + 1) % len(f)]) for f in (self.cage.F[fi] for fi in sel) for i in range(len(f))}
+        wires, points = set(), set()
+        if self.mode == "edge":
+            wires = set(self.sel_e)
+        elif self.mode == "point":
+            pts = set(self.sel_v)
+            if self.sym:
+                pts |= {M[v] for v in pts if M.get(v) is not None}
+            wires = {e for e in self.cage.edges() if e <= pts}
+            points = pts
+        if self.sym and self.mode == "edge":
+            wires |= {me for me in (frozenset(M.get(v) for v in e) for e in wires) if None not in me and len(me) == 2}
+        wires -= fe
+        points -= {v for fi in sel for v in self.cage.F[fi]} | {v for e in wires for v in e}
+        if not sel and not wires and not points:
+            self.info = T("Copy: select polygons, edges or points first")
             self.refresh()
             return
-        sub = self.cage.subset(sel)
+        sub = self.cage.subset(sel, wires, points)
         sub.V = self.l2w(sub.V)
         _clipboard = sub
-        self.info = (T("Cut %d polygons") if cut else T("Copied %d polygons")) % len(sub.F)
+        self.info = (T("Cut: %d polygons, %d edges, %d points") if cut else
+                     T("Copied: %d polygons, %d edges, %d points")) % (len(sub.F), len(sub.W), len(points))
         if cut:
             self.push()
-            self.cage.delete(sel)
+            free = wires & self.cage.free_edges()          # kopyalanan yuz kenarlari keserken yerinde kalir
+            self.cage.delete_parts(free, points, sel)
             self.clear_selection()
         self.refresh()
 
     def paste_faces(self):
         """Ctrl+V: panodaki cokgenleri bu kafese ayri parca olarak ekler (kopyalandigi yerde) ve secer;
         T / gizmo ile hemen tasinabilir. Object modunda yeni bir SubD nesnesi olur."""
-        if _clipboard is None or not _clipboard.F or self.drag or self.grab:
+        if _clipboard is None or not len(_clipboard.V) or self.drag or self.grab:
             return
         if self.mode == "object":
             self.object_paste()
@@ -7908,22 +8035,27 @@ class SubDSession:
         self.push()
         c = _clipboard.copy()
         c.V = self.w2l(c.V)
+        n0 = len(self.cage.V)
         new = self.cage.append(c)
+        self._select_new(new, set(range(n0, len(self.cage.V))))
+        self.last_op = None
+        self.info = T("Pasted: %d polygons, %d edges (T: move)") % (len(new), len(c.W))
+        self.refresh()
+
+    def _select_new(self, faces, verts):
+        """Yapistirilan parcayi o anki modda sec (kenar modunda serbest kenarlar da, nokta modunda serbest
+        noktalar da)."""
         self.sel, self.sel_v, self.sel_e = set(), set(), set()
         if self.mode == "face":
-            self.sel = set(new)
+            self.sel = set(faces)
         elif self.mode == "point":
-            self.sel_v = {v for fi in new for v in self.cage.F[fi]}
+            self.sel_v = set(verts)
         else:
-            self.sel_e = {_edge(f[i], f[(i + 1) % len(f)]) for f in (self.cage.F[fi] for fi in new)
-                          for i in range(len(f))}
-        self.last_op = None
-        self.info = T("Pasted %d polygons (T: move)") % len(new)
-        self.refresh()
+            self.sel_e = {e for e in self.cage.edges() if e <= verts}
 
     def paste_as_object(self):
         """Panodaki cokgenlerden yeni bir SubD nesnesi (or. sisenin agzindan kapak) ve hemen kafesine gir."""
-        if _clipboard is None or not _clipboard.F or self.drag or self.grab:
+        if _clipboard is None or not len(_clipboard.V) or self.drag or self.grab:
             return
         if self.mode != "object":
             self.enter_object_mode()
@@ -8727,10 +8859,11 @@ class SubDSession:
         set_surface(o, self.levels, self.rules)
         o.recompute()
         doc.commitTransaction()
-        self.edit_mode = "face"
+        c = _clipboard                                     # yuzsuz parca kenar / nokta modunda acilir
+        self.edit_mode = "face" if c.F else ("edge" if c.W else "point")
         self.edit_object(o)
-        self.sel = set(range(len(self.cage.F)))
-        self.info = T("Pasted %d polygons as a new object") % len(self.cage.F)
+        self._select_new(range(len(self.cage.F)), set(range(len(self.cage.V))))
+        self.info = T("Pasted as a new object: %d polygons, %d edges") % (len(self.cage.F), len(self.cage.W))
         self.refresh()
 
     # --- tasima (grab) ---
@@ -9394,7 +9527,7 @@ class SubDSession:
         _quiet(self.autosave.stop)
         if not doc_gone and self.mode != "object":         # Object modunda yazilacak kafes yok
             try:
-                if self.cage.F:
+                if len(self.cage.V):
                     self.save(commit=True)
                 else:
                     self._drop_empty()
@@ -9545,7 +9678,7 @@ class _DocWatcher(object):
     def slotStartSaveDocument(self, doc, filename):
         # Ctrl+S: kafesin son hali dosyaya girsin (yoksa en son otomatik kayit / F ile yazilan hal kaydedilirdi)
         s = _session
-        if (s is not None and s.doc_name == doc.Name and s.mode != "object" and s.cage.F
+        if (s is not None and s.doc_name == doc.Name and s.mode != "object" and len(s.cage.V)
                 and s.drag is None and s.grab is None and (s.dirty or s.obj is None)):
             try:
                 s.save(full=False)
@@ -9829,10 +9962,10 @@ TOOL_TIPS = {
     "Circle on face": "Like Hole, but the circle stays filled and selected, ready for Extrude or Bevel",
     "Merge polygons": "Merge the selected adjacent polygons into one",
     "Delete": "Delete the selected elements (object mode: the selected objects)",
-    "Copy": "Copy the selected polygons with their creases",
-    "Cut": "Copy the selected polygons, then remove them",
-    "Paste": "Paste polygons in place into this cage",
-    "Paste as object": "Paste the copied polygons as a new SubD object",
+    "Copy": "Copy the selected polygons with their creases; edges and points are copied as free edges / points",
+    "Cut": "Copy the selected polygons, edges or points, then remove them",
+    "Paste": "Paste polygons, edges and points in place into this cage",
+    "Paste as object": "Paste the copied polygons, edges and points as a new SubD object",
     "Move": "Move gizmo: arrows along X / Y / Z, squares in a plane, cube in the screen plane",
     "Rotate": "Rotate gizmo",
     "Stretch / Size": "Stretch the selection along an axis or size it uniformly",
