@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-07)
 
 - **Fixed: switching to another workbench left the SubD tools on screen.** The *SubD tools* panel, the bars in the 3D
   view and the mouse / key / Undo capture stayed active in the other workbench and got in its way. Now the modeler

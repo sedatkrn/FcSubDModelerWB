@@ -9,7 +9,7 @@ You model a low-poly control cage with polygon tools (extrude, bevel, knife, loo
 Catmull-Clark surface live. Everything has exact numeric input, so it stays a CAD tool: after every operation a
 small panel in the viewport shows its values — type a number, press Enter, and the operation is redone with it.
 
-> **Status:** early version (0.3.3, see the [changelog](CHANGELOG.md)). It works and is fun to use, but expect
+> **Status:** early version (0.4.0, see the [changelog](CHANGELOG.md)). It works and is fun to use, but expect
 > rough edges. Feedback and bug reports are very welcome.
 
 ## Is the result a mesh or a B-rep?
