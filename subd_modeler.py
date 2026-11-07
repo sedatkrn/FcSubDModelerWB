@@ -238,6 +238,7 @@ class Cage:
         self.W = set() if W is None else W
         self.rails = []                   # Rail bridge kilavuzlari (rail_* fonksiyonlari; nokta indeksleriyle)
         self.links = []                   # Sketch baglari (link_update; nokta konumlariyla, From face > Edge)
+        self.dims = []                    # Distance olculeri (kalici; _dim_* ve DIM_KEEP; nokta indeksleriyle)
 
     @staticmethod
     def cube(size=20.0):
@@ -318,6 +319,7 @@ class Cage:
         c = Cage(self.V.copy(), [list(f) for f in self.F], dict(self.C), set(self.W))
         c.rails = copy.deepcopy(self.rails)
         c.links = copy.deepcopy(self.links)
+        c.dims = copy.deepcopy(self.dims)
         return c
 
     def face_edges(self):
@@ -1142,6 +1144,7 @@ class Cage:
         self.V = self.V[used]
         self.F = [[remap[x] for x in f] for f in self.F]
         self.W = {_edge(*(remap[x] for x in e)) for e in self.W}
+        self.dims = [d for d in (_dim_remap(d, remap) for d in self.dims) if d is not None]
         alive = self.face_edges()
         C = {}
         for e, sh in self.C.items():
@@ -1987,6 +1990,7 @@ class Cage:
         self.C = {_edge(*(remap[v] for v in e)): s for e, s in self.C.items()
                   if all(v in remap for v in e) and _edge(*(remap[v] for v in e)) in alive}
         self.rails = [r for r in (_rail_remap(r, remap) for r in self.rails) if r is not None]
+        self.dims = [d for d in (_dim_remap(d, remap) for d in self.dims) if d is not None]
 
 
 # ---------- Rail bridge (kilavuzlu kopru) ----------
@@ -2770,6 +2774,13 @@ def cage_to_obj(cage, obj):
         txt = json.dumps(cage.rails) if cage.rails else ""
         if obj.Rails != txt:
             obj.Rails = txt
+    if cage.dims or "Dimensions" in obj.PropertiesList:
+        if "Dimensions" not in obj.PropertiesList:
+            obj.addProperty("App::PropertyString", "Dimensions", "SubD", "Distance measurements (JSON)")
+            obj.setEditorMode("Dimensions", 2)
+        txt = json.dumps(cage.dims) if cage.dims else ""
+        if obj.Dimensions != txt:
+            obj.Dimensions = txt
     if cage.links or "SketchLinks" in obj.PropertiesList:
         _link_props(obj)
         txt = json.dumps(cage.links) if cage.links else ""
@@ -2820,6 +2831,11 @@ def cage_from_obj(obj):
             cage.rails = json.loads(obj.Rails)
         except ValueError:
             cage.rails = []
+    if "Dimensions" in obj.PropertiesList and obj.Dimensions:
+        try:
+            cage.dims = json.loads(obj.Dimensions)
+        except ValueError:
+            cage.dims = []
     if "SketchLinks" in obj.PropertiesList and obj.SketchLinks:
         try:
             cage.links = json.loads(obj.SketchLinks)
@@ -3713,12 +3729,13 @@ def _twist_weight(t, mode):
 # subd_modeler.set_user_key("twist", "Shift+T")   (bos metin atamayi kaldirir). Atama FreeCAD parametresinde
 # (Key_twist / Key_array) saklanir ve acik modelleyicide hemen gecerlidir; dugme yazisi sonraki acilista gorunur.
 # Atanan tus, ayni tusu kullanan yerlesik kisayolun onune gecer.
-USER_KEYS = ("array", "twist")
+USER_KEYS = ("array", "twist", "dim")
+USER_KEY_DEFAULT = {"dim": "U"}       # Distance: U (set_user_key("dim", "") ile kaldirilir, baska tus atanabilir)
 
 
 def user_key(name):
     """name komutuna atanmis tus (tasinabilir metin, orn. "Shift+T"); atanmamissa ""."""
-    return _param().GetString("Key_" + name, "")
+    return _param().GetString("Key_" + name, USER_KEY_DEFAULT.get(name, ""))
 
 
 def set_user_key(name, seq=""):
@@ -3751,6 +3768,50 @@ def _active_wb():
     try:
         return Gui.activeWorkbench().name()
     except Exception:
+        return None
+
+
+# ---------- Distance (olcum): iki nokta arasi mesafe ----------
+# Kalici olculer kafesle saklanir (Cage.dims, belgede Dimensions ozelligi). Kayit: dict(a=uc, b=uc); uc (anchor) turleri:
+#   ["v", i] kafes noktasi | ["e", i, j, t] kenar uzerinde (t: i'den j'ye oran) | ["f", [i, j, ...]] cokgen merkezi
+#   ["w", x, y, z] dunya noktasi (baska nesne, sabit) | ["s", x, y, z] yuzey noktasi (yalniz gecici olcu)
+DIM_KEEP = ("v", "e", "f", "w")
+DIM_TOL = 0.1       # hedefli olcunun varsayilan toleransi (mm)
+# Kayda eklenebilen alanlar: name (ad), hide (ekranda gizli), target (hedef mm), tol (tolerans mm)
+
+
+def _dim_remap(d, remap):
+    """Cage._compact sonrasi nokta indekslerini yeni numaralara cevir; noktasi silinen olcu kopar (None)."""
+    try:
+        out = []
+        for a in (d["a"], d["b"]):
+            k = a[0]
+            if k == "v":
+                out.append(["v", remap[a[1]]])
+            elif k == "e":
+                out.append(["e", remap[a[1]], remap[a[2]], a[3]])
+            elif k == "f":
+                out.append(["f", [remap[v] for v in a[1]]])
+            else:
+                out.append(list(a))
+    except KeyError:
+        return None
+    d["a"], d["b"] = out
+    return d
+
+
+def _dim_point(a, V, to_world):
+    """Olcu ucunun dunya noktasi (numpy 3) ya da None (nokta artik yok). V: kafes noktalari (yerel)."""
+    k = a[0]
+    try:
+        if k == "v":
+            return to_world(V[a[1]])
+        if k == "e":
+            return to_world(V[a[1]] + a[3] * (V[a[2]] - V[a[1]]))
+        if k == "f":
+            return to_world(V[list(a[1])].mean(0))
+        return np.array(a[1:4], float)
+    except (IndexError, KeyError, ValueError):
         return None
 
 
@@ -4489,6 +4550,21 @@ class SubDSession:
         self.box = None      # bos alana basildi: surukleme kutu secimi olur
         self.rubber = None   # secim kutusu cizimi (QRubberBand)
         self.line_overlay = None  # knife cizgisi cizimi
+        self.dim_p0 = None        # Distance: ilk nokta (hedef); ikinci tiklamada olcu olur
+        self.dim_tmp = None       # gecici olcu (dict a, b)
+        self.dim_hot = None       # imlecin altindaki kalici olcu (Distance acikken tiklayinca silinir)
+        self.dim_last = None      # panelde gosterilen son olcunun iki dunya noktasi
+        self.dim_live_q = None    # ilk nokta varken canli ikinci uc (dunya)
+        self.dim_ext = None       # baska nesnelerin yakalanacak noktalari (arac acilinca toplanir)
+        self.dim_root = self.dim_group = None   # olculerin sahne dugumu (_dim_scene)
+        self.dim_list = None      # Distances liste penceresi (_DimList)
+        self.dim_list_was_open = False
+        self.dim_sel = None       # listede secili olcu (kafes sirasi)
+        self.dim_hits = []        # kalici olculerin x dugmeleri (tiklayinca silinir)
+        self._dim_imgs = {}       # olcu yazisi goruntuleri onbellegi
+        self.dim_sig = None
+        self._dim_cd = None
+        self._smooth = None       # son SubPatch yuzeyi (noktalar, dortgenler): Distance yuzey yakalamasi
         self._line_cursor = None  # knife cizgisi yakalarken: gorunumun onceki imleci
         self.overlay = None
         self.suspended = False   # baska bir calisma tezgahinda: arac paneli / cubuklar / yakalama kapali (bkz. suspend)
@@ -4515,6 +4591,9 @@ class SubDSession:
         self.wb_timer = QtCore.QTimer()   # baska calisma tezgahina gecildi mi (bkz. suspend)
         self.wb_timer.timeout.connect(self._wb_tick)
         self.wb_timer.start(300)
+        self.dim_timer = QtCore.QTimer()  # gorunum donunce olculer ekranda yerinde kalsin
+        self.dim_timer.timeout.connect(self._dim_tick)
+        self.dim_timer.start(150)
         # Klavye Qt duzeyinde yakalanir: Coin'e giden olaylarin bazilarini (Tab, A, E...)
         # FreeCAD tuketiyor, Ctrl+Z gibi tuslar da FreeCAD kisayollarina gidiyor.
         gv = self.gv = _graphics_view(self.view)
@@ -4599,6 +4678,7 @@ class SubDSession:
             self._drop_empty()
         self._show_edited()
         self.drop_tool()
+        self.dim_sel = None
         self.edit_mode = self.mode
         self.mode = "object"
         self.geo_switch.whichChild = -1
@@ -4636,6 +4716,8 @@ class SubDSession:
         self._hide_edited()
         self.mode = self.edit_mode
         self.geo_switch.whichChild = 0
+        self.dim_sel = None
+        self._dim_end()
         self.refresh()
 
     def toggle_object_mode(self):
@@ -5579,6 +5661,7 @@ class SubDSession:
             if not (self.drag and fast):               # surukleme sirasinda gizmo nesneyle birlikte tasinir
                 c = self.objects_center()
                 self.gizmo.place(App.Vector(*c) if c is not None else None)
+            self._dim_tick()
             if self.overlay is not None:
                 self.overlay.sync()
             self.status.setText(T("Object mode: %d selected") % len(self.selected_objects()))
@@ -5604,6 +5687,7 @@ class SubDSession:
             for _ in range(min(lv, 2) if fast else lv):
                 S, Q, cr = catmull_clark(S, Q, cr, self.rules)
             _set_coords(self.s_coord, S)
+            self._smooth = (S, Q)
             _set_index(self.s_faces, np.concatenate([Q, -np.ones((len(Q), 1), int)], 1).ravel().tolist())
             Nv = surface_normals(S, Q, cr)
             self.s_normal.vector.setValues(0, Nv.size // 3, Nv.reshape(-1, 3).tolist())
@@ -5621,6 +5705,7 @@ class SubDSession:
         self.gizmo.place(App.Vector(*self.l2w(V[verts].mean(0))) if verts else None)
         self._rail_draw()
         self._update_measure(fast)
+        self._dim_tick()
         if self.overlay is not None:
             self.overlay.sync()
         count = {"point": len(self.sel_v), "edge": len(self.sel_e), "face": len(self.sel)}[self.mode]
@@ -5930,6 +6015,8 @@ class SubDSession:
 
     def panel_spec(self):
         """Viewport'taki arac panelinin icerigi: (baslik, [(ad, deger, birim, ondalik, geri cagri)], duzenlenebilir)."""
+        if self.armed == "dim":
+            return self._dim_panel()
         if self.mode == "object":
             return self.object_panel_spec()
         if self.rail is not None:
@@ -7566,6 +7653,9 @@ class SubDSession:
 
     def _line_hover(self):
         """Knife (line) acik, cizgi cekilmiyor: imlecin altindaki hedefi goster."""
+        if self.armed == "dim":
+            self._dim_hover()
+            return
         self._pending = False
         on = self.armed in ("line", "mline", "array") and self.box is None and self.mode != "object"
         self._line_mark(self.line_snap(self.mouse, self.line_snap_data(self._line_cage())) if on else None)
@@ -7599,6 +7689,8 @@ class SubDSession:
     def drop_tool(self):
         self.rail = None                                   # baska arac basladi: kilavuz duzenleme biter
         if self.armed:
+            if self.armed == "dim":
+                self._dim_end()
             self.armed = None
             self.info = ""
             self.magnet_size = None
@@ -8578,6 +8670,642 @@ class SubDSession:
         if self.drag is not None or self.grab or self.box is not None or name not in USER_KEYS:
             return
         getattr(self, name)()
+
+    # --- Distance (olcum): iki nokta arasi mesafe ---
+    # Yakalama (Q'dan bagimsiz, hep acik): kafes noktasi, kenar ortasi, cokgen merkezi, kenar; baska nesnelerin kose /
+    # kenarlari; yoksa yuzey noktasi (yalniz gecici olcu). Keep acikken olcu kafese baglanir (Cage.dims): noktalar
+    # tasinince / dondurulunce olcu canli guncellenir, geri alma ve belgeye kayit kendiliginden olur, uzerine
+    # tiklayinca silinir. Keep kapaliyken ve Object modunda olcu gecicidir: sonraki olcuye ya da aractan cikinca kalkar.
+    DIM_PICK = 12.0
+
+    def dim_keep(self):
+        return _param().GetBool("DimKeep", False)
+
+    def dim_set_keep(self, on):
+        _param().SetBool("DimKeep", bool(on))
+        self.refresh()
+
+    def dim(self):
+        """Distance aracini ac / kapat (Edit ve Object modunda)."""
+        if self.drag or self.grab or self.box is not None:
+            return
+        if self.armed == "dim":
+            self.drop_tool()
+            self.refresh()
+            return
+        self.drop_tool()
+        self.armed = "dim"
+        self._dim_end()
+        self.info = T("Distance: click two points (Esc / right click: off)")
+        self.refresh()
+
+    def _dim_end(self):
+        self.dim_p0 = self.dim_tmp = self.dim_ext = self.dim_live_q = self.dim_hot = None
+        self.dim_sig = None
+        self._dim_cd = None
+        _quiet(self._dim_tick)
+
+    def dim_escape(self):
+        """Esc / sag tik: bekleyen ilk nokta varsa vazgec, yoksa araci kapat."""
+        if self.dim_p0 is not None:
+            self.dim_p0 = self.dim_live_q = None
+            self._line_hide()
+            self.info = T("Distance: click two points (Esc / right click: off)")
+        else:
+            self.drop_tool()
+        self._dim_tick()
+        self.refresh()
+
+    def _cam_sig(self):
+        cam = self.view.getCameraNode()
+        try:
+            h = cam.height.getValue()
+        except AttributeError:
+            h = cam.heightAngle.getValue()
+        return (tuple(cam.position.getValue().getValue()), tuple(self.view.getCameraOrientation().Q), h,
+                tuple(self.view.getSize()))
+
+    def _proj_np(self, P):
+        """Dunya noktalari -> ekran konumu (Coin olay duzeni: sol alt kokenli aygit pikseli), tek seferde."""
+        P = np.asarray(P, float).reshape(-1, 3)
+        vv, W, H = _vv(self.view)
+        M = np.array(vv.getMatrix().getValue()).reshape(4, 4)
+        h = np.c_[P, np.ones(len(P))] @ M
+        h = h[:, :3] / h[:, 3:4]
+        return np.c_[(h[:, 0] + 1) / 2 * W, (h[:, 1] + 1) / 2 * H]
+
+    def _dim_world(self, a):
+        if a[0] in ("v", "e", "f") and self.mode == "object":
+            return None                                    # Object modunda kafes yok: gecici olcu dunya noktalariyla
+        return _dim_point(a, self.cage.V, lambda p: self.l2w(np.asarray(p)[None])[0])
+
+    def _dim_text(self, P, Q):
+        d = np.asarray(Q) - np.asarray(P)
+        return T("Distance %.3f mm   dX %.3f   dY %.3f   dZ %.3f") % (float(np.linalg.norm(d)), d[0], d[1], d[2])
+
+    # yakalama hedefleri
+
+    def _dim_cage_data(self):
+        c = self.cage
+        key = (self._cam_sig(), len(c.V), len(c.F), hash(c.V.tobytes()))
+        d = self._dim_cd
+        if d is not None and d["key"] == key:
+            return d
+        V = c.V
+        E = np.array([sorted(e) for e in c.edges()], int).reshape(-1, 2)
+        Fc = np.array([V[f].mean(0) for f in c.F]).reshape(-1, 3)
+        none = np.zeros((0, 2))
+        self._dim_cd = d = dict(key=key, E=E, S=self._proj_np(self.l2w(V)),
+                                M=self._proj_np(self.l2w(V[E].mean(1))) if len(E) else none,
+                                C=self._proj_np(self.l2w(Fc)) if len(Fc) else none)
+        return d
+
+    def _dim_cage_snap(self, p):
+        c = self.cage
+        if not len(c.V):
+            return None
+        d = self._dim_cage_data()
+        V, E, S = c.V, d["E"], d["S"]
+        R = self.DIM_PICK
+        ds = np.linalg.norm(S - p, axis=1)
+        i = int(np.argmin(ds))
+        dm = np.linalg.norm(d["M"] - p, axis=1) if len(E) else np.array([1e9])
+        j = int(np.argmin(dm))
+        if min(ds[i], dm[j]) < R:                          # nokta ve kenar ortasi, yakin olan
+            if ds[i] <= dm[j]:
+                return dict(s=tuple(S[i]), w=self.l2w(V[i][None])[0], kind="point", a=["v", i])
+            return dict(s=tuple(d["M"][j]), w=self.l2w(V[E[j]].mean(0)[None])[0], kind="mid",
+                        a=["e", int(E[j, 0]), int(E[j, 1]), 0.5])
+        if len(d["C"]):
+            dc = np.linalg.norm(d["C"] - p, axis=1)
+            k = int(np.argmin(dc))
+            if dc[k] < R:
+                f = [int(x) for x in c.F[k]]
+                return dict(s=tuple(d["C"][k]), w=self.l2w(V[f].mean(0)[None])[0], kind="face", a=["f", f])
+        if len(E):
+            a, b = S[E[:, 0]], S[E[:, 1]]
+            ab = b - a
+            t = np.clip(((p - a) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-12), 0, 1)
+            dd = np.linalg.norm(a + ab * t[:, None] - p, axis=1)
+            k = int(np.argmin(dd))
+            if dd[k] < 8:
+                i0, i1 = int(E[k, 0]), int(E[k, 1])
+                w = self.l2w((V[i0] + t[k] * (V[i1] - V[i0]))[None])[0]
+                return dict(s=tuple(a[k] + t[k] * ab[k]), w=w, kind="edge", a=["e", i0, i1, float(t[k])])
+        return None
+
+    def _dim_ext_data(self):
+        """Baska nesnelerin yakalanacak noktalari ve kenarlari (dunya); arac acilinca bir kez toplanir."""
+        if self.dim_ext is not None:
+            return self.dim_ext
+        import Part
+        P, A, B = [], [], []
+        for o in App.ActiveDocument.Objects:
+            try:
+                if not o.ViewObject.Visibility and not (is_subd(o) and self.mode == "object"):
+                    continue
+            except Exception:
+                continue
+            if is_subd(o):
+                if o is self.obj and self.mode != "object":    # duzenlenen kafes zaten yakalaniyor
+                    continue
+                try:
+                    cg = cage_from_obj(o)
+                    if not len(cg.V):
+                        continue
+                    pl = o.Placement
+                    R = np.array(pl.Rotation.toMatrix().A).reshape(4, 4)[:3, :3]
+                    Pw = cg.V @ R.T + np.array(tuple(pl.Base))
+                    E = np.array([sorted(e) for e in cg.edges()], int).reshape(-1, 2)
+                except Exception:
+                    continue
+                P += Pw.tolist()
+                A += Pw[E[:, 0]].tolist()
+                B += Pw[E[:, 1]].tolist()
+                continue
+            if "Samples" in o.PropertiesList or not hasattr(o, "Shape") or o.TypeId.startswith("App::"):
+                continue                                   # Origin eksenleri, gruplar, SubD'den turetilenler
+            try:
+                sh = Part.getShape(o)
+            except Exception:
+                continue
+            if sh.isNull():
+                continue
+            P += [tuple(x.Point) for x in sh.Vertexes]
+            for e in sh.Edges:
+                q = [tuple(x) for x in e.discretize(Number=2 if _edge_turn(e) < 1e-3 else 33)]
+                A += q[:-1]
+                B += q[1:]
+        self.dim_ext = dict(P=np.array(P, float).reshape(-1, 3), A=np.array(A, float).reshape(-1, 3),
+                            B=np.array(B, float).reshape(-1, 3), key=None)
+        return self.dim_ext
+
+    def _dim_ext_snap(self, p):
+        d = self._dim_ext_data()
+        if not len(d["P"]) and not len(d["A"]):
+            return None
+        sig = self._cam_sig()
+        if d["key"] != sig:
+            none = np.zeros((0, 2))
+            d.update(Ps=self._proj_np(d["P"]) if len(d["P"]) else none, As=self._proj_np(d["A"]) if len(d["A"]) else none,
+                     Bs=self._proj_np(d["B"]) if len(d["B"]) else none, key=sig)
+        if len(d["Ps"]):
+            dist = np.linalg.norm(d["Ps"] - p, axis=1)
+            i = int(np.argmin(dist))
+            if dist[i] < self.DIM_PICK:
+                return dict(s=tuple(d["Ps"][i]), w=d["P"][i], kind="point", a=["w"] + d["P"][i].tolist())
+        if len(d["As"]):
+            ab = d["Bs"] - d["As"]
+            t = np.clip(((p - d["As"]) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-9), 0, 1)
+            dist = np.linalg.norm(d["As"] + t[:, None] * ab - p, axis=1)
+            i = int(np.argmin(dist))
+            if dist[i] < 10:
+                w = d["A"][i] + t[i] * (d["B"][i] - d["A"][i])
+                return dict(s=tuple(d["As"][i] + t[i] * ab[i]), w=w, kind="edge", a=["w"] + w.tolist())
+        return None
+
+    def _dim_ray_smooth(self, pos):
+        """Imlecin altindaki SubPatch yuzey noktasi (dunya) ya da None."""
+        S, Q = self._smooth
+        o, d = self.ray((int(pos[0]), int(pos[1])))
+        Q = np.asarray(Q)
+        tri = np.concatenate([Q[:, [0, 1, 2]], Q[:, [0, 2, 3]]])
+        Tr = S[tri]
+        e1, e2 = Tr[:, 1] - Tr[:, 0], Tr[:, 2] - Tr[:, 0]
+        pv = np.cross(d, e2)
+        det = (e1 * pv).sum(1)
+        ok = np.abs(det) > 1e-12
+        inv = 1.0 / np.where(ok, det, 1.0)
+        sv = o - Tr[:, 0]
+        u = (sv * pv).sum(1) * inv
+        qv = np.cross(sv, e1)
+        v = (qv * d).sum(1) * inv
+        t = (e2 * qv).sum(1) * inv
+        hit = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0)
+        if not hit.any():
+            return None
+        k = int(np.argmin(np.where(hit, t, np.inf)))
+        return self.l2w((o + d * t[k])[None])[0]
+
+    def _dim_surface(self, pos):
+        w = None
+        if self.mode != "object" and len(self.cage.F):
+            if self.smooth and self._smooth is not None:
+                w = self._dim_ray_smooth(pos)
+            else:
+                h = self.pick((int(pos[0]), int(pos[1])))
+                if h is not None:
+                    w = self.l2w(h[1][None])[0]
+        if w is None:
+            info = self.view.getObjectInfo((int(pos[0]), int(pos[1])))
+            if info and "x" in info:
+                w = np.array([info["x"], info["y"], info["z"]], float)
+        if w is None:
+            return None
+        return dict(s=tuple(pos), w=w, kind="surf", a=["s"] + [float(x) for x in w])
+
+    def _dim_snap(self, pos):
+        p = np.array(pos, float)
+        hit = self._dim_cage_snap(p) if self.mode != "object" else None
+        if hit is None:
+            hit = self._dim_ext_snap(p)
+        if hit is None:
+            hit = self._dim_surface(pos)
+        return hit
+
+    # olculer
+
+    def _dim_resolve(self, d):
+        P, Q = self._dim_world(d["a"]), self._dim_world(d["b"])
+        return None if P is None or Q is None else (P, Q)
+
+    def _dim_obj_all(self):
+        """Object modunda: SubD nesnelerinin kayitli olculeri: (nesne, sira, kayit, P, Q); P / Q None olabilir."""
+        out = []
+        for o in self.subd_objects():
+            if "Dimensions" not in o.PropertiesList or not o.Dimensions:
+                continue
+            try:
+                ds = json.loads(o.Dimensions)
+                V = np.array([tuple(q) for q in o.CagePoints], float).reshape(-1, 3)
+            except ValueError:
+                continue
+            pl = o.Placement
+            to_w = lambda q, pl=pl: np.array(tuple(pl.multVec(App.Vector(*q))))
+            for i, d in enumerate(ds):
+                out.append((o, i, d, _dim_point(d["a"], V, to_w), _dim_point(d["b"], V, to_w)))
+        return out
+
+    def _dim_items(self):
+        """Ekranda gosterilecek olculer: dict(P, Q, kind, idx, cur); Q yoksa ikinci nokta bekleniyor."""
+        out = []
+        if self.mode != "object":
+            for i, d in enumerate(self.cage.dims):
+                pq = self._dim_resolve(d)
+                if pq is not None and not d.get("hide"):
+                    out.append(dict(P=pq[0], Q=pq[1], kind="keep", idx=i, d=d))
+        else:
+            for o, i, d, P, Q in self._dim_obj_all():
+                if P is not None and Q is not None and not d.get("hide"):
+                    out.append(dict(P=P, Q=Q, kind="keep", idx=None, d=d))
+        if self.dim_tmp is not None:
+            pq = self._dim_resolve(self.dim_tmp)
+            if pq is not None:
+                out.append(dict(P=pq[0], Q=pq[1], kind="tmp", idx=None))
+        if self.dim_p0 is not None:
+            P = self._dim_world(self.dim_p0["a"])
+            if P is not None:
+                out.append(dict(P=P, Q=self.dim_live_q, kind="live", idx=None))
+        return out
+
+    def _dim_scene(self):
+        """Olculerin 3B sahnedeki dugumu: kamerayla birlikte cizilir, gorunumu dondururken titremez / geride kalmaz."""
+        if self.dim_root is None:
+            r = self.dim_root = coin.SoSeparator()
+            ps = coin.SoPickStyle()
+            ps.style = coin.SoPickStyle.UNPICKABLE         # tiklamalar olculerden gecer
+            lm = coin.SoLightModel()
+            lm.model = coin.SoLightModel.BASE_COLOR
+            db = coin.SoDepthBuffer()                      # olcu modelin icinden de gorunsun
+            db.test = False
+            for n in (ps, lm, db):
+                r.addChild(n)
+            self.dim_group = coin.SoSeparator()
+            r.addChild(self.dim_group)
+        if self.parent.findChild(self.dim_root) < 0:
+            self.parent.addChild(self.dim_root)
+        return self.dim_group
+
+    DIM_COL = {"keep": (163, 230, 53), "tmp": (245, 158, 11), "live": (34, 211, 238),
+               "sel": (96, 165, 250), "bad": (248, 113, 113)}   # sel: listede secili, bad: hedeften tolerans disi
+    DIM_TEXT_SCALE = 1.5          # olcu yazisi ve x dugmesi: gizmo boyut carpanina ek carpan
+
+    def _dim_label(self, text, kind, hot, with_x, k):
+        """Olcu yazisi kutusu: [x | 123.456 mm] (x yalniz kalici olcuyu silmek icin). Sahne icin piksel goruntusu:
+        (RGBA baytlari, genislik, yukseklik, x bolgesinin genisligi); aygit pikseli."""
+        k = k * self.DIM_TEXT_SCALE
+        key = (text, kind, hot, with_x, round(k, 2))
+        img = self._dim_imgs.get(key)
+        if img is not None:
+            return img
+        dpr = self.gv.viewport().devicePixelRatioF()
+        f = QtGui.QFont()
+        f.setPixelSize(max(int(round(13 * k * dpr)), 9))
+        f.setBold(True)
+        fm = QtGui.QFontMetrics(f)
+        pad = int(round(4 * k * dpr))
+        xw = fm.height() + pad if with_x else 0
+        w, h = 2 * pad + xw + fm.horizontalAdvance(text), fm.height() + pad
+        qi = QtGui.QImage(w, h, QtGui.QImage.Format_ARGB32)
+        qi.fill(0)
+        col = QtGui.QColor(*self.DIM_COL[kind])
+        p = QtGui.QPainter(qi)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        p.setFont(f)
+        p.setBrush(QtGui.QColor(24, 24, 28, 225))
+        p.setPen(QtGui.QPen(col, max(1.0, k * dpr)))
+        rad = 4 * k * dpr
+        p.drawRoundedRect(QtCore.QRectF(0.5, 0.5, w - 1, h - 1), rad, rad)
+        if with_x:
+            if hot:                                        # imlec x'in uzerinde: tiklayinca silinir
+                p.setPen(QtCore.Qt.NoPen)
+                p.setBrush(QtGui.QColor(220, 60, 60, 235))
+                p.drawRoundedRect(QtCore.QRectF(1, 1, xw, h - 2), rad, rad)
+            p.setPen(QtGui.QColor(255, 255, 255) if hot else QtGui.QColor(200, 200, 205))
+            p.drawText(QtCore.QRect(0, 0, xw, h), QtCore.Qt.AlignCenter, "\u00d7")
+            p.setPen(QtGui.QPen(col, 1))
+            p.drawLine(xw, 3, xw, h - 3)
+        p.setPen(col)
+        p.drawText(QtCore.QRect(xw, 0, w - xw, h), QtCore.Qt.AlignCenter, text)
+        p.end()
+        rgba = qi.convertToFormat(QtGui.QImage.Format_RGBA8888).mirrored(False, True)   # SoImage: alt satir once
+        if len(self._dim_imgs) > 80:
+            self._dim_imgs.clear()
+        self._dim_imgs[key] = img = (bytes(rgba.constBits())[:w * h * 4], w, h, xw)
+        return img
+
+    def _dim_hit_x(self, pos):
+        """Kalici olcunun x dugmesi imlecin (Coin konumu) altindaysa olcunun sirasi, yoksa None."""
+        if self.mode == "object" or not self.dim_hits:
+            return None
+        for h in reversed(self.dim_hits):
+            c = self._proj_np(h["mid"])[0]
+            x0, y0 = c[0] - h["w"] / 2, c[1] - h["h"] / 2
+            if x0 <= pos[0] <= x0 + h["xw"] and y0 <= pos[1] <= y0 + h["h"]:
+                return h["idx"]
+        return None
+
+    def _dim_tick(self):
+        """Sahnedeki olculeri noktalar ya da gorunen metin degisince yeniden kur (kamera donerken is yok)."""
+        if self.suspended:
+            return
+        if self.dim_list is not None and self.dim_list.isVisible():
+            self.dim_list.refresh(self._dim_rows())
+        items = self._dim_items()
+        if not items and self.dim_root is None:
+            return
+        k = min(max(self.gizmo.px / GIZMO_PX, 0.7), 3.0)   # yazi boyu gizmo boyutuyla orantili
+        names = self.dim_names()
+        meta = []
+        for it in items:
+            d = it.get("d") or {}
+            Q = it["Q"]
+            val = None if Q is None else float(np.linalg.norm(Q - it["P"]))
+            tgt = d.get("target")
+            bad = val is not None and tgt is not None and abs(val - tgt) > float(d.get("tol", DIM_TOL))
+            sel = it["kind"] == "keep" and it["idx"] is not None and it["idx"] == self.dim_sel and self.mode != "object"
+            meta.append(("bad" if bad else "sel" if sel else it["kind"], d.get("name", "") if names else "", val))
+        sig = (k, self.dim_hot, tuple((it["kind"], it["idx"], tuple(np.round(it["P"], 3)),
+                                       None if it["Q"] is None else tuple(np.round(it["Q"], 3)), m)
+                                      for it, m in zip(items, meta)))
+        if sig == self.dim_sig:
+            return
+        self.dim_sig = sig
+        g = self._dim_scene()
+        g.removeAllChildren()
+        self.dim_hits = []
+        for it, (ck, name, val) in zip(items, meta):
+            kind, P, Q = it["kind"], it["P"], it["Q"]
+            grp = coin.SoSeparator()
+            bc = coin.SoBaseColor()
+            bc.rgb = tuple(c / 255.0 for c in self.DIM_COL[ck])
+            ds = coin.SoDrawStyle()
+            ds.lineWidth = 1.6 * k * (2.0 if ck == "sel" else 1.0)
+            ds.pointSize = 7 * k
+            if kind == "live":
+                ds.linePattern = 0xF0F0
+            pts = [tuple(float(x) for x in P)] + ([tuple(float(x) for x in Q)] if Q is not None else [])
+            co = coin.SoCoordinate3()
+            co.point.setValues(0, len(pts), pts)
+            for n in (bc, ds, co):
+                grp.addChild(n)
+            if Q is not None:
+                ls = coin.SoLineSet()
+                ls.numVertices = 2
+                grp.addChild(ls)
+            ps = coin.SoPointSet()
+            ps.numPoints = len(pts)
+            grp.addChild(ps)
+            if Q is not None:
+                with_x = kind == "keep" and it["idx"] is not None and self.mode != "object"
+                hot = with_x and it["idx"] == self.dim_hot
+                text = ("%s  " % name if name else "") + "%.3f mm" % val
+                data, w, h, xw = self._dim_label(text, ck, hot, with_x, k)
+                mid = (P + Q) / 2
+                tr = coin.SoTranslation()
+                tr.translation = tuple(float(x) for x in mid)
+                im = coin.SoImage()
+                im.image.setValue(coin.SbVec2s(w, h), 4, data)
+                im.horAlignment = coin.SoImage.CENTER
+                im.vertAlignment = coin.SoImage.HALF
+                grp.addChild(tr)
+                grp.addChild(im)
+                if with_x:
+                    self.dim_hits.append(dict(idx=it["idx"], mid=mid, w=w, h=h, xw=xw))
+            g.addChild(grp)
+
+    def _dim_hot_check(self):
+        """Distance kapaliyken: imlec kalici olcunun x dugmesinin uzerine gelince x kirmiziya doner."""
+        self._pending = False
+        h = self._dim_hit_x(self.mouse)
+        if h != self.dim_hot:
+            self.dim_hot = h
+            self._dim_tick()
+
+    def _dim_hover(self):
+        """Distance acik: imlecin altindaki hedefi goster, ilk nokta varsa canli mesafeyi yaz."""
+        self._pending = False
+        pos = self.mouse
+        self.dim_hot = self._dim_hit_x(pos) if self.dim_p0 is None else None
+        hit = None if self.dim_hot is not None else self._dim_snap(pos)
+        self._line_mark((hit["s"], hit["w"], hit["kind"]) if hit else None)
+        if self.dim_p0 is not None:
+            P = self._dim_world(self.dim_p0["a"])
+            self.dim_live_q = hit["w"] if hit else None
+            if hit and P is not None:
+                self.dim_last = (P, hit["w"])
+                self.info = self._dim_text(P, hit["w"])
+        self._dim_tick()
+        if self.dim_p0 is not None and self.overlay is not None:
+            self.overlay.sync()                            # panelin sayilari canli
+
+    def dim_click(self, pos):
+        self._pending = False
+        hit = self._dim_snap(pos)
+        if hit is None:
+            self.info = T("Distance: nothing to snap to here")
+            self.refresh()
+            return
+        if self.dim_p0 is None:                            # ilk nokta (onceki gecici olcu kalkar)
+            self.dim_p0, self.dim_tmp = hit, None
+            self.dim_live_q = None
+            self.info = T("Distance: click the second point (Esc: cancel)")
+            self._dim_tick()
+            self.refresh()
+            return
+        d = dict(a=self.dim_p0["a"], b=hit["a"])
+        self.dim_p0 = self.dim_live_q = None
+        P, Q = self._dim_world(d["a"]), self._dim_world(d["b"])
+        if (self.dim_keep() and self.mode != "object" and d["a"][0] in DIM_KEEP and d["b"][0] in DIM_KEEP):
+            self.push()
+            self.cage.dims.append(d)
+            self.last_op = None
+            self.dirty = True
+            self.dim_tmp = None
+        else:                                              # gecici: yuzey noktasi var, Keep kapali ya da Object modu
+            self.dim_tmp = d
+        if P is not None and Q is not None:
+            self.dim_last = (P, Q)
+            self.info = self._dim_text(P, Q)
+        self._line_hide()
+        self._dim_tick()
+        self.refresh()
+
+    def _dim_remove(self, i):
+        if 0 <= i < len(self.cage.dims):
+            self.push()
+            del self.cage.dims[i]
+            self.last_op = None
+            self.dirty = True
+        self.dim_hot = None
+        self._dim_tick()
+        self.refresh()
+
+    def dim_clear(self):
+        """Panel: gecici ve kalici butun olculeri sil (kalicilar geri alinabilir)."""
+        self.dim_tmp = self.dim_p0 = self.dim_live_q = None
+        self._line_hide()
+        if self.mode != "object" and self.cage.dims:
+            self.push()
+            self.cage.dims = []
+            self.last_op = None
+            self.dirty = True
+        self.info = ""
+        self._dim_tick()
+        self.refresh()
+
+    # --- Distances listesi: ad, hedef, goster / gizle, sil, CSV ---
+    def dim_names(self):
+        return _param().GetBool("DimNames", True)
+
+    def dim_set_names(self, on):
+        _param().SetBool("DimNames", bool(on))
+        self.dim_sig = None
+        self._dim_tick()
+
+    def _dim_rows(self):
+        """Liste penceresi icin satirlar. Edit modu: duzenlenen nesnenin olculeri (duzenlenebilir); Object modu:
+        butun SubD nesnelerinin olculeri (yalniz gosterim)."""
+        def row(obj, idx, d, P, Q, editable):
+            ok = P is not None and Q is not None
+            v = (Q - P) if ok else None
+            return dict(obj=obj, idx=idx, name=d.get("name", ""), hide=bool(d.get("hide")), target=d.get("target"),
+                        tol=float(d.get("tol", DIM_TOL)), dist=float(np.linalg.norm(v)) if ok else None, d3=v,
+                        editable=editable)
+        rows = []
+        if self.mode != "object":
+            label = self.obj.Label if self.obj is not None else ""
+            for i, d in enumerate(self.cage.dims):
+                pq = self._dim_resolve(d) or (None, None)
+                rows.append(row(label, i, d, pq[0], pq[1], True))
+        else:
+            for o, i, d, P, Q in self._dim_obj_all():
+                rows.append(row(o.Label, i, d, P, Q, False))
+        return rows
+
+    def dim_edit(self, idx, field, value):
+        """Listeden bir olcunun ad / gizli / hedef / tolerans degeri degisti (geri alinabilir)."""
+        if self.mode == "object" or not 0 <= idx < len(self.cage.dims):
+            return
+        d = self.cage.dims[idx]
+        empty = (value is None) or (field == "name" and value == "") or (field == "hide" and not value)
+        if (empty and field not in d) or (not empty and d.get(field) == value):
+            return
+        self.push()
+        if empty:
+            d.pop(field, None)
+        else:
+            d[field] = value
+        self.last_op = None
+        self.dirty = True
+        self.dim_sig = None
+        self._dim_tick()
+
+    def dim_select(self, idx):
+        """Listede secilen olcu 3B gorunumde mavi ve kalin cizilir."""
+        if idx != self.dim_sel:
+            self.dim_sel = idx
+            self.dim_sig = None
+            self._dim_tick()
+
+    def dim_show_all(self, on):
+        if self.mode == "object" or not self.cage.dims:
+            return
+        if all(bool(d.get("hide")) != bool(on) for d in self.cage.dims):
+            return
+        self.push()
+        for d in self.cage.dims:
+            if on:
+                d.pop("hide", None)
+            else:
+                d["hide"] = True
+        self.last_op = None
+        self.dirty = True
+        self.dim_sig = None
+        self._dim_tick()
+
+    def dim_list_toggle(self):
+        if self.dim_list is None:
+            self.dim_list = _DimList(self)
+        on = not self.dim_list.isVisible()
+        self.dim_list.setVisible(on)
+        if on:
+            self.dim_list.raise_()
+            self.dim_list.refresh(self._dim_rows(), force=True)
+        if self.overlay is not None:
+            self.overlay.sync()
+
+    def dim_export(self):
+        """Olculeri CSV olarak kaydet (Edit modu: acik nesne, Object modu: hepsi)."""
+        import csv
+        rows = self._dim_rows()
+        if not rows:
+            self.info = T("Distances: nothing to export")
+            self.refresh()
+            return
+        doc = App.ActiveDocument
+        base = os.path.dirname(doc.FileName) if doc is not None and doc.FileName else os.path.expanduser("~")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(Gui.getMainWindow(), T("Export distances"),
+                                                       os.path.join(base, "distances.csv"), "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:      # BOM: Excel Turkce karakterleri tanir
+                w = csv.writer(f)
+                w.writerow(["Object", "Name", "Distance (mm)", "dX (mm)", "dY (mm)", "dZ (mm)", "Target (mm)",
+                            "Tolerance (mm)", "Deviation (mm)", "Status"])
+                for r in rows:
+                    ok = r["dist"] is not None
+                    tgt = r["target"]
+                    dev = r["dist"] - tgt if ok and tgt is not None else None
+                    status = "" if dev is None else "OK" if abs(dev) <= r["tol"] else "OUT"
+                    f4 = lambda x: "" if x is None else "%.4f" % x
+                    w.writerow([r["obj"], r["name"] or T("Distance %d") % (r["idx"] + 1), f4(r["dist"]),
+                                *(f4(r["d3"][i]) if ok else "" for i in range(3)), f4(tgt),
+                                f4(r["tol"]) if tgt is not None else "", f4(dev), status])
+            self.info = T("Distances exported: %s") % path
+        except OSError as e:
+            self.info = T("Distances: could not write the file (%s)") % e
+        self.refresh()
+
+    def _dim_panel(self):
+        P, Q = self.dim_last if self.dim_last is not None else (None, None)
+        d = np.zeros(3) if P is None or Q is None else np.asarray(Q) - np.asarray(P)
+        noop = lambda v: None
+        fields = [("Distance", float(np.linalg.norm(d)), " mm", 3, noop)] + \
+                 [(n, float(d[i]), " mm", 3, noop) for i, n in enumerate(("dX", "dY", "dZ"))]
+        checks = [("Keep (fixed)", self.dim_keep(), self.dim_set_keep)] if self.mode != "object" else []
+        return T("Distance"), fields, False, checks, None, [("Clear all", self.dim_clear)]
 
     # --- Bridge (Blender Bridge Edge Loops) ---
     # Kenar modu: iki acik kenar halkasi / zinciri; yuz modu: iki yuz bolgesi (yuzler silinir, sinirlari baglanir).
@@ -9742,10 +10470,19 @@ class SubDSession:
         if not left:
             if self.armed == "magnet":                     # sag tusu _KeyFilter aliyor (FreeCAD menusu acilmasin)
                 return
+            if self.armed == "dim" and ev.getButton() == coin.SoMouseButtonEvent.BUTTON2:
+                _later(self.dim_escape)                    # sag tik: bekleyen nokta varsa vazgec, yoksa kapat
+                return
             if self.armed and ev.getButton() == coin.SoMouseButtonEvent.BUTTON2:   # sag tik: kalici araci kapat
                 self.drop_tool()
                 _later(self.refresh)
             return
+        if self.dim_hits and self.dim_p0 is None and self.mode != "object":
+            i = self._dim_hit_x(pos)
+            if i is not None:                              # Distance olcusunun x dugmesi: olcuyu sil
+                cb.setHandled()
+                _later(lambda: self._dim_remove(i))
+                return
         # kalici arac (sari dugme) acik kaldikca her tiklama onu uygular; secim / kutu secimi yapilmaz
         if self.armed in ("line", "mline", "array"):       # knife / ayna / array ekseni cizgisi baslar
             cb.setHandled()
@@ -9754,6 +10491,10 @@ class SubDSession:
             hit = self.line_snap(pos, data)
             if hit is not None:                            # cizgi yakalanan hedeften baslar
                 self.box.update(p0=hit[0], w0=hit[1])
+            return
+        if self.armed == "dim":                            # Distance: her iki modda, ilk / ikinci nokta ya da silme
+            cb.setHandled()
+            _later(lambda: self.dim_click(pos))
             return
         if self.armed in ("knife", "loop", "addpoint"):
             cb.setHandled()
@@ -9829,8 +10570,10 @@ class SubDSession:
             _later(lambda: self.gizmo.set_hover(key))
             if self.armed == "magnet":                     # imlec / isaret Magnet'in: _line_hover silmesin
                 self._schedule(self._magnet_hover)
-            elif self.armed in ("line", "mline", "array") or self._line_cursor is not None:
+            elif self.armed in ("line", "mline", "array", "dim") or self._line_cursor is not None:
                 self._schedule(self._line_hover)
+            elif self.dim_hits:                            # x dugmesinin uzerine gelince kirmizi
+                self._schedule(self._dim_hot_check)
 
     def finish_box(self, pos):
         """Sol tus birakildi: surukleme olduysa kutu secimi, olmadiysa tiklama secimi."""
@@ -9885,6 +10628,9 @@ class SubDSession:
             elif k in ("x", "y", "z") and not ctrl and self.grab.get("kind") == "extrude":
                 self.extrude_axis(k.upper())               # yalniz bu eksen; tekrar = normal yon
                 self.refresh()
+            return
+        if k == "escape" and self.armed == "dim":          # Distance: ilk noktadan vazgec / araci kapat
+            self.dim_escape()
             return
         if k == "q":                                       # Snap ac / kapat: her modda, kilavuz duzenleme de surer
             self.toggle_snap()
@@ -10038,6 +10784,12 @@ class SubDSession:
         _quiet(lambda: app.removeEventFilter(self.wheel_guard))
         _quiet(lambda: app.removeEventFilter(self.history_guard))
         _quiet(self.timer.stop)
+        _quiet(self.dim_timer.stop)
+        if self.dim_root is not None:
+            _quiet(lambda: self.parent.removeChild(self.dim_root))   # olculer de baska tezgahta gorunmesin
+        self.dim_list_was_open = self.dim_list is not None and self.dim_list.isVisible()
+        if self.dim_list is not None:
+            _quiet(self.dim_list.hide)
         _quiet(lambda: self.gizmo.place(None))
         if self.overlay is not None:
             _quiet(lambda: self.overlay.set_visible(False))
@@ -10057,6 +10809,13 @@ class SubDSession:
         _quiet(lambda: app.installEventFilter(self.wheel_guard))
         _quiet(lambda: app.installEventFilter(self.history_guard))
         _quiet(lambda: self.timer.start(50))
+        _quiet(lambda: self.dim_timer.start(150))
+        self.dim_sig = None
+        if self.dim_root is not None:
+            _quiet(self._dim_scene)                          # sahneye geri tak
+        if self.dim_list_was_open and self.dim_list is not None:
+            _quiet(self.dim_list.show)
+        _quiet(self._dim_tick)
         if self.overlay is not None:
             _quiet(lambda: self.overlay.set_visible(True))
         if self.dock_was_open:
@@ -10077,6 +10836,7 @@ class SubDSession:
         _quiet(self.timer.stop)
         _quiet(self.autosave.stop)
         _quiet(lambda: self.wb_timer.stop())
+        _quiet(self.dim_timer.stop)
         if not doc_gone and self.mode != "object":         # Object modunda yazilacak kafes yok
             try:
                 if len(self.cage.V):
@@ -10094,6 +10854,8 @@ class SubDSession:
             _quiet(lambda: QtWidgets.QApplication.instance().removeEventFilter(self.wheel_guard))
             _quiet(lambda: QtWidgets.QApplication.instance().removeEventFilter(self.history_guard))
         _quiet(lambda: self.parent.removeChild(self.root))
+        if self.dim_root is not None:
+            _quiet(lambda: self.parent.removeChild(self.dim_root))
         if self.overlay is not None:
             _quiet(self.overlay.close)
             self.overlay = None
@@ -10104,6 +10866,9 @@ class SubDSession:
         self.rubber = self.line_overlay = None
         _quiet(self.dock.close)
         _quiet(self.dock.deleteLater)
+        if self.dim_list is not None:
+            _quiet(self.dim_list.close)
+            _quiet(self.dim_list.deleteLater)
 
 
 _MARK_ROLE = int(QtCore.Qt.UserRole) + 1077   # isaretli agac satirinin gorunmez etiketi
@@ -10520,6 +11285,9 @@ TOOL_TIPS = {
              "switch in the panel",
     "Twist": "Twist the selected polygons around an axis: the angle grows along the axis by the Falloff curve. Move the "
              "mouse for the angle (Ctrl: steps), click to accept, then fine-tune in the panel",
+    "Distance": "Measure the distance between two points: cage points, edge middles / edges, polygon centers, other objects (corners / edges) or the surface. Keep: the measurement stays, follows the points and is deleted with the × next to its text; otherwise it is temporary. Works in Object mode too (temporary)",
+    "Clear all": "Delete all distances (undo brings the fixed ones back)",
+    "Distances": "List of the distances: give each a name and a target, show / hide, delete, export as CSV. The list stays with the object between sessions",
     "Draw axis": "Drag a line in the view to set the axis (snaps like Mirror (line)); a click gives an axis along the view",
     "Axis X": "Axis direction along world X (the axis point stays)",
     "Axis Y": "Axis direction along world Y (the axis point stays)",
@@ -10613,7 +11381,7 @@ class _LineOverlay(QtWidgets.QWidget):
         self._changed()
 
     def set_mark(self, pt, kind):
-        """Yakalama hedefi: "point" kare, "mid" ucgen, "edge" capraz."""
+        """Yakalama hedefi: "point" kare, "mid" ucgen, "face" daire, "surf" elmas, "edge" capraz."""
         self.mark, self.kind = pt, kind
         self._changed()
 
@@ -10652,10 +11420,180 @@ class _LineOverlay(QtWidgets.QWidget):
             elif self.kind == "mid":
                 p.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(x, y - r), QtCore.QPointF(x + r, y + r),
                                                QtCore.QPointF(x - r, y + r)]))
+            elif self.kind == "face":
+                p.drawEllipse(QtCore.QPointF(x, y), r, r)
+            elif self.kind == "surf":
+                p.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(x, y - r), QtCore.QPointF(x + r, y),
+                                               QtCore.QPointF(x, y + r), QtCore.QPointF(x - r, y)]))
             else:
                 p.drawLine(QtCore.QPointF(x - r, y - r), QtCore.QPointF(x + r, y + r))
                 p.drawLine(QtCore.QPointF(x - r, y + r), QtCore.QPointF(x + r, y - r))
         p.end()
+
+
+class _DimList(QtWidgets.QDockWidget):
+    """Distances penceresi: olculerin adi, mesafesi, hedefi; goster / gizle, sil, CSV. Edit modunda duzenlenir
+    (geri alinabilir), Object modunda butun SubD nesnelerinin olculeri salt okunur gosterilir."""
+    HEAD = ("", "Name", "Distance", "dX", "dY", "dZ", "Target", "Tol.", "Dev.", "")
+
+    def __init__(self, session):
+        super().__init__(T("Distances"), Gui.getMainWindow())
+        self.s = session
+        self.setObjectName("SubDDistances")
+        self.key = None
+        self.map = []                                      # tablo satiri -> kafes sirasi
+        self._busy = False
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(w)
+        top = QtWidgets.QHBoxLayout()
+        self.names = QtWidgets.QCheckBox(T("Show names"))
+        self.names.setToolTip(T("Show the name in front of the distance in the 3D view"))
+        self.names.setChecked(session.dim_names())
+        self.names.toggled.connect(session.dim_set_names)
+        top.addWidget(self.names)
+        top.addStretch()
+        for text, fn in ((T("Show all"), lambda: session.dim_show_all(True)),
+                         (T("Hide all"), lambda: session.dim_show_all(False)),
+                         (T("Export CSV..."), session.dim_export)):
+            b = QtWidgets.QPushButton(text)
+            b.setFocusPolicy(QtCore.Qt.NoFocus)
+            b.clicked.connect(lambda checked=False, fn=fn: _later(fn))
+            top.addWidget(b)
+        lay.addLayout(top)
+        self.table = QtWidgets.QTableWidget(0, len(self.HEAD))
+        self.table.setHorizontalHeaderLabels([T(h) if h else "" for h in self.HEAD])
+        self.table.verticalHeader().hide()
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        self.table.itemChanged.connect(self._changed)
+        self.table.itemSelectionChanged.connect(self._selected)
+        lay.addWidget(self.table)
+        self.hint = QtWidgets.QLabel()
+        self.hint.setStyleSheet("color:#9a9a9a;")
+        lay.addWidget(self.hint)
+        self.setWidget(w)
+        Gui.getMainWindow().addDockWidget(QtCore.Qt.BottomDockWidgetArea, self)
+        self.setFloating(True)
+        self.resize(720, 280)
+
+    def _ph(self, idx):
+        return T("Distance %d") % (idx + 1)
+
+    def refresh(self, rows, force=False):
+        if self.table.state() == QtWidgets.QAbstractItemView.EditingState:
+            return                                         # yazarken liste yeniden kurulmasin
+        edit = self.s.mode != "object"
+        key = (edit, tuple((r["obj"], r["idx"], r["name"], r["hide"], r["target"], r["tol"]) for r in rows))
+        if force or key != self.key:
+            self.key = key
+            self._build(rows, edit)
+        self._values(rows)
+
+    def _build(self, rows, edit):
+        self._busy = True
+        t = self.table
+        t.clearContents()
+        t.setRowCount(len(rows))
+        self.map = [r["idx"] for r in rows]
+        ro = QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable
+        rw = ro | QtCore.Qt.ItemIsEditable
+        for i, r in enumerate(rows):
+            on = QtWidgets.QTableWidgetItem()
+            on.setFlags(ro | (QtCore.Qt.ItemIsUserCheckable if edit else QtCore.Qt.NoItemFlags))
+            on.setCheckState(QtCore.Qt.Unchecked if r["hide"] else QtCore.Qt.Checked)
+            on.setToolTip(T("Show / hide this distance in the 3D view"))
+            t.setItem(i, 0, on)
+            name = QtWidgets.QTableWidgetItem(r["name"] or self._ph(r["idx"]))
+            if not r["name"]:
+                name.setForeground(QtGui.QBrush(QtGui.QColor(150, 150, 150)))
+            if not edit:
+                name.setText("%s > %s" % (r["obj"], r["name"] or self._ph(r["idx"])))
+            name.setFlags(rw if edit else ro)
+            t.setItem(i, 1, name)
+            for c in (2, 3, 4, 5, 8):
+                it = QtWidgets.QTableWidgetItem()
+                it.setFlags(ro)
+                it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                t.setItem(i, c, it)
+            for c, v in ((6, r["target"]), (7, r["tol"] if r["target"] is not None else None)):
+                it = QtWidgets.QTableWidgetItem("" if v is None else "%.3f" % v)
+                it.setFlags(rw if edit else ro)
+                it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                t.setItem(i, c, it)
+            if edit:
+                b = QtWidgets.QPushButton("\u00d7")
+                b.setFixedWidth(26)
+                b.setToolTip(T("Delete this distance"))
+                b.clicked.connect(lambda checked=False, k=r["idx"]: _later(lambda: self.s._dim_remove(k)))
+                t.setCellWidget(i, 9, b)
+        self.hint.setText(T("Name / Target / Tol. are editable (double click); the selected row is drawn blue in the view")
+                          if edit else T("Object mode: all distances of all SubD objects (edit them in Edit mode)"))
+        sel = self.s.dim_sel
+        if sel in self.map:
+            t.selectRow(self.map.index(sel))
+        self._busy = False
+
+    def _values(self, rows):
+        self._busy = True
+        t = self.table
+        red, green, plain = QtGui.QColor(248, 113, 113), QtGui.QColor(110, 200, 90), QtGui.QBrush()
+        for i, r in enumerate(rows[:t.rowCount()]):
+            ok = r["dist"] is not None
+            vals = {2: "%.3f" % r["dist"] if ok else "-"}
+            for c, k in ((3, 0), (4, 1), (5, 2)):
+                vals[c] = "%.3f" % r["d3"][k] if ok else "-"
+            dev = r["dist"] - r["target"] if ok and r["target"] is not None else None
+            vals[8] = "" if dev is None else "%+.3f" % dev
+            for c, text in vals.items():
+                it = t.item(i, c)
+                if it is not None and it.text() != text:
+                    it.setText(text)
+            if dev is not None:
+                col = green if abs(dev) <= r["tol"] else red
+                for c in (2, 8):
+                    t.item(i, c).setForeground(QtGui.QBrush(col))
+            else:
+                for c in (2, 8):
+                    t.item(i, c).setForeground(plain)
+        self._busy = False
+
+    def _changed(self, it):
+        if self._busy or not it:
+            return
+        row, col = it.row(), it.column()
+        if not 0 <= row < len(self.map):
+            return
+        idx, s = self.map[row], self.s
+        if col == 0:
+            val = ("hide", it.checkState() != QtCore.Qt.Checked)
+        elif col == 1:
+            txt = it.text().strip()
+            val = ("name", "" if txt == self._ph(idx) else txt)
+        elif col in (6, 7):
+            txt = it.text().strip().replace(",", ".")
+            try:
+                num = float(txt) if txt else None
+            except ValueError:
+                _later(lambda: self.refresh(s._dim_rows(), force=True))   # gecersiz sayi: eski deger geri gelsin
+                return
+            if col == 6:
+                val = ("target", num)
+            else:
+                val = ("tol", DIM_TOL if num is None else abs(num))
+        else:
+            return
+        _later(lambda: s.dim_edit(idx, *val))
+
+    def _selected(self):
+        if self._busy:
+            return
+        rows = self.table.selectionModel().selectedRows()
+        r = rows[0].row() if rows else None
+        self.s.dim_select(self.map[r] if r is not None and r < len(self.map) and self.s.mode != "object" else None)
 
 
 class _WheelGuard(QtCore.QObject):
@@ -11246,6 +12184,17 @@ class _Overlay(object):
             _min_width(b, 28)
             tog(text, key, lambda m=mode: s.set_mode(m), lambda m=mode: s.mode == m, b)
             b.setToolTip("%s (%s)" % (_tool_tip(text), tip))   # Object modunda: secili nesneye o modda girer
+        row.addSpacing(10)
+        db = _lw_button(T("Distance"), _key_label("dim"))   # ölçü: her zaman gözün önünde, iki modda da
+        db.setProperty("tool", True)
+        self.tool_buttons.append(db)
+        tog("Distance", _key_label("dim"), s.dim, lambda: s.armed == "dim", db).setToolTip(_tool_tip("Distance"))
+        lb = QtWidgets.QPushButton("\u2261")                # Distance listesi (adlar, hedefler, goster / gizle, CSV)
+        lb.setFocusPolicy(QtCore.Qt.NoFocus)
+        lb.setFixedSize(28, 24)
+        _min_width(lb, 28)
+        tog("Distances", "", s.dim_list_toggle, lambda: s.dim_list is not None and s.dim_list.isVisible(),
+            lb).setToolTip(_tool_tip("Distances"))
         row.addSpacing(10)
         self.sel_label = QtWidgets.QLabel()
         self.sel_label.setMinimumWidth(52)

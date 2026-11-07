@@ -56,6 +56,10 @@ Catmull-Clark limit surface is on the roadmap.
   the axis by a falloff curve (Linear, Smooth, Ease in, Ease out, Peak, Dome). Move the mouse for the angle, click to
   accept, then edit the values in the panel. *Cuts* splits the selection along the axis first so the twist is smooth.
   The axis is a drawn line (snapping), Axis X / Y / Z or numbers, as in Array.
+- **Distance** (top bar, key U): measures the distance between two points (cage points, edge middles, polygon centers,
+  other objects or the surface) in Edit and Object mode. With *Keep (fixed)* the measurement stays, follows the cage
+  points when they move and is deleted with the × next to its text; otherwise it is temporary.
+  The **≡** button opens a list of the distances: names, target / tolerance, show / hide, delete, CSV export.
 - **Shortcuts for Array and Twist**: none by default; assign one with `subd_modeler.set_user_key("twist", "Shift+T")`.
 - Crease (sharp or semi-sharp edges) — makes the surface hit exact dimensions
 - Copy / cut / paste polygons (with their creases): paste in place into the same cage, into another SubD

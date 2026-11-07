@@ -8,6 +8,22 @@
   tool is cancelled, but the session and the cage stay (sketch links keep following, autosave keeps running). It comes
   back as it was when you return to the SubD workbench. The modeler is shown in the SubD workbench and in the workbench
   it was started from (for example with the macro).
+- **Distance** (top bar next to Object / Edit, key **U**; assignable with `subd_modeler.set_user_key("dim", "...")`):
+  measures the distance between two points in **Edit and Object mode**. The snap is always on (independent of Q):
+  cage points, edge middles, polygon centers and edges, corners / edges of other objects, and finally the surface of
+  the model (SubPatch surface or other objects). The panel shows the distance and dX / dY / dZ.
+  - **Keep (fixed)** off (default): the measurement is temporary and goes away with the next one or when you leave the tool.
+    In Object mode measurements are always temporary.
+  - **Keep (fixed)** on (Edit mode): the measurement stays on screen, is **bound to the cage points** (it updates live
+    when you move, rotate, twist or array them), is saved with the object, works with Undo / Redo, and is deleted with the
+    **×** on the left of its text (works with or without the tool; hover turns it red). *Clear all* deletes them all. Points on the surface (not on the cage) are temporary only.
+  - The measurements are drawn inside the 3D scene, so they stay in sync while you orbit / zoom. The text size follows the gizmo size setting. Esc / right click cancels the first point, then leaves the tool.
+- **Distances list** (the **≡** button next to Distance in the top bar): a window with all fixed distances of the
+  object. Give each distance a **name** (shown in front of the value in the 3D view, switch with *Show names*), an optional
+  **target** and **tolerance** (the value turns red when it is out of tolerance, the *Dev.* column shows the deviation),
+  **show / hide** it (checkbox, *Show all* / *Hide all*) or delete it. The selected row is drawn blue in the view.
+  Names and targets are saved with the object, so the list is there in the next session. **Export CSV...** writes the
+  list to a file. In Object mode the list shows the distances of all SubD objects (read-only). Edits are undoable.
 - **Twist** (Modify > Twist; LightWave Twist): the selected polygons are twisted around an axis. Press Twist, **move the
   mouse** for the angle (right = clockwise, Ctrl = steps), click to accept (Esc cancels), then fine-tune in the panel.
   Edit mode only, symmetry is ignored.
