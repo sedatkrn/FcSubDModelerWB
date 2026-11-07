@@ -16,6 +16,12 @@ class SubDModelerWorkbench(Gui.Workbench):
         self.appendToolbar("SubD", subd_commands.COMMANDS)
         self.appendMenu("SubD", subd_commands.COMMANDS)
 
+    def ContextMenu(self, recipient):
+        # Agacta / gorunumde SubD nesnesine sag tik: "SubD mode" (modelleyicide ac)
+        import subd_commands
+        if subd_commands._selected_subd() is not None:
+            self.appendContextMenu("SubD", ["SubD_Edit"])
+
     def Activated(self):
         pass
 

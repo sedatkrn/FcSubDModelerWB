@@ -31,6 +31,24 @@ class _OpenModeler:
         subd_modeler.start()
 
 
+class _EditSubD:
+    """Agacta / gorunumde SubD nesnesine sag tik: o nesneyi modelleyicide ac (arac cubugundaki dugmeyle ayni)."""
+
+    def GetResources(self):
+        return {"Pixmap": ICON,
+                "MenuText": T("SubD mode"),
+                "ToolTip": T("Edit the selected SubD object in the SubD modeler")}
+
+    def IsActive(self):
+        return _selected_subd() is not None
+
+    def Activated(self):
+        import subd_modeler
+        obj = _selected_subd()
+        if obj is not None:
+            subd_modeler.start(obj)
+
+
 class _MakeSolid:
     def GetResources(self):
         return {"Pixmap": os.path.join(ICONS, "subd_solid.svg"),
@@ -138,6 +156,7 @@ class _RailPipe:
 COMMANDS = ["SubD_Modeler", "SubD_MakeSolid", "SubD_Zebra"]   # Rail Pipe / Groove dugmeleri: Pimp My PartDesign
 
 Gui.addCommand("SubD_Modeler", _OpenModeler())
+Gui.addCommand("SubD_Edit", _EditSubD())
 Gui.addCommand("SubD_MakeSolid", _MakeSolid())
 Gui.addCommand("SubD_Zebra", _Zebra())
 Gui.addCommand("SubD_RailPipe", _RailPipe(False))

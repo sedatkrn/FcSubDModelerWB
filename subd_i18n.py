@@ -321,6 +321,8 @@ TR = {
     "Edge bevel": "Kenar bevel",
     "Knife (plane: N.p = Offset)": "Knife (düzlem: N.p = Konum)",
     "Distance": "Mesafe",
+    "SubD mode": "SubD modu",
+    "Edit the selected SubD object in the SubD modeler": "Seçili SubD nesnesini SubD modelleyicide düzenle",
     "Angle": "Açı",
     "Width": "Genişlik",
     "Depth": "Derinlik",

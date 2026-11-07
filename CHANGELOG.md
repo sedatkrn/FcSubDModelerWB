@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.1 (2026-11-07)
+
+- **Fixed: two documents open.** Each document now has its own modeler session. Switching to another document tab
+  suspends the modeler (panel, bars, capture hide) and switching back resumes it with its Undo / Redo history;
+  starting the modeler in a second document no longer closes the first one's session.
+- **Fixed:** a closed session could come back to life when switching tabs, and a new session deleted the tool panel of
+  the other document's session. A suspended session no longer autosaves into the wrong document.
+- **Fixed: bars overlapping FreeCAD's overlay panels.** When the Tree / Property view is used in Overlay mode (floating
+  over the 3D view), the Object / Edit bar, the bottom bar, the tool options panel and messages now move aside and
+  follow the overlay panels as they open, close or resize.
+- **Fixed:** Qt warning `objectName not set for QDockWidget` in the Report View (the Options panel had no name).
+- **New: right-click a SubD object** in the tree (SubD Modeler workbench) and choose *SubD mode* to edit it.
+
 ## 0.4.0 (2026-11-07)
 
 - **Fixed: switching to another workbench left the SubD tools on screen.** The *SubD tools* panel, the bars in the 3D

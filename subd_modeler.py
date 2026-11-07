@@ -3551,7 +3551,7 @@ def obj_links_update(obj):
     silinir. Modelleyici bu nesnenin kafesini duzenliyorsa o yapar (SubDSession.links_refresh)."""
     if "SketchLinks" not in obj.PropertiesList or not obj.SketchLinks or not obj.SketchLink:
         return
-    s = _session
+    s = _sessions.get(obj.Document.Name)
     if s is not None and s.mode != "object" and s.obj is obj:
         _later(lambda: _quiet(s.links_refresh))
         return
@@ -4591,6 +4591,10 @@ class SubDSession:
         self.wb_timer = QtCore.QTimer()   # baska calisma tezgahina gecildi mi (bkz. suspend)
         self.wb_timer.timeout.connect(self._wb_tick)
         self.wb_timer.start(300)
+        self._mdi = Gui.getMainWindow().findChild(QtWidgets.QMdiArea)   # belge sekmesi degisince hemen karar ver
+        self._mdi_cb = lambda *a: _later(lambda: _quiet(self._wb_tick))
+        if self._mdi is not None:
+            _quiet(lambda: self._mdi.subWindowActivated.connect(self._mdi_cb))
         self.dim_timer = QtCore.QTimer()  # gorunum donunce olculer ekranda yerinde kalsin
         self.dim_timer.timeout.connect(self._dim_tick)
         self.dim_timer.start(150)
@@ -5204,6 +5208,7 @@ class SubDSession:
 
     def _build_dock(self):
         self.dock = QtWidgets.QDockWidget(T("SubD Options"))
+        self.dock.setObjectName("SubDModelerOptions_%s" % getattr(self, "doc_name", ""))   # saveState: adsiz dock uyarisi
         w = QtWidgets.QWidget()
         lay = QtWidgets.QVBoxLayout(w)
         self.status = QtWidgets.QLabel()
@@ -6492,7 +6497,7 @@ class SubDSession:
                 self.links_refresh()
             except Exception as e:
                 App.Console.PrintWarning("SubD sketch link: %s\n" % e)
-        doc = App.ActiveDocument if self.obj is None else self.obj.Document
+        doc = (App.listDocuments().get(self.doc_name) or App.ActiveDocument) if self.obj is None else self.obj.Document
         if self.obj is None:                               # yeni nesne: olusturma her zaman geri alinabilir
             doc.openTransaction("SubD")
             self.obj = doc.addObject("Mesh::FeaturePython", "SubD")
@@ -6601,7 +6606,7 @@ class SubDSession:
         self.refresh()
 
     def _autosave(self):
-        if self.mode != "object" and self.dirty and self.drag is None and self.grab is None and len(self.cage.V):
+        if not self.suspended and self.mode != "object" and self.dirty and self.drag is None and self.grab is None and len(self.cage.V):
             self.save(full=False)
 
     def do_undo(self, record=True):
@@ -10753,19 +10758,34 @@ class SubDSession:
     # FreeCAD kendisi Sketcher'a gecer) arac paneli, cubuklar ve fare / tus / Undo yakalama kalkar ki o tezgahin
     # araclari bozulmasin; oturum ve kafes kalir (sketch baglari ve otomatik kayit surer). Geri donunce her sey yerine gelir.
     def _wb_tick(self):
+        """Modelleyici yalniz kendi belgesinde ve SubD (ya da baslatildigi) tezgahinda etkin; baska belgeye ya da
+        tezgaha gecilince askiya alinir, geri donunce kaldigi yerden surer (ikinci dosyada ilkinin menuleri /
+        tus ve fare yakalamasi calismasin)."""
+        if getattr(self, "closed", False) or _sessions.get(self.doc_name) is not self:
+            return                                         # kapanmis oturum geri canlanmasin (bekleyen geri cagri)
         now = _active_wb()
-        if now is None:
-            return
-        if now in self.wb_home:
+        gd = Gui.ActiveDocument
+        if now is None or gd is None:
+            return                                         # gecis sirasinda gecici: karar verme
+        if now in self.wb_home and gd.Document.Name == self.doc_name:
             if self.suspended:
                 self.resume()
         elif not self.suspended:
             self.suspend()
 
+    def focus_ok(self):
+        """Odak / pencere etkinlestirme yalniz modelleyici etkinken ve kendi belgesi onundeyken serbest; yoksa kullanicinin
+        actigi diger belgenin sekmesi geri alinirdi."""
+        gd = Gui.ActiveDocument
+        return (not self.suspended) and gd is not None and gd.Document.Name == self.doc_name
+
     def suspend(self):
-        if self.suspended:
+        global _session
+        if self.suspended or getattr(self, "closed", False):
             return
         self.suspended = True
+        if _session is self:
+            _session = None
         if self.grab:                                      # yarim kalan arac / tasima: vazgec
             self.end_grab(False)
         if self.drag is not None:
@@ -10796,9 +10816,11 @@ class SubDSession:
         _quiet(lambda: self.parent.removeChild(self.root))   # kafes / onizleme sahneden de kalksin
 
     def resume(self):
-        if not self.suspended:
+        global _session
+        if not self.suspended or getattr(self, "closed", False):
             return
         self.suspended = False
+        _session = self
         if self.parent.findChild(self.root) < 0:
             _quiet(lambda: self.parent.addChild(self.root))
         _quiet(lambda: self.view.addEventCallbackPivy(coin.SoMouseButtonEvent.getClassTypeId(), self._cb_btn))
@@ -10832,10 +10854,15 @@ class SubDSession:
         global _session
         if _session is self:
             _session = None
+        if _sessions.get(self.doc_name) is self:
+            del _sessions[self.doc_name]
+        self.closed = True
         _quiet(lambda: _zebra_button(False))
         _quiet(self.timer.stop)
         _quiet(self.autosave.stop)
         _quiet(lambda: self.wb_timer.stop())
+        if getattr(self, "_mdi", None) is not None:
+            _quiet(lambda: self._mdi.subWindowActivated.disconnect(self._mdi_cb))
         _quiet(self.dim_timer.stop)
         if not doc_gone and self.mode != "object":         # Object modunda yazilacak kafes yok
             try:
@@ -10846,7 +10873,7 @@ class SubDSession:
                 self._show_edited()
             except Exception as e:
                 App.Console.PrintError(T("SubD could not be saved: %s\n") % e)
-        if not getattr(self, "suspended", False):          # askidayken geri cagrilar ve suzgecler zaten kaldirildi
+        if True:                                           # askidayken kaldirilmis olsa da zararsiz: kapanan oturumdan iz kalmasin
             _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoMouseButtonEvent.getClassTypeId(), self._cb_btn))
             _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoLocation2Event.getClassTypeId(), self._cb_mov))
             for w in self.key_targets:
@@ -10966,12 +10993,12 @@ class _DocWatcher(object):
     penceredeki arac paneli ve oturum ortada kaliyordu."""
 
     def slotDeletedDocument(self, doc):
-        s = _session
+        s = _sessions.get(doc.Name)
         if s is not None and s.doc_name == doc.Name:
             s.close(doc_gone=True)
 
     def slotUndoDocument(self, doc):
-        s = _session
+        s = _sessions.get(doc.Name)
         if s is not None and s.doc_name == doc.Name:
             _later(lambda: _quiet(s.doc_undone))
 
@@ -10995,7 +11022,7 @@ class _DocWatcher(object):
 
     def slotStartSaveDocument(self, doc, filename):
         # Ctrl+S: kafesin son hali dosyaya girsin (yoksa en son otomatik kayit / F ile yazilan hal kaydedilirdi)
-        s = _session
+        s = _sessions.get(doc.Name)
         if (s is not None and s.doc_name == doc.Name and s.mode != "object" and len(s.cage.V)
                 and s.drag is None and s.grab is None and (s.dirty or s.obj is None)):
             try:
@@ -11014,7 +11041,7 @@ def _links_follow(doc_name, name):
     src = doc.getObject(name) if doc is not None else None
     if src is None:
         return
-    s = _session
+    s = _sessions.get(doc_name)
     for o in src.InList:
         if "SketchLinks" not in o.PropertiesList or not o.SketchLinks or not o.SketchLink:
             continue
@@ -11075,6 +11102,8 @@ class _KeyFilter(QtCore.QObject):
         self.session = session
 
     def eventFilter(self, obj, ev):
+        if getattr(self.session, "closed", False) or getattr(self.session, "suspended", False):
+            return False                                   # kapanmis / askidaki oturum olay yakalamasin
         t = ev.type()
         g = self.session.grab
         if t == QtCore.QEvent.Wheel and g is not None and g.get("kind") in ("ebevel", "extrude"):
@@ -11192,6 +11221,8 @@ class _HistoryGuard(QtCore.QObject):
         return None
 
     def eventFilter(self, obj, ev):
+        if getattr(self.session, "closed", False) or getattr(self.session, "suspended", False):
+            return False
         t = ev.type()
         if t in (QtCore.QEvent.ShortcutOverride, QtCore.QEvent.KeyPress):
             k = self._key(obj, ev)
@@ -11884,7 +11915,7 @@ class _ToolPanel(QtWidgets.QFrame):
             return
         self.vals[i] = val
         fn = self.fns[i]
-        _later(lambda: self.s.gv.setFocus())     # kisayollar gorunumde calismaya devam etsin
+        _later(lambda: self.s.focus_ok() and self.s.gv.setFocus())     # kisayollar gorunumde calismaya devam etsin
         _later(lambda: fn(val))
 
 
@@ -11974,8 +12005,9 @@ class _ToolDock(QtWidgets.QDockWidget):
         self.setWidget(content)
         self.topLevelChanged.connect(lambda floating: overlay.refocus())
         mw = self.parent()
+        owned = [getattr(getattr(v, "overlay", None), "tool_dock", None) for v in _sessions.values()]
         for old in mw.findChildren(QtWidgets.QDockWidget, "SubDModelerTools"):   # duzgun kapanmamis oturumdan
-            if old is not self:
+            if old is not self and not any(old is o for o in owned):             # baska belgenin oturumununki kalir
                 _quiet(lambda old=old: mw.removeDockWidget(old))
                 _quiet(old.deleteLater)
         p = _param()
@@ -12279,10 +12311,22 @@ class _Overlay(object):
         self.bar.raise_()
         self.relayout()
         self.refocus()
+        self._ov_timer = QtCore.QTimer(self.vp)            # Overlay panelleri acilip kapaninca / boyut degisince kay
+        self._ov_timer.timeout.connect(lambda: _quiet(self._ov_tick))
+        self._ov_timer.start(400)
+
+    def _ov_tick(self):
+        if not self.bar.isVisible():
+            return
+        ov = self._overlay_rects()
+        if sorted((k, r.x(), r.y(), r.width(), r.height()) for k, r in ov.items()) != getattr(self, "_ov_sig", None):
+            self.relayout()
 
     def refocus(self):
         """Panele tiklandi: klavye yine gorunume gitsin (panel yuzuyorsa pencere odagi da ana pencereye donsun)."""
         def back():
+            if not self.s.focus_ok():                      # askidayken ya da baska belge aktifken odagi calma
+                return
             self.s.gv.window().activateWindow()
             self.s.gv.setFocus()
         _later(lambda: _quiet(back))
@@ -12322,21 +12366,54 @@ class _Overlay(object):
             if apply(level) <= w:
                 break
 
+    OVERLAY_NAMES = ("OverlayLeft", "OverlayRight", "OverlayTop", "OverlayBottom")
+
+    def _overlay_rects(self):
+        """FreeCAD'in Overlay modundaki paneller (agac / ozellikler gorunumun ustunde yuzer): gorunumle kesisen acik
+        olanlarin dikdortgenleri, gorunum koordinatinda. Cubuklarimiz onlarin altinda kalmasin diye kenara kayar."""
+        out = {}
+        try:
+            mw = Gui.getMainWindow()
+            vr = QtCore.QRect(self.vp.mapToGlobal(QtCore.QPoint(0, 0)), self.vp.size())
+            for name in self.OVERLAY_NAMES:
+                w = mw.findChild(QtWidgets.QTabWidget, name)
+                if w is None or not w.isVisible():
+                    continue
+                r = QtCore.QRect(w.mapToGlobal(QtCore.QPoint(0, 0)), w.size()).intersected(vr)
+                if not r.isEmpty():
+                    out[name] = r.translated(-vr.topLeft())
+        except Exception:
+            return {}
+        return out
+
     def relayout(self):
         w, h = self.vp.width(), self.vp.height()
-        self._fit_bar(w)
-        self.bar.setFixedWidth(w)
+        ov = self._overlay_rects()
+        self._ov_sig = sorted((k, r.x(), r.y(), r.width(), r.height()) for k, r in ov.items())
+        left = ov["OverlayLeft"].right() + 1 if "OverlayLeft" in ov else 0
+        right = w - ov["OverlayRight"].left() if "OverlayRight" in ov else 0
+        bottom = h - ov["OverlayBottom"].top() if "OverlayBottom" in ov else 0
+        left, right = max(0, left), max(0, right)
+        self._ins = (left, right, bottom)
+        bw = max(240, w - left - right)
+        self._fit_bar(bw)
+        self.bar.setFixedWidth(bw)
         self.bar.adjustSize()
-        self.bar.move(0, h - self.bar.height())
+        self.bar.move(left, h - self.bar.height() - max(0, bottom))
         self.modes.adjustSize()                            # Object / Edit ve secim modlari: sol ust kose
-        self.modes.move(8, 8)
+        my = 8
+        if "OverlayTop" in ov:                             # ustteki panel modlarin yerini kapliyorsa altina
+            mr = QtCore.QRect(left + 8, 8, self.modes.width(), self.modes.height())
+            if mr.intersects(ov["OverlayTop"]):
+                my = ov["OverlayTop"].bottom() + 9
+        self.modes.move(left + 8, my)
         self.modes.raise_()
         avail = self.scroll.viewport().height() - 8        # cerceve kenarlari
         self._flow_columns(avail if avail > 100 else 1 << 30)   # sekmesi arkada / henuz acilmamis panel: tek sutun
         bar = self.scroll.verticalScrollBar().sizeHint().width() if self.left.height() > avail > 92 else 0
         self.scroll.setMinimumWidth(self.left.width() + bar)
         # islem paneli: gorunumun solu, alt cubugun hemen ustu
-        self.panel.move(8, h - self.bar.height() - self.panel.height() - 8)
+        self.panel.move(8 + left, h - self.bar.height() - max(0, bottom) - self.panel.height() - 8)
         self._place_info()
 
     def _place_info(self):
@@ -12345,8 +12422,9 @@ class _Overlay(object):
         if not lab.text():
             lab.hide()
             return
-        x = 8
-        maxw = max(200, self.vp.width() - x - 12)
+        ins = getattr(self, "_ins", (0, 0, 0))
+        x = 8 + ins[0]
+        maxw = max(200, self.vp.width() - x - ins[1] - 12)
         lab.setMaximumWidth(maxw)
         lab.setWordWrap(False)                             # sigiyorsa tek satir; sigmiyorsa satira bol
         lab.adjustSize()
@@ -12356,7 +12434,7 @@ class _Overlay(object):
             lab.adjustSize()
             lab.setMinimumWidth(0)
             lab.setMaximumWidth(maxw)
-        bottom = self.vp.height() - self.bar.height() - 8
+        bottom = self.vp.height() - self.bar.height() - max(0, ins[2]) - 8
         if self.panel.isVisible():
             bottom = self.panel.y() - 6
         lab.move(x, bottom - lab.height())
@@ -12460,6 +12538,7 @@ class _Overlay(object):
                 _quiet(w.hide)
 
     def close(self):
+        _quiet(self._ov_timer.stop)
         d = self.tool_dock                                 # ana pencerede: gorunum silinse de kalir, once kaldir
         _quiet(d.remember)
         _quiet(lambda: d.parent().removeDockWidget(d))
@@ -12469,7 +12548,8 @@ class _Overlay(object):
             _quiet(w.deleteLater)
 
 
-_session = None
+_session = None        # su an etkin (gorunen) oturum
+_sessions = {}         # belge adi -> oturum: her belgenin kendi oturumu var; baska belgeye gecince askiya alinir
 
 
 def start(obj=None, object_mode=None):
@@ -12477,10 +12557,15 @@ def start(obj=None, object_mode=None):
     modunda acar. Bos belgede de bos acar (LightWave gibi; eskiden kutuyla baslardi ve her seferinde silinmesi
     gerekiyordu, issue #7): Create > Box / Cylinder yeni nesneyi kurar."""
     global _session
-    if _session:
-        _session.close()
     if App.ActiveDocument is None or Gui.ActiveDocument is None:
         App.newDocument("SubD")
+    doc_name = Gui.ActiveDocument.Document.Name
+    old = _sessions.get(doc_name)
+    if old is not None:                                    # bu belgenin oturumu zaten var: kapat, yeniden ac
+        old.close()
+    for o in list(_sessions.values()):                     # baska belgelerin oturumlari kapanmaz, askiya alinir
+        if o.doc_name != doc_name:
+            _quiet(o.suspend)
     repair_proxies(App.ActiveDocument)
     if object_mode is None:
         if obj is None:
@@ -12492,4 +12577,5 @@ def start(obj=None, object_mode=None):
     if not object_mode and obj is not None:
         Gui.Selection.clearSelection()
     _session = SubDSession(obj, object_mode=object_mode)
+    _sessions[_session.doc_name] = _session
     return _session
