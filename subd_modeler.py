@@ -2029,6 +2029,13 @@ def rail_ok(cage, r):
     return all(_edge(X[j], Y[j]) in E for X, Y in zip(full, full[1:]) for j in range(n))
 
 
+def _axis_rot(d, ang):
+    """Birim d ekseni etrafinda ang radyan donme matrisi (Rodrigues)."""
+    x, y, z = d
+    K = np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
+    return np.eye(3) + math.sin(ang) * K + (1.0 - math.cos(ang)) * (K @ K)
+
+
 def _rotate_to(a, b):
     """a birim yonunu b'ye en kisa yoldan ceviren donme matrisi."""
     v = np.cross(a, b)
@@ -3682,6 +3689,71 @@ def _param():
     return App.ParamGet(subd_i18n.PARAM)
 
 
+TWIST_FALLOFFS = ("Linear", "Smooth", "Ease in", "Ease out", "Peak", "Dome")
+AXIS_OPS = ("array", "twist")          # ekseni cizgiyle / dugmeyle verilen son islemler (Draw axis, Axis X / Y / Z)
+
+
+def _twist_weight(t, mode):
+    """Twist'te acinin eksen boyunca orani: t = konum (0 baslangic .. 1 bitis) -> 0..1. Egriler FALLOFFS gibi
+    adlandirilir ama eksen boyuncadir. 0-3 rampa (bir uc sabit, oteki uc tam aci): Linear, Smooth, Ease in,
+    Ease out. 4-5 can (iki uc sabit, orta tam): Peak ve Dome, Magnet'in ayni adli egrileri ortadan olculur."""
+    t = np.clip(t, 0.0, 1.0)
+    if mode == 1:
+        return 0.5 * (1.0 - np.cos(math.pi * t))
+    if mode == 2:
+        return t * t
+    if mode == 3:
+        return 1.0 - (1.0 - t) ** 2
+    if mode >= 4:
+        return _falloff(np.abs(2.0 * t - 1.0), 2 if mode == 4 else 3)
+    return t
+
+
+# --- Atanabilir kisayollar: komutlarin varsayilan tusu yok; kullanici bir tus atayabilir ---
+# subd_modeler.set_user_key("twist", "Shift+T")   (bos metin atamayi kaldirir). Atama FreeCAD parametresinde
+# (Key_twist / Key_array) saklanir ve acik modelleyicide hemen gecerlidir; dugme yazisi sonraki acilista gorunur.
+# Atanan tus, ayni tusu kullanan yerlesik kisayolun onune gecer.
+USER_KEYS = ("array", "twist")
+
+
+def user_key(name):
+    """name komutuna atanmis tus (tasinabilir metin, orn. "Shift+T"); atanmamissa ""."""
+    return _param().GetString("Key_" + name, "")
+
+
+def set_user_key(name, seq=""):
+    """Komuta tus ata ("Shift+T", "Ctrl+Alt+T" ...); bos metin atamayi kaldirir. Yazilan tusu dondurur."""
+    if name not in USER_KEYS:
+        raise ValueError("name must be one of %s" % (USER_KEYS,))
+    seq = QtGui.QKeySequence(seq).toString(QtGui.QKeySequence.PortableText) if seq else ""
+    _param().SetString("Key_" + name, seq)
+    return seq
+
+
+def _key_label(name):
+    """Dugmenin sagindaki yazi: "Shift+T" -> "⇧T", "Ctrl+T" -> "^T"; atanmamissa bos."""
+    return user_key(name).replace("Ctrl+", "^").replace("Shift+", "⇧").replace("Alt+", "⌥").replace("Meta+", "◆")
+
+
+def _user_command(ev):
+    """Tus olayina atanmis komut adi ya da None."""
+    try:
+        seq = QtGui.QKeySequence(ev.keyCombination()).toString(QtGui.QKeySequence.PortableText)
+    except Exception:
+        return None
+    if not seq:
+        return None
+    return next((n for n in USER_KEYS if user_key(n) == seq), None)
+
+
+def _active_wb():
+    """Etkin calisma tezgahinin adi (orn. "SubDModelerWorkbench") ya da None."""
+    try:
+        return Gui.activeWorkbench().name()
+    except Exception:
+        return None
+
+
 _last_shell = {"Thickness": 2.0, "Detail filter": 6.0, "Mode": 0.0, "Fill": 1.0, "Sharp": 1.0, "Flat rim": 1.0}   # Shell paneli
 _knife_opts = {"split": False, "objects": False}   # Knife (line) secenekleri (ikisi kapali: yalniz keser)
 _mline_opts = {"flip": False}                       # Mirror (line): kaynak yan ters
@@ -4419,6 +4491,10 @@ class SubDSession:
         self.line_overlay = None  # knife cizgisi cizimi
         self._line_cursor = None  # knife cizgisi yakalarken: gorunumun onceki imleci
         self.overlay = None
+        self.suspended = False   # baska bir calisma tezgahinda: arac paneli / cubuklar / yakalama kapali (bkz. suspend)
+        self.dock_was_open = False
+        wb = _active_wb()
+        self.wb_home = {"SubDModelerWorkbench"} | ({wb} if wb else set())   # modelleyicinin gorundugu tezgahlar
         self._pending = False
         self.mouse = (0, 0)
         self.gizmo = MoveGizmo(self.view)
@@ -4436,6 +4512,9 @@ class SubDSession:
         self.autosave = QtCore.QTimer()   # degisiklikler belgeye duzenli yazilsin (FreeCAD kapanirsa kaybolmasin)
         self.autosave.timeout.connect(self._autosave)
         self.autosave.start(20000)
+        self.wb_timer = QtCore.QTimer()   # baska calisma tezgahina gecildi mi (bkz. suspend)
+        self.wb_timer.timeout.connect(self._wb_tick)
+        self.wb_timer.start(300)
         # Klavye Qt duzeyinde yakalanir: Coin'e giden olaylarin bazilarini (Tab, A, E...)
         # FreeCAD tuketiyor, Ctrl+Z gibi tuslar da FreeCAD kisayollarina gidiyor.
         gv = self.gv = _graphics_view(self.view)
@@ -5538,7 +5617,7 @@ class SubDSession:
             self.env_rad.value = float(max(np.linalg.norm(hi - lo), 1e-6)) * ENV_RADIUS
         self.s_switch.whichChild = 0 if self.smooth else -1
         self.c_switch.whichChild = -1 if self.smooth else 0
-        verts = self.selected_verts() if not self.grab and self.armed != "magnet" else []
+        verts = self.selected_verts() if not self.grab and self.armed != "magnet" and not self.suspended else []
         self.gizmo.place(App.Vector(*self.l2w(V[verts].mean(0))) if verts else None)
         self._rail_draw()
         self._update_measure(fast)
@@ -5820,6 +5899,14 @@ class SubDSession:
                 if not self._mirror_line(n / ln, v["Offset"] / ln, a["src"]):
                     self.info = T("Mirror: no polygons on the source side (Flip side)")
             self.sel, self.sel_v, self.sel_e = set(), set(), set()
+        elif k == "array":
+            err = self._array(v, a["faces"])
+            if err:
+                self.info = err
+        elif k == "twist":
+            err = self._twist(v, a["faces"])
+            if err:
+                self.info = err
         elif k == "knife":
             items, maxt = self._knife_cut(*a["edge"])
             self.slide_set(items, min(max(v["t"], 0.0), maxt))
@@ -5931,6 +6018,10 @@ class SubDSession:
                                                          ("Normal Y", v["Ny"], "", 4, r("Ny")),
                                                          ("Normal Z", v["Nz"], "", 4, r("Nz")),
                                                          mm("Offset")], self.drag is None, self._mline_checks()
+            if k == "array":
+                return self._array_panel(v)
+            if k == "twist":
+                return self._twist_panel(v)
             if k == "addpoints":
                 return T("Add points"), [("Count", v["Count"], "", 0, r("Count"))], self.drag is None
             if k == "addpoint":
@@ -7336,6 +7427,9 @@ class SubDSession:
 
     def line_live(self, b, pos):
         """Knife cizgisi surulurken (LightWave gibi canli): durumu kesim oncesine dondur, yeni duzlemle kes."""
+        if b.get("tool") == "array":
+            self.array_line_live(b, pos)
+            return
         self._pending = False
         if b.get("cancelled"):
             return
@@ -7372,6 +7466,16 @@ class SubDSession:
 
     def line_finish(self, b):
         """Birakildi: canli kesim kalir ve 'son islem' olur (panelde Normal / Konum); hicbir sey kesilmediyse geri al."""
+        if b.get("tool") == "array":                       # eksen verildi: arac kapanir, panel eksen alanlarini gosterir
+            if not b.get("cancelled") and "old" not in b:  # surukleme yok: tiklama = bakis yonunde eksen
+                self.array_line_live(b, b["p0"])
+            self._line_hide()
+            if not b.get("cancelled"):
+                self.armed = None
+                self.dirty = True
+                self.info = ""
+                self.refresh()
+            return
         self._line_hide()
         if b.get("cancelled"):
             return
@@ -7411,6 +7515,15 @@ class SubDSession:
         """Esc: canli kesimi geri al."""
         b, self.box = self.box, None
         self._line_hide()
+        if b is not None and b.get("tool") == "array":     # Array ekseni: onceki eksene don, arac acik kalir
+            b["cancelled"] = True
+            op = self.last_op
+            if op is not None and op["kind"] in AXIS_OPS and "old" in b:
+                op["values"].update(b["old"])
+                self._reapply(op)
+            else:
+                self.refresh()
+            return
         if b is not None:
             b["cancelled"] = True                          # bekleyen canli adimlar bir sey yapmasin
             if "before" in b:
@@ -7454,8 +7567,8 @@ class SubDSession:
     def _line_hover(self):
         """Knife (line) acik, cizgi cekilmiyor: imlecin altindaki hedefi goster."""
         self._pending = False
-        on = self.armed in ("line", "mline") and self.box is None and self.mode != "object"
-        self._line_mark(self.line_snap(self.mouse, self.line_snap_data(self.cage)) if on else None)
+        on = self.armed in ("line", "mline", "array") and self.box is None and self.mode != "object"
+        self._line_mark(self.line_snap(self.mouse, self.line_snap_data(self._line_cage())) if on else None)
 
     # --- kalici araclar (LightWave gibi): dugme sari yanar, kapatilana kadar her tiklama araci uygular ---
     # "knife": kenara tikla = loop cut + kaydirma; "line": cizgi cek = duzlemle kes; "loop": kenara tikla = halka sec.
@@ -8093,6 +8206,378 @@ class SubDSession:
         self.sel, self.sel_v, self.sel_e = set(new) if self.mode == "face" else set(), set(), set()
         self.info = T("Mirror %s: %d polygons, %d points merged") % ("XYZ"[axis], len(new),
                                                                     sum(1 for v in used if keep[v]))
+
+    # --- Array (LightWave Array): secili cokgenlerin kopyalari AYRI PARCA olarak eklenir; asil parca yerinde kalir ---
+    # Radial: eksen (nokta + yon, dunya koordinati) etrafinda Count eleman, Start..End acisi arasinda; tam daire
+    # (End - Start >= 360) son elemani atlar. Eksen boyunca Offset ile helezon. Rectangular: dunya X / Y / Z
+    # boyunca Count x Offset. Offset turu (ikisinde de): Between (elemanlar arasi), Total (ilk ile son arasi),
+    # Multiply (aralik her adimda Factor ile carpilir). Eksen panelden (nokta + yon, X / Y / Z dugmeleri) ya da
+    # ekranda cizgi cekerek verilir (yakalama acik; kisa tiklama = bakis yonunde eksen).
+    ARRAY_MAX = 1000                                       # en cok kopya sayisi (donmayi onler)
+    ARRAY_AXIS = ("Px", "Py", "Pz", "Dx", "Dy", "Dz")
+
+    def array(self, mode=0):
+        """Polygon > Array: mode 0 = Radial, 1 = Rectangular. Secili cokgenler (yoksa uyari) kopyalanir."""
+        if self.mode == "object":
+            self.info = T("Array: only in edit mode")
+            self.refresh()
+            return
+        if self.drag or self.grab:
+            return
+        faces = self.selected_faces()
+        if not faces:
+            self.info = T("Array: select polygons")
+            self.refresh()
+            return
+        self.drop_tool()
+        self.push()
+        op = self.new_op("array", self._array_defaults(faces, mode), faces=faces)
+        self._apply_op(op)
+        self.last_op, self.op = op, None
+        self.refresh()
+
+    def _array_defaults(self, faces, mode):
+        """Baslangic degerleri: eksen dunya orijininden Z yonunde, Rectangular aralik = secimin boyutu."""
+        cage = self.cage
+        used = sorted({v for fi in faces for v in cage.F[fi]})
+        size = np.ptp(self.l2w(cage.V[used]), 0)
+        big = max(float(np.ptp(self.l2w(cage.V), 0).max()), 1.0)
+        off = [float(s) if s > 1e-6 else big * 0.1 for s in size]
+        return dict(Mode=float(mode), Count=6.0, Start=0.0, End=360.0, Offset=0.0, Rotate=1.0,
+                    NX=3.0, NY=1.0, NZ=1.0, OX=off[0], OY=off[1], OZ=off[2], OffMode=0.0, Factor=1.2,
+                    Px=0.0, Py=0.0, Pz=0.0, Dx=0.0, Dy=0.0, Dz=1.0)
+
+    @staticmethod
+    def _array_steps(n, off, kind, factor):
+        """n elemanin ilkten uzakligi: 0 Between, 1 Total, 2 Multiply (aralik her adimda factor ile carpilir)."""
+        if kind == 1:
+            return [off * i / (n - 1) if n > 1 else 0.0 for i in range(n)]
+        if kind == 2:
+            out, x = [0.0], 0.0
+            for i in range(1, n):
+                x += off * factor ** (i - 1)
+                out.append(x)
+            return out
+        return [off * i for i in range(n)]
+
+    def _array(self, v, faces):
+        """Kopyalari ekler; hata iletisi ya da None dondurur. Kafes 'before' durumundan baslar (bkz. _reapply)."""
+        cage = self.cage
+        sub = cage.subset(faces)
+        if not len(sub.V):
+            return T("Array: select polygons")
+        W = self.l2w(sub.V)
+        kind, fac = int(v["OffMode"]), v["Factor"]
+        copies = []                                        # her kopya: yeni dunya noktalari
+        if int(v["Mode"]) == 0:
+            n = min(max(int(round(v["Count"])), 1), self.ARRAY_MAX)
+            v["Count"] = float(n)
+            d = np.array([v["Dx"], v["Dy"], v["Dz"]], float)
+            ln = float(np.linalg.norm(d))
+            if ln < 1e-9:
+                return T("Array: the axis direction is zero")
+            d /= ln
+            p = np.array([v["Px"], v["Py"], v["Pz"]], float)
+            c = W.mean(0)
+            a0, a1 = v["Start"], v["End"]
+            full = abs(a1 - a0) >= 360.0 - 1e-6           # tam daire: son eleman ilkinin ustune binmesin
+            step = 0.0 if n == 1 else (a1 - a0) / (n if full else n - 1)
+            hs = self._array_steps(n, v["Offset"], kind, fac)
+            for i in range(n):
+                th = a0 + i * step
+                if abs(math.remainder(th, 360.0)) < 1e-9 and abs(hs[i]) < 1e-9:
+                    continue                               # asil parcanin kendisi
+                R = _axis_rot(d, math.radians(th))
+                if v["Rotate"] >= 0.5:
+                    copies.append((W - p) @ R.T + p + hs[i] * d)
+                else:                                      # yalniz yer degistirir, yonu ayni kalir
+                    copies.append(W + (R @ (c - p) + p - c) + hs[i] * d)
+        else:
+            nn = [min(max(int(round(v[k])), 1), self.ARRAY_MAX) for k in ("NX", "NY", "NZ")]
+            for k, x in zip(("NX", "NY", "NZ"), nn):
+                v[k] = float(x)
+            if nn[0] * nn[1] * nn[2] > self.ARRAY_MAX:
+                return T("Array: too many copies (max %d)") % self.ARRAY_MAX
+            st = [self._array_steps(x, v[k], kind, fac) for x, k in zip(nn, ("OX", "OY", "OZ"))]
+            for ix in range(nn[0]):
+                for iy in range(nn[1]):
+                    for iz in range(nn[2]):
+                        t = np.array([st[0][ix], st[1][iy], st[2][iz]])
+                        if np.abs(t).max() >= 1e-9:
+                            copies.append(W + t)
+        if not copies:
+            return T("Array: nothing to add (raise Count or set an Offset)")
+        new = []
+        for Wn in copies:
+            part = sub.copy()
+            part.V = self.w2l(Wn)
+            new += cage.append(part)
+        self.sel, self.sel_v, self.sel_e = set(new) if self.mode == "face" else set(), set(), set()
+        self.info = T("Array: %d copies, %d polygons") % (len(copies), len(new))
+        return None
+
+    def _array_panel(self, v):
+        rect = int(v["Mode"]) == 1
+        kind = int(v["OffMode"])
+        r = lambda name: (lambda val: self.redo_last(name, val))
+        if rect:
+            fields = [("Count X", v["NX"], "", 0, r("NX")), ("Count Y", v["NY"], "", 0, r("NY")),
+                      ("Count Z", v["NZ"], "", 0, r("NZ")),
+                      ("Offset X", v["OX"], " mm", 3, r("OX")), ("Offset Y", v["OY"], " mm", 3, r("OY")),
+                      ("Offset Z", v["OZ"], " mm", 3, r("OZ"))]
+        else:
+            fields = [("Count", v["Count"], "", 0, r("Count")), ("Start angle", v["Start"], "°", 2, r("Start")),
+                      ("End angle", v["End"], "°", 2, r("End")),
+                      ("Offset along axis", v["Offset"], " mm", 3, r("Offset"))]
+        if kind == 2:
+            fields.append(("Factor", v["Factor"], " x", 3, r("Factor")))
+        if not rect:
+            fields += [("Axis point " + n, v["P" + n.lower()], " mm", 3, r("P" + n.lower())) for n in "XYZ"]
+            fields += [("Axis direction " + n, v["D" + n.lower()], "", 4, r("D" + n.lower())) for n in "XYZ"]
+        checks = [("Radial", not rect, lambda on: self.redo_last("Mode", 0.0)),
+                  ("Rectangular", rect, lambda on: self.redo_last("Mode", 1.0)),
+                  ("Between", kind == 0, lambda on: self.redo_last("OffMode", 0.0)),
+                  ("Total", kind == 1, lambda on: self.redo_last("OffMode", 1.0)),
+                  ("Multiply", kind == 2, lambda on: self.redo_last("OffMode", 2.0))]
+        buttons, side = [], []
+        if not rect:
+            checks.append(("Rotate copies", v["Rotate"] >= 0.5, lambda on: self.redo_last("Rotate", float(bool(on)))))
+            buttons = [("Draw axis", self.array_pick)]
+            side = [("Axis X", lambda: self.array_axis_dir((1.0, 0.0, 0.0))),   # kutucuklarin saginda alt alta
+                    ("Axis Y", lambda: self.array_axis_dir((0.0, 1.0, 0.0))),
+                    ("Axis Z", lambda: self.array_axis_dir((0.0, 0.0, 1.0)))]
+        return T("Array"), fields, self.drag is None, checks, None, buttons, side
+
+    def array_axis_dir(self, d):
+        """Axis X / Y / Z dugmeleri: eksen yonunu dunya eksenine al (nokta ayni kalir)."""
+        op = self._axis_op()
+        if op is None or self.drag or self.grab:
+            return
+        op["values"].update(Dx=float(d[0]), Dy=float(d[1]), Dz=float(d[2]))
+        self._reapply(op)
+
+    def array_pick(self):
+        """Draw axis: ekranda cizgi cekerek ekseni ver (bir kez; sonra arac kapanir). Yakalama Mirror (line) ile aynidir."""
+        op = self._axis_op()
+        if op is None or self.drag or self.grab or self.box is not None:
+            return
+        self.armed = None if self.armed == "array" else "array"
+        self._line_mark(None)
+        self.info = T("Array: drag the axis line, a click gives an axis along the view "
+                      "(Ctrl: 15° steps; Esc / right click: off)") if self.armed else ""
+        self.refresh()
+
+    def _line_cage(self):
+        """Cizgi yakalama hedeflerinin kafesi: Array ekseni cizilirken kopyalar degil, array oncesi kafes."""
+        op = self.last_op
+        if self.armed == "array" and op is not None and op["kind"] in AXIS_OPS:
+            return op["before"][0]
+        return self.cage
+
+    def array_axis_from(self, p0, p1, w0=None, w1=None):
+        """Ekrandaki cizgiden Array ekseni: (dunya noktasi, birim yon, gosterilecek p1) ya da None. Kisa cizgi
+        (tiklama) eksenin bakis yonunde olmasi demektir. Ctrl: 15 derece adim. w0, w1: yakalanan ucun tam dunya
+        noktasi. Dunya eksenine 2 dereceden yakin yon tam eksene oturur (kisa cizgide hep + yonde)."""
+        p0, p1 = np.array(p0, float), np.array(p1, float)
+        moved = abs(p1[0] - p0[0]) + abs(p1[1] - p0[1]) > 4
+        if moved and _ctrl_held():
+            v = p1 - p0
+            ang = math.radians(_snap(math.degrees(math.atan2(v[1], v[0])), 15.0))
+            p1 = p0 + np.linalg.norm(v) * np.array([math.cos(ang), math.sin(ang)])
+            w1 = None
+        P0 = (np.array(tuple(self.view.getPoint(int(round(p0[0])), int(round(p0[1]))))) if w0 is None
+              else np.array(w0, float))
+        if moved:
+            P1 = (np.array(tuple(self.view.getPoint(int(round(p1[0])), int(round(p1[1]))))) if w1 is None
+                  else np.array(w1, float))
+            d = P1 - P0
+            if np.linalg.norm(d) < 1e-9:
+                return None
+        else:
+            d, p1 = np.array(tuple(self.view.getViewDirection()), float), p0
+        d = d / np.linalg.norm(d)
+        if w1 is None or not moved:
+            for e in np.eye(3):
+                if abs(d.dot(e)) > math.cos(math.radians(2.0)):
+                    d = e * (np.sign(d.dot(e)) if moved else 1.0)
+        return P0, d, p1
+
+    def array_line_live(self, b, pos):
+        """Eksen cizgisi surulurken canli: array oncesi durumdan yeni eksenle yeniden kopyala."""
+        self._pending = False
+        op = self.last_op
+        if b.get("cancelled") or op is None or op["kind"] not in AXIS_OPS:
+            return
+        v = op["values"]
+        if "old" not in b:                                 # Esc icin onceki eksen
+            b["old"] = {k: v[k] for k in self.ARRAY_AXIS}
+        hit = None if _ctrl_held() else self.line_snap(pos, b.get("snap"))
+        self._line_mark(hit)
+        ax = self.array_axis_from(b["p0"], hit[0] if hit else pos, b.get("w0"), hit[1] if hit else None)
+        if ax is None:
+            return
+        P, D, p1 = ax
+        v.update(Px=float(P[0]), Py=float(P[1]), Pz=float(P[2]), Dx=float(D[0]), Dy=float(D[1]), Dz=float(D[2]))
+        c, a, bb, e = op["before"]
+        self.cage, self.sel, self.sel_v, self.sel_e = c.copy(), set(a), set(bb), set(e)
+        self._apply_op(op)
+        self._line_show(b["p0"], p1)
+        self.refresh(fast=True)
+
+    # --- Twist (LightWave Twist): secili cokgenler bir eksen etrafinda burulur ---
+    # Aci eksen boyunca Start..End arasinda bir egriyle (TWIST_FALLOFFS) 0'dan Angle'a cikar: Linear / Smooth / Ease in /
+    # Ease out'ta bir uc sabit kalir (Reverse: oteki uc), Peak / Dome'da iki uc sabit, orta tam doner. Auto range:
+    # Start / End secimin eksen boyunca uclaridir. Cuts: Start..End arasi eksene dik esit aralikli duzlemlerle secili
+    # cokgenler once bolunur (burulma yumusak gorunsun diye); komsu cokgenler yeni noktalari alir, kafes kapali kalir.
+    # Eksen Array ile ayni sekilde verilir (Draw axis, Axis X / Y / Z, sayi). Fare saga = saat yonu, Ctrl = adim.
+    # Simetri yok sayilir. Kisayol atanabilir (set_user_key).
+    TWIST_MAX_CUTS = 64
+
+    def twist(self):
+        """Modify > Twist: fareyi surukle = aci (canli), tikla = onayla, Esc = vazgec; sonra panelden sayiyla."""
+        if self.mode == "object":
+            self.info = T("Twist: only in edit mode")
+            self.refresh()
+            return
+        if self.drag or self.grab:
+            return
+        faces = self.selected_faces()
+        if not faces:
+            self.info = T("Twist: select polygons")
+            self.refresh()
+            return
+        self.drop_tool()
+        self.push()
+        op = self.new_op("twist", self._twist_defaults(faces), faces=faces)
+        self._apply_op(op)
+        self.grab = dict(kind="twist", lazy=True, p0=tuple(self.mouse))
+        self.gizmo.place(None)
+        self.info = T("Twist: move the mouse to twist (Ctrl: steps), click to accept, Esc to cancel")
+        self.refresh()
+
+    def _twist_defaults(self, faces):
+        """Baslangic: eksen secimin merkezinden, secimin en uzun oldugu dunya ekseni yonunde; aci 0."""
+        cage = self.cage
+        used = sorted({v for fi in faces for v in cage.F[fi]})
+        W = self.l2w(cage.V[used])
+        c = W.mean(0)
+        D = np.eye(3)[int(np.argmax(np.ptp(W, 0)))]
+        s = (W - c) @ D
+        return dict(Angle=0.0, Start=float(s.min()), End=float(s.max()), Falloff=0.0, Reverse=0.0, Auto=1.0,
+                    Cuts=0.0, Px=float(c[0]), Py=float(c[1]), Pz=float(c[2]),
+                    Dx=float(D[0]), Dy=float(D[1]), Dz=float(D[2]))
+
+    def _twist(self, v, faces):
+        """Kafesi 'before' durumundan burar; hata iletisi ya da None dondurur."""
+        cage = self.cage
+        D = np.array([v["Dx"], v["Dy"], v["Dz"]], float)
+        ln = float(np.linalg.norm(D))
+        if ln < 1e-9:
+            return T("Twist: the axis direction is zero")
+        D /= ln
+        P = np.array([v["Px"], v["Py"], v["Pz"]], float)
+        moved = {x for fi in faces for x in cage.F[fi]}
+        if not moved:
+            return T("Twist: select polygons")
+        s = (self.l2w(cage.V[sorted(moved)]) - P) @ D
+        if v["Auto"] >= 0.5:
+            v["Start"], v["End"] = float(s.min()), float(s.max())
+        a, b = v["Start"], v["End"]
+        span = b - a
+        if span < 1e-9:
+            return T("Twist: the selection has no length along the axis (set Start and End)")
+        cuts = min(max(int(round(v["Cuts"])), 0), self.TWIST_MAX_CUTS)
+        v["Cuts"] = float(cuts)
+        if cuts:                                           # eksene dik duzlemlerle bol; yeni noktalar da burulur
+            vmap = {}                                      # nokta -> ilk secili yuzler (bolunce yuz numaralari kayar)
+            for fi in faces:
+                for x in cage.F[fi]:
+                    vmap.setdefault(x, set()).add(fi)
+            nl = self.w2l_dir(D)
+            base = float(nl.dot(self.w2l(P)))
+            added = set()
+            for i in range(1, cuts + 1):
+                new = set(cage.plane_cut(nl, base + a + span * i / (cuts + 1), moved))
+                added |= new
+                moved |= new
+            sel = set()                                    # secim: secili yuzlerden tureyen yuzler (komsular degil)
+            if self.mode == "face":
+                for fi, f in enumerate(cage.F):
+                    old = [x for x in f if x not in added]
+                    if old and set.intersection(*(vmap.get(x, set()) for x in old)):
+                        sel.add(fi)
+            self.sel, self.sel_v, self.sel_e = sel, set(), set()
+        idx = sorted(moved)
+        W = self.l2w(cage.V[idx])
+        t = ((W - P) @ D - a) / span
+        if v["Reverse"] >= 0.5:
+            t = 1.0 - t
+        th = math.radians(v["Angle"]) * _twist_weight(t, int(v["Falloff"]))
+        r = W - P
+        par = np.outer(r @ D, D)
+        perp = r - par
+        cs, sn = np.cos(th)[:, None], np.sin(th)[:, None]
+        cage.V[idx] = self.w2l(P + par + perp * cs + np.cross(D, perp) * sn)
+        self.info = T("Twist %.2f°   %s") % (v["Angle"], T(TWIST_FALLOFFS[int(v["Falloff"])])) + (
+            "   " + T("(symmetry is ignored)") if self.sym else "")
+        return None
+
+    def twist_move(self):
+        """Twist surerken fare: yatay hareket aciyi belirler (saga = saat yonu, eksene gore); Ctrl: Step acisi."""
+        g = self.grab
+        op = self.op
+        if g.get("lazy"):                                  # dugmeden basladi: olcu buradan baslar
+            g["p0"], g["lazy"] = tuple(self.mouse), False
+            return
+        if op is None or op["kind"] != "twist":
+            return
+        v = op["values"]
+        D = np.array([v["Dx"], v["Dy"], v["Dz"]], float)
+        toward = float(D.dot(np.array(tuple(self.view.getViewDirection()), float))) < 0.0   # eksen bize bakiyorsa
+        ang = (self.mouse[0] - g["p0"][0]) * 0.5 * (_gain() / DRAG_GAIN) * (-1.0 if toward else 1.0)
+        v["Angle"] = float(_snap(ang, self.angle_box.value() if _ctrl_held() else 0.0))
+        c, a, b, e = op["before"]
+        self.cage, self.sel, self.sel_v, self.sel_e = c.copy(), set(a), set(b), set(e)
+        self._apply_op(op)
+        self.refresh(fast=True)
+
+    def twist_set(self, name, value):
+        """Panelden bir Twist degeri: Start / End elle verilince Auto range kapanir."""
+        if self.grab and self.grab.get("kind") == "twist":
+            self.end_grab(True)
+        op = self.last_op
+        if op is not None and op["kind"] == "twist" and name in ("Start", "End"):
+            op["values"]["Auto"] = 0.0
+        self.redo_last(name, value)
+
+    def _twist_panel(self, v):
+        r = lambda name: (lambda val: self.twist_set(name, val))
+        fields = [("Angle", v["Angle"], "°", 2, r("Angle")), ("Start", v["Start"], " mm", 3, r("Start")),
+                  ("End", v["End"], " mm", 3, r("End")), ("Cuts", v["Cuts"], "", 0, r("Cuts"))]
+        fields += [("Axis point " + n, v["P" + n.lower()], " mm", 3, r("P" + n.lower())) for n in "XYZ"]
+        fields += [("Axis direction " + n, v["D" + n.lower()], "", 4, r("D" + n.lower())) for n in "XYZ"]
+        fo = int(v["Falloff"])
+        checks = [(n, fo == i, lambda on, i=i: self.twist_set("Falloff", float(i)))
+                  for i, n in enumerate(TWIST_FALLOFFS)]
+        checks += [("Reverse", v["Reverse"] >= 0.5, lambda on: self.twist_set("Reverse", float(bool(on)))),
+                   ("Auto range", v["Auto"] >= 0.5, lambda on: self.twist_set("Auto", float(bool(on))))]
+        side = [("Axis X", lambda: self.array_axis_dir((1.0, 0.0, 0.0))),
+                ("Axis Y", lambda: self.array_axis_dir((0.0, 1.0, 0.0))),
+                ("Axis Z", lambda: self.array_axis_dir((0.0, 0.0, 1.0)))]
+        return T("Twist"), fields, self.drag is None, checks, None, [("Draw axis", self.array_pick)], side
+
+    def _axis_op(self):
+        """Eksen verilebilen son islem (Array / Twist) ya da None; Twist surerken once onaylanir."""
+        if self.grab and self.grab.get("kind") == "twist":
+            self.end_grab(True)
+        op = self.last_op
+        return op if op is not None and op["kind"] in AXIS_OPS else None
+
+    def user_command(self, name):
+        """Kullanicinin tus atadigi komut (set_user_key)."""
+        if self.drag is not None or self.grab or self.box is not None or name not in USER_KEYS:
+            return
+        getattr(self, name)()
 
     # --- Bridge (Blender Bridge Edge Loops) ---
     # Kenar modu: iki acik kenar halkasi / zinciri; yuz modu: iki yuz bolgesi (yuzler silinir, sinirlari baglanir).
@@ -9006,6 +9491,9 @@ class SubDSession:
         if g.get("kind") == "extrude":
             self.extrude_move()
             return
+        if g.get("kind") == "twist":
+            self.twist_move()
+            return
         if g.get("lazy"):                                  # düğmeden başladı: ölçü buradan başlar
             g["p0"] = self.ray_plane(self.mouse, g["c"], g["n"])
             g["lazy"] = g["p0"] is None
@@ -9259,10 +9747,10 @@ class SubDSession:
                 _later(self.refresh)
             return
         # kalici arac (sari dugme) acik kaldikca her tiklama onu uygular; secim / kutu secimi yapilmaz
-        if self.armed in ("line", "mline"):                # knife / ayna cizgisi baslar; birakinca kesilir / aynalanir
+        if self.armed in ("line", "mline", "array"):       # knife / ayna / array ekseni cizgisi baslar
             cb.setHandled()
             self.box = dict(p0=pos, press=pos, moved=False, kind="line", tool=self.armed, shift=False, ctrl=False)
-            self.box["snap"] = data = self.line_snap_data(self.cage)
+            self.box["snap"] = data = self.line_snap_data(self._line_cage())
             hit = self.line_snap(pos, data)
             if hit is not None:                            # cizgi yakalanan hedeften baslar
                 self.box.update(p0=hit[0], w0=hit[1])
@@ -9341,7 +9829,7 @@ class SubDSession:
             _later(lambda: self.gizmo.set_hover(key))
             if self.armed == "magnet":                     # imlec / isaret Magnet'in: _line_hover silmesin
                 self._schedule(self._magnet_hover)
-            elif self.armed in ("line", "mline") or self._line_cursor is not None:
+            elif self.armed in ("line", "mline", "array") or self._line_cursor is not None:
                 self._schedule(self._line_hover)
 
     def finish_box(self, pos):
@@ -9514,6 +10002,69 @@ class SubDSession:
             self.clear_selection()
             self.refresh()
 
+    # --- Calisma tezgahi degisince askiya al ---
+    # Modelleyici yalniz SubD tezgahinda (ve baslatildigi tezgahta) gorunur. Baska tezgaha gecince (sketch duzenlenirken
+    # FreeCAD kendisi Sketcher'a gecer) arac paneli, cubuklar ve fare / tus / Undo yakalama kalkar ki o tezgahin
+    # araclari bozulmasin; oturum ve kafes kalir (sketch baglari ve otomatik kayit surer). Geri donunce her sey yerine gelir.
+    def _wb_tick(self):
+        now = _active_wb()
+        if now is None:
+            return
+        if now in self.wb_home:
+            if self.suspended:
+                self.resume()
+        elif not self.suspended:
+            self.suspend()
+
+    def suspend(self):
+        if self.suspended:
+            return
+        self.suspended = True
+        if self.grab:                                      # yarim kalan arac / tasima: vazgec
+            self.end_grab(False)
+        if self.drag is not None:
+            _quiet(self.drag_end)
+        self.box = None
+        self.drop_tool()
+        _quiet(self._rubber_hide)
+        _quiet(self._line_hide)
+        self.dock_was_open = self.dock.isVisible()
+        _quiet(self.dock.hide)
+        _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoMouseButtonEvent.getClassTypeId(), self._cb_btn))
+        _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoLocation2Event.getClassTypeId(), self._cb_mov))
+        for w in self.key_targets:
+            _quiet(lambda w=w: w.removeEventFilter(self.key_filter))
+        app = QtWidgets.QApplication.instance()
+        _quiet(lambda: app.removeEventFilter(self.wheel_guard))
+        _quiet(lambda: app.removeEventFilter(self.history_guard))
+        _quiet(self.timer.stop)
+        _quiet(lambda: self.gizmo.place(None))
+        if self.overlay is not None:
+            _quiet(lambda: self.overlay.set_visible(False))
+        _quiet(lambda: self.parent.removeChild(self.root))   # kafes / onizleme sahneden de kalksin
+
+    def resume(self):
+        if not self.suspended:
+            return
+        self.suspended = False
+        if self.parent.findChild(self.root) < 0:
+            _quiet(lambda: self.parent.addChild(self.root))
+        _quiet(lambda: self.view.addEventCallbackPivy(coin.SoMouseButtonEvent.getClassTypeId(), self._cb_btn))
+        _quiet(lambda: self.view.addEventCallbackPivy(coin.SoLocation2Event.getClassTypeId(), self._cb_mov))
+        for w in self.key_targets:
+            _quiet(lambda w=w: w.installEventFilter(self.key_filter))
+        app = QtWidgets.QApplication.instance()
+        _quiet(lambda: app.installEventFilter(self.wheel_guard))
+        _quiet(lambda: app.installEventFilter(self.history_guard))
+        _quiet(lambda: self.timer.start(50))
+        if self.overlay is not None:
+            _quiet(lambda: self.overlay.set_visible(True))
+        if self.dock_was_open:
+            _quiet(self.dock.show)
+        self.refresh()
+        if self.overlay is not None:
+            self.overlay.refocus()
+
     def close(self, doc_gone=False):
         """Kafesi kaydet ve modelleyiciyi kaldir. Her adim ayri korunur: belge / 3B gorunum once kapandiysa
         widget'lari ve sahnesi zaten silinmistir; bir adimin hatasi kalanlari (or. arac cubugu) engellemesin,
@@ -9525,6 +10076,7 @@ class SubDSession:
         _quiet(lambda: _zebra_button(False))
         _quiet(self.timer.stop)
         _quiet(self.autosave.stop)
+        _quiet(lambda: self.wb_timer.stop())
         if not doc_gone and self.mode != "object":         # Object modunda yazilacak kafes yok
             try:
                 if len(self.cage.V):
@@ -9534,12 +10086,13 @@ class SubDSession:
                 self._show_edited()
             except Exception as e:
                 App.Console.PrintError(T("SubD could not be saved: %s\n") % e)
-        _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoMouseButtonEvent.getClassTypeId(), self._cb_btn))
-        _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoLocation2Event.getClassTypeId(), self._cb_mov))
-        for w in self.key_targets:
-            _quiet(lambda w=w: w.removeEventFilter(self.key_filter))
-        _quiet(lambda: QtWidgets.QApplication.instance().removeEventFilter(self.wheel_guard))
-        _quiet(lambda: QtWidgets.QApplication.instance().removeEventFilter(self.history_guard))
+        if not getattr(self, "suspended", False):          # askidayken geri cagrilar ve suzgecler zaten kaldirildi
+            _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoMouseButtonEvent.getClassTypeId(), self._cb_btn))
+            _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoLocation2Event.getClassTypeId(), self._cb_mov))
+            for w in self.key_targets:
+                _quiet(lambda w=w: w.removeEventFilter(self.key_filter))
+            _quiet(lambda: QtWidgets.QApplication.instance().removeEventFilter(self.wheel_guard))
+            _quiet(lambda: QtWidgets.QApplication.instance().removeEventFilter(self.history_guard))
         _quiet(lambda: self.parent.removeChild(self.root))
         if self.overlay is not None:
             _quiet(self.overlay.close)
@@ -9806,6 +10359,14 @@ class _KeyFilter(QtCore.QObject):
             return False
         if t not in (QtCore.QEvent.ShortcutOverride, QtCore.QEvent.KeyPress):
             return False
+        cmd = _user_command(ev)                            # kullanicinin atadigi tus (varsayilan yok), yerlesiklerden once
+        if cmd is not None:
+            if t == QtCore.QEvent.ShortcutOverride:
+                ev.accept()
+                return True
+            if not ev.isAutoRepeat():
+                self.session.user_command(cmd)
+            return True
         k = _KEYS.get(ev.key())
         ctrl = bool(ev.modifiers() & QtCore.Qt.ControlModifier)
         if k in ("f", "d") and ev.modifiers() & QtCore.Qt.ShiftModifier:
@@ -9955,6 +10516,14 @@ TOOL_TIPS = {
                   "click an edge to add a point there",
     "Connect": "Add an edge between two points of one polygon, or between the middles of two of its edges",
     "Subdivide": "Split the selected polygons into quads (a polygon with n sides becomes n quads)",
+    "Array": "Copy the selected polygons as separate parts: around an axis (Radial) or along X / Y / Z (Rectangular); "
+             "switch in the panel",
+    "Twist": "Twist the selected polygons around an axis: the angle grows along the axis by the Falloff curve. Move the "
+             "mouse for the angle (Ctrl: steps), click to accept, then fine-tune in the panel",
+    "Draw axis": "Drag a line in the view to set the axis (snaps like Mirror (line)); a click gives an axis along the view",
+    "Axis X": "Axis direction along world X (the axis point stays)",
+    "Axis Y": "Axis direction along world Y (the axis point stays)",
+    "Axis Z": "Axis direction along world Z (the axis point stays)",
     "Bridge": "Connect two open edge loops or two face regions",
     "Bridge>Bridge": "Connect two open edge loops / chains or two face regions with a strip",
     "Bridge>Rail bridge": "Pipe with an editable guide curve, between two regions or growing out of one",
@@ -10164,6 +10733,7 @@ class _ToolPanel(QtWidgets.QFrame):
         self.check_lay.setHorizontalSpacing(8)
         self.check_lay.setVerticalSpacing(2)
         self.checks, self.check_fns, self.check_key = [], [], None
+        self.side_fns = []                                 # kutucuklarin sagindaki dugmeler (spec'in 7. ogesi)
         lay.addWidget(self.check_bar)
         self.check_bar.hide()
         self.grid = QtWidgets.QGridLayout()
@@ -10195,14 +10765,17 @@ class _ToolPanel(QtWidgets.QFrame):
         checks = spec[3] if len(spec) > 3 else []
         label = spec[4] if len(spec) > 4 else None
         buttons = spec[5] if len(spec) > 5 else []
+        side = spec[6] if len(spec) > 6 else []
         key = (title, tuple(f[0] for f in fields), tuple(c[0] for c in checks), label, tuple(b[0] for b in buttons))
         changed = key != self.key
         self.btn_fns = [b[1] for b in buttons]
         if tuple(b[0] for b in buttons) != self.btn_key:
             self._build_buttons([b[0] for b in buttons], [b[2] if len(b) > 2 else None for b in buttons])
         self.check_fns = [c[2] for c in checks]
-        if (label, tuple(c[0] for c in checks)) != self.check_key:
-            self._build_checks(label, [c[0] for c in checks], [len(c) > 3 and c[3] for c in checks])
+        self.side_fns = [b[1] for b in side]
+        if (label, tuple(c[0] for c in checks), tuple(b[0] for b in side)) != self.check_key:
+            self._build_checks(label, [c[0] for c in checks], [len(c) > 3 and c[3] for c in checks],
+                               [b[0] for b in side])
         for cb, c in zip(self.checks, checks):
             if cb.isChecked() != bool(c[1]):
                 cb.blockSignals(True)
@@ -10289,7 +10862,11 @@ class _ToolPanel(QtWidgets.QFrame):
                     row.setSpacing(3)
             else:
                 b = QtWidgets.QPushButton(T(n))
-                self.btn_lay.addWidget(b, k // 2, k % 2)
+                b.setToolTip(_tool_tip(n))
+                if sum(1 for x in icons if x is None) == 1:    # tek yazili dugme: tam genislik
+                    self.btn_lay.addWidget(b, 0, 0, 1, 2)
+                else:
+                    self.btn_lay.addWidget(b, k // 2, k % 2)
                 k += 1
             b.setFocusPolicy(QtCore.Qt.NoFocus)            # kisayollar gorunumde kalsin
             b.clicked.connect(lambda checked=False, i=i: self._button(i))
@@ -10307,8 +10884,9 @@ class _ToolPanel(QtWidgets.QFrame):
             fn = self.btn_fns[i]
             _later(lambda: (fn(), self.s.refresh()))
 
-    def _build_checks(self, label, names, own=()):
-        """own[i]: kutucuk etiketli satira degil, altinda kendi satirina (uzun adlar sigmiyordu)."""
+    def _build_checks(self, label, names, own=(), side=()):
+        """own[i]: kutucuk etiketli satira degil, altinda kendi satirina (uzun adlar sigmiyordu). side: kutucuklarin
+        sagina alt alta dizilen dugme adlari."""
         while self.check_lay.count():
             w = self.check_lay.takeAt(0).widget()
             if w is not None:
@@ -10336,7 +10914,26 @@ class _ToolPanel(QtWidgets.QFrame):
                 self.check_lay.addWidget(cb, i, 0)
             cb.show()                                      # gorunur panele eklenen cocuk kendiliginden gorunmez;
             self.checks.append(cb)                         # gorunmezse panel yuksekligine girmez (panel ezilirdi)
-        self.check_key = (label, tuple(names))
+        if side:
+            box = QtWidgets.QWidget()
+            col = QtWidgets.QVBoxLayout(box)
+            col.setContentsMargins(0, 0, 0, 0)
+            col.setSpacing(2)
+            for i, n in enumerate(side):
+                b = QtWidgets.QPushButton(T(n))
+                b.setToolTip(_tool_tip(n))
+                b.setFocusPolicy(QtCore.Qt.NoFocus)        # kisayollar gorunumde kalsin
+                b.clicked.connect(lambda checked=False, i=i: self._side_button(i))
+                col.addWidget(b)
+            self.check_lay.addWidget(box, 0, 1, max(len(names), 1), 1, QtCore.Qt.AlignTop | QtCore.Qt.AlignRight)
+            box.show()
+        self.check_lay.setColumnStretch(1, 1 if side else 0)
+        self.check_key = (label, tuple(names), tuple(side))
+
+    def _side_button(self, i):
+        if i < len(self.side_fns):
+            fn = self.side_fns[i]
+            _later(lambda: (fn(), self.s.refresh()))
 
     def _check(self, i, on):
         if i < len(self.check_fns):
@@ -10562,6 +11159,7 @@ class _Overlay(object):
         btn("Add points", "", s.add_points, mode="edit", tool="addpoint")
         btn("Connect", "^L", s.connect, sel=True, mode="edit")
         btn("Subdivide", "⇧D", s.subdivide, sel=True, mode="edit")
+        btn("Array", _key_label("array"), s.array, sel=True, mode="edit")   # Radial / Rectangular panelden secilir
         menu_btn("Bridge", [("Bridge", s.bridge), ("Rail bridge", s.rail_bridge)])
         btn("Hole", "", s.hole, sel=True, mode="edit")
         btn("Circle on face", "", lambda: s.hole(cap=True), sel=True, mode="edit")
@@ -10577,6 +11175,7 @@ class _Overlay(object):
         btn("Rotate", "R", lambda: s.set_gizmo("rotate"), toggle=lambda: s.gizmo.mode == "rotate")
         btn("Stretch / Size", "H", lambda: s.set_gizmo("scale"), toggle=lambda: s.gizmo.mode == "scale")
         btn("Magnet", "", lambda: s.toggle_tool("magnet"), mode="edit", tool="magnet")
+        btn("Twist", _key_label("twist"), s.twist, sel=True, mode="edit")    # tus atanabilir (set_user_key)
         btn("Crease", "C", s.crease_selected, sel=True, mode="edit")
         btn("Reduce points", "", s.reduce_points, mode="edit")   # secim yoksa butun kafes
         btn("Merge points", "M", s.merge_points, mode="edit")    # secim yoksa butun kafes
@@ -10866,6 +11465,8 @@ class _Overlay(object):
 
     def sync(self):
         s = self.s
+        if s.suspended:                                    # baska tezgahta: panel / mesaj geri gelmesin
+            return
         for b, state in self.toggles.values():
             b.setChecked(bool(state()))
         for b in self.tool_buttons:                        # sari zeminde koyu yazi
@@ -10896,6 +11497,18 @@ class _Overlay(object):
             self.relayout()
         elif info_changed:
             self._place_info()
+
+    def set_visible(self, on):
+        """Calisma tezgahi degisince arac paneli ve gorunumdeki cubuklar gizlenir / geri gelir (oturum kalir)."""
+        if on:
+            self.tool_dock.show()
+            self.bar.show()
+            self.modes.show()
+            self.relayout()
+            self.sync()
+        else:
+            for w in (self.tool_dock, self.bar, self.modes, self.panel, self.info_label):
+                _quiet(w.hide)
 
     def close(self):
         d = self.tool_dock                                 # ana pencerede: gorunum silinse de kalir, once kaldir

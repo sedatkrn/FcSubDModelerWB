@@ -47,6 +47,16 @@ Catmull-Clark limit surface is on the roadmap.
   middles of two selected edges of one polygon; the polygon is split in two
 - **Subdivide** (Shift+D, LightWave Subdivide): the selected polygons are split into quads (n sides → n quads);
   neighbouring polygons take the edge middles, so the cage stays closed
+- **Array** (Polygon > Array, LightWave Array): the selected polygons are copied as separate parts, either around an
+  axis (*Radial*: count, start / end angle, offset along the axis for a spiral) or along the world axes
+  (*Rectangular*: count and offset for X / Y / Z). Offset type: Between, Total or Multiply. The axis is a drawn line
+  (*Draw axis*, with the same snapping as Mirror (line); a click gives an axis along the view) or numbers in the
+  panel.
+- **Twist** (Modify > Twist, LightWave Twist): the selected polygons are twisted around an axis; the angle grows along
+  the axis by a falloff curve (Linear, Smooth, Ease in, Ease out, Peak, Dome). Move the mouse for the angle, click to
+  accept, then edit the values in the panel. *Cuts* splits the selection along the axis first so the twist is smooth.
+  The axis is a drawn line (snapping), Axis X / Y / Z or numbers, as in Array.
+- **Shortcuts for Array and Twist**: none by default; assign one with `subd_modeler.set_user_key("twist", "Shift+T")`.
 - Crease (sharp or semi-sharp edges) — makes the surface hit exact dimensions
 - Copy / cut / paste polygons (with their creases): paste in place into the same cage, into another SubD
   object, or as a new object (e.g. copy the neck of a bottle to start its cap)

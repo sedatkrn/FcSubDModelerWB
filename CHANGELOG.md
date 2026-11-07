@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+- **Fixed: switching to another workbench left the SubD tools on screen.** The *SubD tools* panel, the bars in the 3D
+  view and the mouse / key / Undo capture stayed active in the other workbench and got in its way. Now the modeler
+  is **suspended** when another workbench becomes active: the panel and bars hide, the capture is released and an unfinished
+  tool is cancelled, but the session and the cage stay (sketch links keep following, autosave keeps running). It comes
+  back as it was when you return to the SubD workbench. The modeler is shown in the SubD workbench and in the workbench
+  it was started from (for example with the macro).
+- **Twist** (Modify > Twist; LightWave Twist): the selected polygons are twisted around an axis. Press Twist, **move the
+  mouse** for the angle (right = clockwise, Ctrl = steps), click to accept (Esc cancels), then fine-tune in the panel.
+  Edit mode only, symmetry is ignored.
+  - **Falloff** along the axis: the angle grows from 0 at *Start* to the full *Angle* at *End*. *Linear*, *Smooth*,
+    *Ease in*, *Ease out* keep one end fixed (*Reverse* picks the other end); *Peak* and *Dome* keep both ends fixed and
+    twist the middle the most. *Start* / *End* are mm along the axis from the axis point; *Auto range* (default) uses the
+    ends of the selection, typing a Start or End switches it off.
+  - **Cuts**: the selected polygons are first cut by *Cuts* evenly spaced planes between Start and End (perpendicular
+    to the axis), so the twist looks smooth. Neighbouring polygons take the new points, the cage stays closed.
+  - **The axis** works as in Array: *Draw axis* (drag a line with snapping, a click gives an axis along the view),
+    *Axis X / Y / Z*, or the axis point and direction as numbers. It starts through the centre of the selection along
+    its longest world axis.
+- **Assignable shortcuts**: Array and Twist have no default key, but you can give them one. In FreeCAD's Python console:
+  `import subd_modeler; subd_modeler.set_user_key("twist", "Shift+T")` (an empty string removes it). It works at once
+  in an open modeler, the button shows the key the next time the modeler opens, and it wins over a built-in key that
+  uses the same combination.
+
+- **Array** (Polygon > Array, no shortcut; LightWave Array): the selected polygons are copied as **separate parts**
+  (the original stays where it is; *Merge points* can weld them afterwards). Edit mode only, symmetry is ignored.
+  One button: it starts as Radial around the world Z axis through the origin, and *Radial / Rectangular* is switched
+  in the panel.
+  - **Radial**: *Count* copies between *Start angle* and *End angle* around an axis; a full circle (360°) skips the
+    last copy so it does not land on the first. *Offset along axis* lifts each copy (spiral). *Rotate copies* turns
+    the copies with the circle (off: they only move).
+  - **Rectangular**: *Count X / Y / Z* and *Offset X / Y / Z* along the world axes.
+  - **Offset type** (both modes): *Between* (distance between copies), *Total* (distance from the first to the last),
+    *Multiply* (the gap is multiplied by *Factor* at each step).
+  - **The axis is a line, which is the difference from LightWave** (X / Y / Z only there): *Draw axis* in the panel
+    lets you drag a line in the view, with the same snapping as Mirror (line) (points, edge middles, edges, Part /
+    PartDesign corners; Ctrl = 15° steps, Ctrl also turns snapping off). A short click gives an axis along the view
+    direction through the clicked point (Top view: a vertical axis). Or type the axis point and direction in the
+    panel, or press *Axis X / Y / Z*. Every value updates the result live and Esc / Undo bring it back.
+
 ## 0.3.3 (2026-11-03)
 
 - **Add points** (Polygon): the selected edges are split into equal parts (*Count* in the panel). With nothing selected
