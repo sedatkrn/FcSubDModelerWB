@@ -11674,7 +11674,8 @@ class SubDSession:
         if True:                                           # askidayken kaldirilmis olsa da zararsiz: kapanan oturumdan iz kalmasin
             _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoMouseButtonEvent.getClassTypeId(), self._cb_btn))
             _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoLocation2Event.getClassTypeId(), self._cb_mov))
-            for w in self.key_targets:
+            # belge kapanirken 3B gorunum (gv + viewport) silinirken gelir: ona dokunmak cokertir, filtre zaten gider
+            for w in (self.key_targets[2:] if doc_gone else self.key_targets):
                 _quiet(lambda w=w: w.removeEventFilter(self.key_filter))
             _quiet(lambda: QtWidgets.QApplication.instance().removeEventFilter(self.wheel_guard))
             _quiet(lambda: QtWidgets.QApplication.instance().removeEventFilter(self.history_guard))
@@ -11682,13 +11683,14 @@ class SubDSession:
         if self.dim_root is not None:
             _quiet(lambda: self.parent.removeChild(self.dim_root))
         if self.overlay is not None:
-            _quiet(self.overlay.close)
+            if not doc_gone:                               # belge kapanirken 3B gorunum (ve cocuklari) silinirken gelir
+                _quiet(self.overlay.close)
             self.overlay = None
-        if not doc_gone:                                   # belge kapanirken 3B gorunum silinmis olur: viewport() cokertir
+        if not doc_gone:                                   # (viewport() / silinmis widget'a dokunmak cokertir)
             _quiet(lambda: self._line_mark(None))
-        for w in (self.rubber, self.line_overlay):
-            if w is not None:
-                _quiet(w.deleteLater)
+            for w in (self.rubber, self.line_overlay):
+                if w is not None:
+                    _quiet(w.deleteLater)
         self.rubber = self.line_overlay = None
         _quiet(self.dock.close)
         _quiet(self.dock.deleteLater)
