@@ -11685,8 +11685,7 @@ class SubDSession:
             if self.dim_root is not None:
                 _quiet(lambda: self.parent.removeChild(self.dim_root))
         if self.overlay is not None:
-            if not doc_gone:                               # belge kapanirken 3B gorunum (ve cocuklari) silinirken gelir
-                _quiet(self.overlay.close)
+            _quiet(lambda: self.overlay.close(doc_gone))       # arac paneli ana pencerede: her durumda kaldirilir
             self.overlay = None
         if not doc_gone:                                   # (viewport() / silinmis widget'a dokunmak cokertir)
             _quiet(lambda: self._line_mark(None))
@@ -13567,12 +13566,14 @@ class _Overlay(object):
             for w in (self.tool_dock, self.bar, self.modes, self.panel, self.info_label):
                 _quiet(w.hide)
 
-    def close(self):
+    def close(self, doc_gone=False):
         _quiet(self._ov_timer.stop)
         d = self.tool_dock                                 # ana pencerede: gorunum silinse de kalir, once kaldir
         _quiet(d.remember)
         _quiet(lambda: d.parent().removeDockWidget(d))
         _quiet(d.deleteLater)
+        if doc_gone:                                       # bar / panel ... 3B gorunumun cocuklari: gorunumle gitti, dokunma
+            return
         for w in (self.bar, self.modes, self.panel, self.info_label):   # gorunumun cocuklari: silinmis olabilir
             _quiet(w.hide)
             _quiet(w.deleteLater)
