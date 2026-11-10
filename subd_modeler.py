@@ -9729,16 +9729,17 @@ class SubDSession:
             bad = val is not None and tgt is not None and abs(val - tgt) > float(d.get("tol", DIM_TOL))
             sel = it["kind"] == "keep" and it["idx"] is not None and it["idx"] == self.dim_sel and self.mode != "object"
             meta.append(("bad" if bad else "sel" if sel else it["kind"], d.get("name", "") if names else "", val))
-        sig = (k, self.dim_hot, tuple((it["kind"], it["idx"], tuple(np.round(it["P"], 3)),
-                                       None if it["Q"] is None else tuple(np.round(it["Q"], 3)), m)
-                                      for it, m in zip(items, meta)))
+        ts = self._handle_label_t(items, meta, k)
+        sig = (k, self.dim_hot, ts, tuple((it["kind"], it["idx"], tuple(np.round(it["P"], 3)),
+                                           None if it["Q"] is None else tuple(np.round(it["Q"], 3)), m)
+                                          for it, m in zip(items, meta)))
         if sig == self.dim_sig:
             return
         self.dim_sig = sig
         g = self._dim_scene()
         g.removeAllChildren()
         self.dim_hits = []
-        for it, (ck, name, val) in zip(items, meta):
+        for ii, (it, (ck, name, val)) in enumerate(zip(items, meta)):
             kind, P, Q = it["kind"], it["P"], it["Q"]
             grp = coin.SoSeparator()
             bc = coin.SoBaseColor()
@@ -9782,7 +9783,7 @@ class SubDSession:
                 hot = with_x and it["idx"] == self.dim_hot
                 text = ("%s  " % name if name else "") + "%.3f mm" % val
                 data, w, h, xw = self._dim_label(text, ck, hot, with_x, k)
-                mid = (P + Q) / 2
+                mid = P + (Q - P) * ts[ii]
                 tr = coin.SoTranslation()
                 tr.translation = tuple(float(x) for x in mid)
                 im = coin.SoImage()
@@ -9796,6 +9797,33 @@ class SubDSession:
                 elif kind == "handle":
                     self.dim_hits.append(dict(idx=None, hd=it["hd"], mid=mid, w=w, h=h, xw=0))
             g.addChild(grp)
+
+    def _handle_label_t(self, items, meta, k):
+        """Grup olculerinin yazisi cizgi uzerinde nerede dursun (0..1; digerleri 0.5): yazilar ekranda ust uste
+        binmesin diye ilk bos aday secilir (gorunume gore, olcu yeniden kurulurken)."""
+        ts = [0.5] * len(items)
+        try:
+            idx = [i for i, it in enumerate(items) if it["kind"] == "handle" and it["Q"] is not None]
+            if len(idx) < 2:
+                return tuple(ts)
+            hw, hh = 70.0 * k, 14.0 * k                    # yazinin yarim eni / boyu (piksel, yaklasik)
+            placed = [self._proj_np((it["P"] + it["Q"]) / 2)[0] for i, it in enumerate(items)
+                      if it["Q"] is not None and it["kind"] != "handle"]
+            for i in idx:
+                P, Q = items[i]["P"], items[i]["Q"]
+                best, best_n = 0.5, None
+                for t in (0.5, 0.3, 0.7, 0.15, 0.85, 0.4, 0.6, 0.25, 0.75):
+                    c = self._proj_np(P + (Q - P) * t)[0]
+                    n = sum(1 for o in placed if abs(o[0] - c[0]) < 2 * hw and abs(o[1] - c[1]) < 2 * hh)
+                    if best_n is None or n < best_n:
+                        best, best_n = t, n
+                    if n == 0:
+                        break
+                ts[i] = best
+                placed.append(self._proj_np(P + (Q - P) * best)[0])
+        except Exception:
+            return tuple([0.5] * len(items))
+        return tuple(ts)
 
     def _dim_hot_check(self):
         """Distance kapaliyken: imlec kalici olcunun x dugmesinin uzerine gelince x kirmiziya doner."""
