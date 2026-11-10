@@ -198,6 +198,15 @@ TR = {
     "Metal": "Metal",
     "Surface look of the smooth preview (Edit mode)": "Pürüzsüz önizlemenin yüzey görünümü (Edit modu)",
     "Merge polygons": "Çokgenleri birleştir",
+    "Parametric group": "Parametrik grup",
+    "Make the selected points a group with a datum plane handle (SubD_PG_0001) in the FreeCAD tree: move the datum or attach it (Attachment, offset, expressions) and the points follow":
+        "Seçili noktaları FreeCAD ağacında bir datum plane tutamağı (SubD_PG_0001) olan gruba çevirir: datum'u taşıyınca ya da bağlayınca (Attachment, ofset, ifadeler) noktalar onu izler",
+    "Group handle %s is gone: the group is released": "Grup tutamağı %s yok: grup serbest bırakıldı",
+    "Group: the points followed the handle": "Grup: noktalar tutamağı izledi",
+    "Group released: none of its points is where it was": "Grup serbest kaldı: noktalarından hiçbiri yerinde değil",
+    "Group: some of the points already belong to a group": "Grup: bazı noktalar zaten bir grupta",
+    "SubD group": "SubD grubu",
+    "Group %s: %d points": "Grup %s: %d nokta",
     "Merge polygons: select at least two adjacent polygons": "Çokgenleri birleştir: en az iki bitişik çokgen seçin",
     "Merge polygons: the selected polygons are not adjacent": "Çokgenleri birleştir: seçili çokgenler bitişik değil",
     "Merge polygons: no single outline (hole, closed shape or mixed directions: try Flip)":

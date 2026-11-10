@@ -239,6 +239,7 @@ class Cage:
         self.rails = []                   # Rail bridge kilavuzlari (rail_* fonksiyonlari; nokta indeksleriyle)
         self.links = []                   # Sketch baglari (link_update; nokta konumlariyla, From face > Edge)
         self.dims = []                    # Distance olculeri (kalici; _dim_* ve DIM_KEEP; nokta indeksleriyle)
+        self.groups = []                  # Parametrik gruplar (group_update; datum tutamagina bagli noktalar)
 
     @staticmethod
     def cube(size=20.0):
@@ -320,6 +321,7 @@ class Cage:
         c.rails = copy.deepcopy(self.rails)
         c.links = copy.deepcopy(self.links)
         c.dims = copy.deepcopy(self.dims)
+        c.groups = copy.deepcopy(self.groups)
         return c
 
     def face_edges(self):
@@ -2795,6 +2797,18 @@ def cage_to_obj(cage, obj):
                     srcs.append(o)
         if list(obj.SketchSources) != srcs:               # bagimlilik: kaynak degisince nesne yeniden hesaplanir
             obj.SketchSources = srcs
+    if cage.groups or "ParamGroups" in obj.PropertiesList:
+        _group_props(obj)
+        txt = json.dumps(cage.groups) if cage.groups else ""
+        if obj.ParamGroups != txt:
+            obj.ParamGroups = txt
+        hs = []
+        for g in cage.groups:
+            h = obj.Document.getObject(g["name"])
+            if h is not None and h not in hs:
+                hs.append(h)
+        if list(obj.GroupHandles) != hs:                  # bagimlilik: tutamak (datum) degisince nesne yeniden hesaplanir
+            obj.GroupHandles = hs
 
 
 def _link_props(obj):
@@ -2841,6 +2855,11 @@ def cage_from_obj(obj):
             cage.links = json.loads(obj.SketchLinks)
         except ValueError:
             cage.links = []
+    if "ParamGroups" in obj.PropertiesList and obj.ParamGroups:
+        try:
+            cage.groups = json.loads(obj.ParamGroups)
+        except ValueError:
+            cage.groups = []
     return cage
 
 
@@ -3565,6 +3584,109 @@ def obj_links_update(obj):
         cage_to_obj(cage, obj)
 
 
+# ---------- Parametrik grup (datum tutamagi) ----------
+# Secili noktalar bir grup olur; belgede ayni konumda bir datum plane (SubD_PG_0001) olusur. Noktalar tutamagin
+# YEREL koordinatinda saklanir (loc); tutamak FreeCAD'in Placement / Attachment araclariyla tasininca (dunya
+# matrisi H degisince) noktalar farki izler: yeni = nokta + agirlik * (H_simdi * loc - H_son * loc). Tutamak SubD'ye
+# bagli degil, SubD tutamaga bagli (GroupHandles) - tersi dongu olur. Uye nokta, kaydedilen yerinde duran
+# kafes noktasidir (Sketch bagi gibi): elle tasinan nokta gruptan cikar, hicbiri yerinde degilse grup biter.
+# Kayit: name (datum), pts (uyelerin son yeri, nesne yerel), loc (tutamak yerel), w (agirlik 0..1), H (son 4x4).
+
+GROUP_PREFIX = "SubD_PG_"
+
+
+def _group_props(obj):
+    if "ParamGroups" not in obj.PropertiesList:
+        obj.addProperty("App::PropertyString", "ParamGroups", "SubD", "Parametric groups of points (JSON)")
+        obj.setEditorMode("ParamGroups", 2)
+        obj.addProperty("App::PropertyLinkListGlobal", "GroupHandles", "SubD", "Datum handles of the parametric groups")
+        obj.setEditorMode("GroupHandles", 1)
+
+
+def _mat4(pl):
+    return np.array(pl.toMatrix().A, float).reshape(4, 4)
+
+
+def group_new(name, pts, loc, H):
+    return dict(name=name, pts=np.asarray(pts, float).tolist(), loc=np.asarray(loc, float).tolist(),
+                w=[1.0] * len(pts), H=np.asarray(H, float).flatten().tolist())
+
+
+def group_update(cage, g, H_now, R_inv):
+    """Grubu tutamagin simdiki haline getirir. Dondurur: None (degisiklik yok), True (degisti), LINK_ENDED."""
+    old = np.array(g["pts"], float).reshape(-1, 3)
+    if not len(old) or not len(cage.V):
+        return LINK_ENDED
+    tol = 1e-6 * max(np.ptp(np.vstack([cage.V, old]), 0).max(), 1.0)
+    idx = []
+    for p in old:
+        d = np.linalg.norm(cage.V - p, axis=1)
+        j = int(d.argmin())
+        idx.append(j if d[j] < tol else None)
+    keep = [k for k, j in enumerate(idx) if j is not None]
+    if not keep:
+        return LINK_ENDED
+    loc, w = np.array(g["loc"], float).reshape(-1, 3), np.array(g["w"], float)
+    H_last = np.array(g["H"], float).reshape(4, 4)
+    lost = len(keep) != len(old)
+    if lost:                                               # elle tasinan noktalar gruptan cikti
+        g["pts"], g["loc"], g["w"] = old[keep].tolist(), loc[keep].tolist(), w[keep].tolist()
+        old, loc, w = old[keep], loc[keep], w[keep]
+        idx = [idx[k] for k in keep]
+    if np.allclose(H_now, H_last, atol=1e-9, rtol=0):
+        return True if lost else None
+    at = lambda H: loc @ H[:3, :3].T + H[:3, 3]
+    delta = (at(H_now) - at(H_last)) @ R_inv.T             # dunya farki -> nesne yereli
+    V = cage.V.copy()
+    for k, j in enumerate(idx):
+        V[j] = V[j] + w[k] * delta[k]
+    cage.V = V
+    g["pts"] = V[idx].tolist()
+    g["H"] = H_now.flatten().tolist()
+    return True
+
+
+def groups_update(cage, doc, placement):
+    """Kafesin butun gruplarini tutamaklarina getirir: (degisti mi, [hata metinleri], bitti mi)."""
+    changed, errs, ended, keep = False, [], False, []
+    R_inv = _mat4(placement)[:3, :3].T
+    for g in cage.groups:
+        h = doc.getObject(g["name"])
+        if h is None:
+            errs.append(T("Group handle %s is gone: the group is released") % g["name"])
+            ended = True
+            continue
+        try:
+            H = _mat4(h.getGlobalPlacement())
+        except Exception:
+            H = _mat4(h.Placement)
+        r = group_update(cage, g, H, R_inv)
+        if r == LINK_ENDED:
+            ended = True
+            continue
+        keep.append(g)
+        if r:
+            changed = True
+    cage.groups = keep
+    return changed, errs, ended
+
+
+def obj_groups_update(obj):
+    """Nesne yeniden hesaplanirken: tutamak tasindiysa grubun noktalari onu izler (obj_links_update'in esi)."""
+    if "ParamGroups" not in obj.PropertiesList or not obj.ParamGroups:
+        return
+    s = _sessions.get(obj.Document.Name)
+    if s is not None and s.mode != "object" and s.obj is obj:
+        _later(lambda: _quiet(s.groups_refresh))
+        return
+    cage = cage_from_obj(obj)
+    changed, errs, ended = groups_update(cage, obj.Document, obj.Placement)
+    for e in errs:
+        App.Console.PrintWarning("%s: %s\n" % (obj.Label, e))
+    if changed or ended:
+        cage_to_obj(cage, obj)
+
+
 def cage_key(obj):
     """Kafesin degisip degismedigini anlamak icin ozet (Placement haric)."""
     return (hash(tuple((p.x, p.y, p.z) for p in obj.CagePoints)), tuple(obj.CageFaces),
@@ -3590,6 +3712,10 @@ class SubDObject:
             obj_links_update(obj)
         except Exception as e:                             # bag hatasi yuzeyi engellemesin
             App.Console.PrintWarning("%s: sketch link: %s\n" % (obj.Label, e))
+        try:
+            obj_groups_update(obj)
+        except Exception as e:                             # grup hatasi yuzeyi engellemesin
+            App.Console.PrintWarning("%s: group: %s\n" % (obj.Label, e))
         # Nesne yalniz tasindiysa (kafes ayni) yuzeyi yeniden uretme: FreeCAD mesh'i Placement ile zaten tasir.
         # Yeniden atamak hem gereksiz hem de geri almayi bozuyordu (eski mesh yeni Placement'i geri getiriyordu).
         key = cage_key(obj)
@@ -6569,6 +6695,70 @@ class SubDSession:
             self.dirty = True
         if changed or ended or errs:
             self.refresh()
+
+    def groups_refresh(self):
+        """Parametrik gruplar (obj_groups_update'in modelleyicideki esi): tutamak tasindiysa grubun noktalari onu
+        izler (geri alinabilir adim); tutamak silindiyse ya da hicbir uye yerinde degilse grup biter."""
+        if self.mode == "object" or not self.cage.groups or self.drag or self.grab or not _alive(self.obj):
+            return
+        c = self.cage.copy()
+        changed, errs, ended = groups_update(c, self.obj.Document, self.obj.Placement)
+        if errs:
+            self.info = errs[0]
+        if changed:
+            self.push()
+            self.op = self.last_op = None
+            self.cage = c
+            self.info = self.info or T("Group: the points followed the handle")
+        elif ended:
+            self.cage.groups = c.groups
+            self.info = self.info or T("Group released: none of its points is where it was")
+        if changed or ended:
+            self.dirty = True
+        if changed or ended or errs:
+            self.refresh()
+
+    def make_group(self):
+        """Secili noktalar (cokgen / kenar secimi de olur) bir parametrik grup olur: belgede ayni konumda bir datum
+        plane (SubD_PG_0001) olusur; onu tasiyinca / Attachment ile baglayinca noktalar izler."""
+        verts = self.selected_verts()
+        if self.mode == "object" or not verts or self.drag or self.grab:
+            return
+        used = [np.array(g["pts"], float).reshape(-1, 3) for g in self.cage.groups]
+        if used and any((np.linalg.norm(np.vstack(used) - self.cage.V[v], axis=1) < 1e-6).any() for v in verts):
+            self.info = T("Group: some of the points already belong to a group")
+            self.refresh()
+            return
+        obj = self.obj if _alive(self.obj) else self.save(full=False)
+        doc = obj.Document
+        names = {o.Name for o in doc.Objects}
+        n = 1
+        while "%s%04d" % (GROUP_PREFIX, n) in names:
+            n += 1
+        name = "%s%04d" % (GROUP_PREFIX, n)
+        P = self.cage.V[verts]                              # nesne yereli
+        W = self.l2w(P)
+        center = W.mean(0)
+        doc.openTransaction(T("SubD group"))
+        h = doc.addObject("Part::DatumPlane", name)
+        h.Label = name
+        h.addProperty("App::PropertyString", "SubDGroup", "SubD", "SubD object this handle belongs to").SubDGroup = obj.Name
+        h.setEditorMode("SubDGroup", 1)
+        h.Placement = App.Placement(App.Vector(*center), obj.Placement.Rotation)   # eksenleri nesneyle ayni
+        if App.GuiUp:
+            _quiet(lambda: setattr(h.ViewObject, "Visibility", True))
+            ext = float(np.ptp(W, 0).max()) if len(W) > 1 else 10.0
+            for attr in ("Length", "Width"):
+                _quiet(lambda attr=attr: setattr(h.ViewObject, attr, max(ext, 10.0)))
+        H = _mat4(h.getGlobalPlacement())
+        loc = (W - H[:3, 3]) @ H[:3, :3]
+        self.push()
+        self.cage.groups.append(group_new(name, P, loc, H))
+        self.save(full=False)
+        doc.commitTransaction()
+        doc.recompute()
+        self.info = T("Group %s: %d points") % (name, len(verts))
+        self.refresh()
 
     def _restore_start(self):
         """Nesneyi sessizce oturum basindaki haline dondurur (geri alma listesine girmez)."""
@@ -11352,6 +11542,8 @@ TOOL_TIPS = {
     "Hole": "Cut a round hole in the middle of the selected faces and re-mesh around it",
     "Circle on face": "Like Hole, but the circle stays filled and selected, ready for Extrude or Bevel",
     "Merge polygons": "Merge the selected adjacent polygons into one",
+    "Parametric group": "Make the selected points a group with a datum plane handle (SubD_PG_0001) in the FreeCAD tree: "
+                        "move the datum or attach it (Attachment, offset, expressions) and the points follow",
     "Delete": "Delete the selected elements (object mode: the selected objects)",
     "Copy": "Copy the selected polygons with their creases; edges and points are copied as free edges / points",
     "Cut": "Copy the selected polygons, edges or points, then remove them",
@@ -12162,6 +12354,7 @@ class _Overlay(object):
         btn("Hole", "", s.hole, sel=True, mode="edit")
         btn("Circle on face", "", lambda: s.hole(cap=True), sel=True, mode="edit")
         btn("Merge polygons", "⇧Z", s.merge_polygons, sel=True, mode="edit")
+        btn("Parametric group", "", s.make_group, sel=True, mode="edit")
         btn("Delete", "Del", lambda: s.object_delete() if obj() else s.delete(), sel=True)
         head("Clipboard")
         btn("Copy", "^C", s.copy_faces, sel=True, mode="edit")
