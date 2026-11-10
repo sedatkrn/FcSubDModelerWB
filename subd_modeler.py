@@ -11291,7 +11291,7 @@ QPushButton:pressed { background: #4a4a4a; }
 QPushButton:checked { background: #3f6fb0; border-color: #24426b; }
 QPushButton[tool="true"]:checked { background: #e8b923; border-color: #8a6a00; }
 QPushButton:disabled { color: #8a8a8a; background: #4c4c4c; }
-QLabel:disabled { color: #7a7a7a; }
+QLabel:disabled { color: #48cae4; }
 QLabel { color: #e0e0e0; background: transparent; }
 QLabel#lwInfo { color: #f59e0b; font-weight: bold; background: rgba(40, 40, 40, 200); border-radius: 3px;
                 padding: 3px 8px; }
