@@ -5220,6 +5220,7 @@ class SubDSession:
         lay.addWidget(self._surface_group())
         lay.addWidget(self._solid_group())
         lay.addWidget(self._gizmo_group())
+        lay.addWidget(self._panel_group())
         keys = QtWidgets.QLabel(T(HELP))
         keys.setStyleSheet("color:#9a9a9a;")
         lay.addWidget(keys)
@@ -5556,6 +5557,28 @@ class SubDSession:
         self.gizmo.px = float(px)
         _param().SetFloat("GizmoSize", float(px))
         self.gizmo.update_scale()
+
+    def _panel_group(self):
+        """Islem panelinin (secim / arac degerleri) yeri: gorunumun sol ya da sag alti; kaydedilir. Kucuk
+        ekranlarda sol alttaki panel modelin onunu kapatabiliyor."""
+        g = QtWidgets.QGroupBox(T("Tool panel"))
+        row = QtWidgets.QHBoxLayout(g)
+        row.addWidget(QtWidgets.QLabel(T("Position")))
+        self.panel_side_box = QtWidgets.QComboBox()
+        self.panel_side_box.addItem(T("Left"), "left")
+        self.panel_side_box.addItem(T("Right"), "right")
+        self.panel_side_box.setToolTip(T("Where the panel with the values of the running tool and of the selection "
+                                         "sits in the 3D view: bottom left or bottom right"))
+        self.panel_side_box.setCurrentIndex(1 if _param().GetString("PanelSide", "left") == "right" else 0)
+        self.panel_side_box.currentIndexChanged.connect(self.set_panel_side)
+        row.addWidget(self.panel_side_box)
+        row.addStretch()
+        return g
+
+    def set_panel_side(self, index):
+        _param().SetString("PanelSide", "right" if index == 1 else "left")
+        if self.overlay is not None:
+            self.overlay.relayout()
 
     def _sync_surface_widgets(self):
         """Options'taki yuzey ayarlarini oturumun degerlerine getir (baska nesneye gecince)."""
@@ -12416,12 +12439,20 @@ class _Overlay(object):
         self._flow_columns(avail if avail > 100 else 1 << 30)   # sekmesi arkada / henuz acilmamis panel: tek sutun
         bar = self.scroll.verticalScrollBar().sizeHint().width() if self.left.height() > avail > 92 else 0
         self.scroll.setMinimumWidth(self.left.width() + bar)
-        # islem paneli: gorunumun solu, alt cubugun hemen ustu
-        self.panel.move(8 + left, h - self.bar.height() - max(0, bottom) - self.panel.height() - 8)
+        # islem paneli: gorunumun solu ya da sagi (Options > Tool panel), alt cubugun hemen ustu
+        py = h - self.bar.height() - max(0, bottom) - self.panel.height() - 8
+        if self.panel_on_right():
+            self.panel.move(max(left + 8, w - right - self.panel.width() - 8), py)
+        else:
+            self.panel.move(8 + left, py)
         self._place_info()
 
+    def panel_on_right(self):
+        return _param().GetString("PanelSide", "left") == "right"
+
     def _place_info(self):
-        """Mesaj etiketi: gorunumun solunda, alt cubugun (panel aciksa panelin) hemen ustunde; bos ise gizli."""
+        """Mesaj etiketi: gorunumun solunda, alt cubugun hemen ustunde; panel solda aciksa panelin ustunde, sagdaysa
+        etiket altta kalir (panele yer birakir); bos ise gizli."""
         lab = self.info_label
         if not lab.text():
             lab.hide()
@@ -12429,6 +12460,9 @@ class _Overlay(object):
         ins = getattr(self, "_ins", (0, 0, 0))
         x = 8 + ins[0]
         maxw = max(200, self.vp.width() - x - ins[1] - 12)
+        panel_right = self.panel.isVisible() and self.panel_on_right()
+        if panel_right:                                    # etiket sagdaki panelin altina girmesin
+            maxw = max(200, self.panel.x() - x - 8)
         lab.setMaximumWidth(maxw)
         lab.setWordWrap(False)                             # sigiyorsa tek satir; sigmiyorsa satira bol
         lab.adjustSize()
@@ -12439,7 +12473,7 @@ class _Overlay(object):
             lab.setMinimumWidth(0)
             lab.setMaximumWidth(maxw)
         bottom = self.vp.height() - self.bar.height() - max(0, ins[2]) - 8
-        if self.panel.isVisible():
+        if self.panel.isVisible() and not panel_right:
             bottom = self.panel.y() - 6
         lab.move(x, bottom - lab.height())
         lab.show()

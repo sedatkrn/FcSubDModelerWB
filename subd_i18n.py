@@ -356,6 +356,12 @@ TR = {
     "Gizmo": "Gizmo",
     "Default": "Varsayılan",
     "Length of the gizmo arrows on screen (default %d px)": "Gizmo oklarının ekrandaki boyu (varsayılan %d px)",
+    "Tool panel": "Araç paneli",
+    "Left": "Sol",
+    "Right": "Sağ",
+    "Where the panel with the values of the running tool and of the selection sits in the 3D view: bottom left or "
+    "bottom right":
+        "Çalışan aracın ve seçimin değerlerini gösteren panelin 3B görünümdeki yeri: sol alt ya da sağ alt",
     "Precision": "Hassasiyet",
     "Continuity": "Süreklilik",
     "Draft": "Taslak",
