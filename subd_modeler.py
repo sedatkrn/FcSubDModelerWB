@@ -3675,17 +3675,48 @@ def group_new(name, pts, loc, H, color=None):
                 w=[1.0] * len(pts), H=np.asarray(H, float).flatten().tolist(), color=list(color) if color else None)
 
 
-def group_update(cage, g, H_now, R_inv):
-    """Grubu tutamagin simdiki haline getirir. Dondurur: None (degisiklik yok), True (degisti), LINK_ENDED."""
+def group_index(cage, g):
+    """Grubun uyelerinin kafes indeksleri (pts ile ayni sirada; bulunamayan None). Kilitliyken uye, kayitli konumunda
+    duran kafes noktasidir; kilit aciksa (elle duzenleniyor) kayittaki idx kullanilir (nokta sayisi degismediyse)."""
+    V = cage.V
+    if g.get("locked", True) is False:
+        idx = g.get("idx") or []
+        ok = g.get("nv") == len(V)
+        return [i if ok and 0 <= i < len(V) else None for i in idx]
     old = np.array(g["pts"], float).reshape(-1, 3)
-    if not len(old) or not len(cage.V):
-        return LINK_ENDED
-    tol = 1e-6 * max(np.ptp(np.vstack([cage.V, old]), 0).max(), 1.0)
-    idx = []
+    if not len(old) or not len(V):
+        return [None] * len(old)
+    tol = 1e-6 * max(np.ptp(np.vstack([V, old]), 0).max(), 1.0)
+    out = []
     for p in old:
-        d = np.linalg.norm(cage.V - p, axis=1)
+        d = np.linalg.norm(V - p, axis=1)
         j = int(d.argmin())
-        idx.append(j if d[j] < tol else None)
+        out.append(j if d[j] < tol else None)
+    return out
+
+
+def group_member_sets(V, groups):
+    """{grup adi: uye indeks kumesi}; kafes noktalari bir kez sozluge konur (cok grup / cok nokta icin hizli)."""
+    out, at = {}, None
+    for g in groups:
+        if g.get("locked", True) is False:
+            idx = g.get("idx") or []
+            out[g["name"]] = set(idx) if g.get("nv") == len(V) else set()
+            continue
+        if at is None:
+            at = {r.tobytes(): i for i, r in enumerate(np.round(V, 5) + 0.0)}
+        P = np.round(np.array(g["pts"], float).reshape(-1, 3), 5) + 0.0
+        out[g["name"]] = {at[r.tobytes()] for r in P if r.tobytes() in at}
+    return out
+
+
+def group_update(cage, g, H_now, R_inv):
+    """Grubu tutamagin simdiki haline getirir. Dondurur: None (degisiklik yok), True (degisti), LINK_ENDED.
+    Kilit aciksa grup tutamagi izlemez (noktalar serbest duzenleniyor)."""
+    if g.get("locked", True) is False:
+        return None
+    old = np.array(g["pts"], float).reshape(-1, 3)
+    idx = group_index(cage, g)
     keep = [k for k, j in enumerate(idx) if j is not None]
     if not keep:
         return LINK_ENDED
@@ -3775,10 +3806,19 @@ def groups_reconcile(cage, obj):
                          group_rgb(g))
             msgs.append(T("Group handle %s created again") % g["name"])
         else:
+            Hr = np.array(g["H"], float).reshape(4, 4)
             try:
-                g["H"] = _mat4(h.getGlobalPlacement()).flatten().tolist()
+                Hn = _mat4(h.getGlobalPlacement())
             except Exception:
-                g["H"] = _mat4(h.Placement).flatten().tolist()
+                Hn = _mat4(h.Placement)
+            if g.get("locked", True) and not np.allclose(Hn, Hr, atol=1e-7, rtol=0):
+                # kilitli grup: noktalarla birlikte tutamak da kayitli yerine doner
+                set_handle_placement(h, App.Placement(App.Matrix(*Hr.flatten().tolist())))
+                try:
+                    Hn = _mat4(h.getGlobalPlacement())
+                except Exception:
+                    Hn = _mat4(h.Placement)
+            g["H"] = Hn.flatten().tolist()
     return msgs
 
 
@@ -4798,6 +4838,8 @@ class SubDSession:
         self.dim_list = None      # Distances liste penceresi (_DimList)
         self.dim_list_was_open = False
         self._hd_key, self._hd_names = None, []   # grup tutamaklarinin olculeri (_handle_dim_items)
+        self._grp_sets = {}                       # grup adi -> uye indeksleri (_group_faces)
+        self.grp_active = self.grp_dismissed = None   # grup paneli: acik grup, kapatilan secim
         self.dim_sel = None       # listede secili olcu (kafes sirasi)
         self.dim_hits = []        # kalici olculerin x dugmeleri (tiklayinca silinir)
         self._dim_imgs = {}       # olcu yazisi goruntuleri onbellegi
@@ -5951,21 +5993,18 @@ class SubDSession:
         """Tum kosesi bir grupta olan cokgenleri grubun rengine boyar. Uyeler kayitli konumlarindan bulunur;
         surukleme sirasinda (fast) uyelik yeniden hesaplanmaz."""
         gs, F, V = self.cage.groups, self.cage.F, self.cage.V
-        key = (len(V), len(F), tuple((g["name"], len(g["pts"])) for g in gs))
+        key = (len(V), len(F), tuple((g["name"], len(g["pts"]), g.get("locked", True)) for g in gs))
         if fast and key == self._grp_key:
             return
         self._grp_key = key
         faces, cols = [], []
-        if gs and F:
-            at = {r.tobytes(): i for i, r in enumerate(np.round(V, 5) + 0.0)}
-            for g in gs:
-                P = np.round(np.array(g["pts"], float).reshape(-1, 3), 5) + 0.0
-                mem = {at[r.tobytes()] for r in P if r.tobytes() in at}
-                col = group_rgb(g)
-                for f in F:
-                    if all(v in mem for v in f):
-                        faces.append(f)
-                        cols.append(col)
+        self._grp_sets = group_member_sets(V, gs) if gs else {}
+        for g in gs:
+            mem, col = self._grp_sets.get(g["name"], set()), group_rgb(g)
+            for f in F:
+                if mem and all(v in mem for v in f):
+                    faces.append(f)
+                    cols.append(col)
         _set_index(self.grp_faces, _poly_index(faces))
         if cols:
             self.grp_mat.diffuseColor.setValues(0, len(cols), cols)
@@ -6433,6 +6472,9 @@ class SubDSession:
                 t, L = v["t"], a["L"]
                 return "Knife", [("Position", t * 100, " %", 2, r("Position")),
                                  ("Distance", t * L, " mm", 3, r("Distance"))], self.drag is None
+        spec = self._group_panel()
+        if spec is not None:
+            return spec
         verts = self.selected_verts()
         if verts:
             P = self.l2w(self.cage.V[verts])               # dunya koordinatinda
@@ -6447,7 +6489,7 @@ class SubDSession:
         """Secimi, merkezi (noktalarin ortalamasi, dunya koordinati) verilen degere gelecek sekilde
         dunya ekseni boyunca tasir."""
         verts = self.selected_verts()
-        if not verts or self.drag or self.grab:
+        if not verts or self.drag or self.grab or self._locked_block(verts):
             return
         d = np.zeros(3)
         d[axis] = value - self.l2w(self.cage.V[verts]).mean(0)[axis]
@@ -6461,7 +6503,7 @@ class SubDSession:
     def set_size(self, axis, value):
         """Secimin o (dunya) eksendeki boyunu, kendi kutusunun ortasina gore olcekleyerek verilen degere getirir."""
         verts = self.selected_verts()
-        if not verts or self.drag or self.grab or value <= 0:
+        if not verts or self.drag or self.grab or value <= 0 or self._locked_block(verts):
             return
         P = self.l2w(self.cage.V[verts])
         lo, hi = P.min(0), P.max(0)
@@ -6880,14 +6922,200 @@ class SubDSession:
         if changed or ended or errs:
             self.refresh()
 
+    # --- grup paneli: kilit, gruba ekle, gruptan cikar ---
+    # Grup varsayilan kilitli: uyeleri tek basina tasinamaz (yalniz tutamak surer). Bir grubun uyesi secilince
+    # panel acilir (Done ile kapanir): Unlock / Lock, Add to group, Remove from group. Kilit aciksa uyeler idx ile
+    # izlenir (nokta sayisi degismemeli) ve serbest duzenlenir; Lock yeni yerlerinde tutamaga yeniden baglar.
+
+    def _grp(self, name=None):
+        name = name or self.grp_active
+        return next((g for g in self.cage.groups if g["name"] == name), None)
+
+    def _locked_block(self, verts):
+        """Verilen noktalardan biri kilitli bir grubun uyesiyse True (ve bilgi mesaji)."""
+        if not self.cage.groups:
+            return False
+        sets = group_member_sets(self.cage.V, self.cage.groups)
+        vs = set(verts)
+        for g in self.cage.groups:
+            if g.get("locked", True) and vs & sets.get(g["name"], set()):
+                self.info = T("Group %s is locked: Unlock it in the group panel to edit its points") % g["name"]
+                self.refresh()
+                return True
+        return False
+
+    def _group_expand(self, verts):
+        """Kilitli bir grubun uyesi tasinacaksa grubun tamami tasinir. Dondurur: (noktalar, {grup: [(k, j)]}) --
+        k: kayittaki sira, j: kafes indeksi."""
+        moves = {}
+        if not self.cage.groups:
+            return list(verts), moves
+        sets = group_member_sets(self.cage.V, self.cage.groups)
+        vs = set(verts)
+        for g in self.cage.groups:
+            if g.get("locked", True) and set(verts) & sets.get(g["name"], set()):
+                pairs = [(k, j) for k, j in enumerate(group_index(self.cage, g)) if j is not None]
+                moves[g["name"]] = pairs
+                vs |= {j for _, j in pairs}
+        return sorted(vs), moves
+
+    def _group_follow(self, moves):
+        """Tasinan / donen kilitli grubun tutamagini noktalarin yeni yerine getirir (iki yonlu baglanti)."""
+        if not moves or not _alive(self.obj):
+            return
+        doc = self.obj.Document
+        P4 = _mat4(self.obj.Placement)
+        P4i = np.linalg.inv(P4)
+        done = False
+        for name, pairs in moves.items():
+            g, h = self._grp(name), doc.getObject(name)
+            if g is None or h is None or not pairs:
+                continue
+            ks, js = [k for k, _ in pairs], [j for _, j in pairs]
+            old = np.array(g["pts"], float).reshape(-1, 3)[ks]
+            new = self.cage.V[js]
+            R, t = rigid_fit(old, new)
+            M = np.eye(4)
+            M[:3, :3], M[:3, 3] = R, t
+            Hold = np.array(g["H"], float).reshape(4, 4)
+            Hn = P4 @ M @ P4i @ Hold
+            if np.allclose(Hn, Hold, atol=1e-9, rtol=0):
+                continue
+            ok = set_handle_placement(h, App.Placement(App.Matrix(*Hn.flatten().tolist())))
+            try:
+                Hg = _mat4(h.getGlobalPlacement())
+            except Exception:
+                Hg = _mat4(h.Placement)
+            allp = np.array(g["pts"], float).reshape(-1, 3)
+            allp[ks] = new
+            g["pts"], g["H"] = allp.tolist(), Hg.flatten().tolist()
+            if not ok:
+                self.info = T("Group %s: the handle could not follow") % name
+            done = True
+        if done:
+            self.dirty = True
+
+    def _group_panel(self):
+        gs = self.cage.groups
+        if not gs:
+            self.grp_active = None
+            return None
+        verts = set(self.selected_verts())
+        hit = [g["name"] for g in gs if verts & self._grp_sets.get(g["name"], set())]
+        if hit and (self.grp_dismissed is None or frozenset(verts) != self.grp_dismissed):
+            if self.grp_active not in hit:
+                self.grp_active = hit[0]                   # uyesine tiklanan grup acilir
+            self.grp_dismissed = None
+        g = self._grp()
+        if g is None:
+            self.grp_active = None
+            return None
+        locked = g.get("locked", True)
+        n = len(self._grp_sets.get(g["name"], ())) if locked else len(g.get("idx") or [])
+        title = "%s %s %s (%d)" % ("\U0001F512" if locked else "\U0001F513", g["name"], group_square(group_rgb(g)), n)
+        buttons = [("Unlock" if locked else "Lock", self.group_toggle_lock), ("Add to group", self.group_add),
+                   ("Remove from group", self.group_remove), ("Done", self.group_done)]
+        return title, [], True, [], None, buttons
+
+    def group_done(self):
+        self.grp_active = None
+        self.grp_dismissed = frozenset(self.selected_verts())
+
+    def group_toggle_lock(self):
+        g = self._grp()
+        if g is None or self.drag or self.grab:
+            return
+        V = self.cage.V
+        self.push()
+        if g.get("locked", True):                          # kilidi ac: uyeler indeksle izlenir
+            idx = group_index(self.cage, g)
+            keep = [k for k, j in enumerate(idx) if j is not None]
+            for key in ("pts", "loc", "w"):
+                g[key] = [g[key][k] for k in keep]
+            g["idx"], g["nv"], g["locked"] = [idx[k] for k in keep], len(V), False
+            self.info = T("Group %s unlocked: its points can be edited, Lock binds them again") % g["name"]
+        else:                                              # kilitle: yeni yerlerinde tutamaga yeniden bagla
+            h = self.obj.Document.getObject(g["name"]) if _alive(self.obj) else None
+            idx = g.get("idx") or []
+            if h is None or g.get("nv") != len(V) or not idx:
+                self.cage.groups = [x for x in self.cage.groups if x is not g]
+                self.grp_active = None
+                self.info = T("Group %s released: its points or handle changed, it cannot be locked again") % g["name"]
+            else:
+                try:
+                    H = _mat4(h.getGlobalPlacement())
+                except Exception:
+                    H = _mat4(h.Placement)
+                P = V[idx]
+                g.update(pts=P.tolist(), loc=((self.l2w(P) - H[:3, 3]) @ H[:3, :3]).tolist(), w=[1.0] * len(idx),
+                         H=H.flatten().tolist(), locked=True)
+                g.pop("idx", None)
+                g.pop("nv", None)
+                self.info = T("Group %s locked") % g["name"]
+        self.dirty = True
+        self.refresh()
+
+    def group_add(self):
+        """Secili noktalar (cokgen / kenar secimi de olur) aktif gruba katilir; baska bir gruptakiler katilmaz."""
+        g = self._grp()
+        verts = self.selected_verts()
+        if g is None or not verts or self.drag or self.grab:
+            return
+        V = self.cage.V
+        taken = set().union(*group_member_sets(V, self.cage.groups).values())
+        new = [v for v in verts if v not in taken]
+        if not new:
+            self.info = T("Group: the selected points already belong to a group")
+            self.refresh()
+            return
+        self.push()
+        P = V[new]
+        if g.get("locked", True):
+            H = np.array(g["H"], float).reshape(4, 4)      # son eslenen tutamak: yeni uyeler grupla birlikte kayar
+            loc = (self.l2w(P) - H[:3, 3]) @ H[:3, :3]
+        else:
+            loc = np.zeros_like(P)                         # kilitlenince hesaplanir
+            g["idx"] = list(g.get("idx") or []) + [int(v) for v in new]
+        g["pts"] = list(g["pts"]) + P.tolist()
+        g["loc"] = list(g["loc"]) + loc.tolist()
+        g["w"] = list(g["w"]) + [1.0] * len(new)
+        self.info = T("Group %s: %d points added") % (g["name"], len(new))
+        self.dirty = True
+        self.refresh()
+
+    def group_remove(self):
+        """Secili noktalardan aktif grubun uyeleri gruptan cikar (kafeste yerinde kalirlar)."""
+        g = self._grp()
+        verts = set(self.selected_verts())
+        if g is None or not verts or self.drag or self.grab:
+            return
+        idx = group_index(self.cage, g)
+        drop = [k for k, j in enumerate(idx) if j is not None and j in verts]
+        if not drop:
+            self.info = T("Group %s: none of the selected points belongs to it") % g["name"]
+            self.refresh()
+            return
+        self.push()
+        keep = [k for k in range(len(idx)) if k not in set(drop)]
+        for key in ("pts", "loc", "w") + (("idx",) if g.get("locked", True) is False else ()):
+            g[key] = [g[key][k] for k in keep]
+        if not keep:                                       # son uye de cikti: grup biter (tutamak belgede kalir)
+            self.cage.groups = [x for x in self.cage.groups if x is not g]
+            self.grp_active = None
+            self.info = T("Group %s released: no points left") % g["name"]
+        else:
+            self.info = T("Group %s: %d points removed") % (g["name"], len(drop))
+        self.dirty = True
+        self.refresh()
+
     def make_group(self):
         """Secili noktalar (cokgen / kenar secimi de olur) bir parametrik grup olur: belgede ayni konumda bir datum
         plane (SubD_PG_0001) olusur; onu tasiyinca / Attachment ile baglayinca noktalar izler."""
         verts = self.selected_verts()
         if self.mode == "object" or not verts or self.drag or self.grab:
             return
-        used = [np.array(g["pts"], float).reshape(-1, 3) for g in self.cage.groups]
-        if used and any((np.linalg.norm(np.vstack(used) - self.cage.V[v], axis=1) < 1e-6).any() for v in verts):
+        used = set().union(*group_member_sets(self.cage.V, self.cage.groups).values()) if self.cage.groups else set()
+        if any(v in used for v in verts):
             self.info = T("Group: some of the points already belong to a group")
             self.refresh()
             return
@@ -7562,6 +7790,7 @@ class SubDSession:
         c, a, b, e = op["before"]
         self.cage, self.sel, self.sel_v, self.sel_e = c.copy(), set(a), set(b), set(e)
         self._apply_op(op)
+        self._group_follow((op.get("args") or {}).get("grp"))
         self.dirty = True
         self.refresh()
 
@@ -8926,6 +9155,8 @@ class SubDSession:
         if not faces:
             self.info = T("Twist: select polygons")
             self.refresh()
+            return
+        if self._locked_block(sorted({v for fi in faces for v in self.cage.F[fi]})):
             return
         self.drop_tool()
         self.push()
@@ -10545,11 +10776,16 @@ class SubDSession:
     def start_grab(self, verts, axis=None, pushed=False, lazy=False, op=None):
         if not verts or self.drag or self.grab:
             return
+        moves = {}
+        if op is None:                                     # duz tasima: kilitli grubun uyesi tum grubu surer
+            verts, moves = self._group_expand(verts)
+        elif self._locked_block(verts):
+            return
         self.drop_tool()
         if not pushed:
             self.push()
         if op is None:
-            op = self.new_op("move", dict(X=0.0, Y=0.0, Z=0.0), verts=list(verts))
+            op = self.new_op("move", dict(X=0.0, Y=0.0, Z=0.0), verts=list(verts), grp=moves)
         V = self.cage.V
         c = V[verts].mean(0)
         vd = self.view_dir()
@@ -10719,6 +10955,7 @@ class SubDSession:
             ok = True
         if ok:
             self.last_op, self.op = self.op, None
+            self._group_follow(((self.last_op or {}).get("args") or {}).get("grp"))
             self.refresh()
         else:
             self.op = None
@@ -10753,19 +10990,25 @@ class SubDSession:
             self.drag["ref"] = self.drag["ref0"] = self.drag_measure(pos)
             return
         verts = self.selected_verts()
+        kind, i = key
         if not verts:
             return
+        moves = {}
+        if kind in ("stretch", "size"):                    # olcek kilitli grubu bozar
+            if self._locked_block(verts):
+                return
+        else:                                              # tasima / donme: kilitli grubun uyesi tum grubu surer
+            verts, moves = self._group_expand(verts)
         self.push()
         self.info = ""
         c = self.cage.V[verts].mean(0)                     # yerel merkez (islem bununla yeniden yapilir)
         c0 = App.Vector(*self.l2w(c))                      # gizmo hesaplari dunya koordinatinda
-        kind, i = key
         if kind == "rotate":
-            self.new_op("rotate", dict(Angle=0.0), verts=verts, c=c, axis=tuple(AXES[i]), letter="XYZ"[i])
+            self.new_op("rotate", dict(Angle=0.0), verts=verts, c=c, axis=tuple(AXES[i]), letter="XYZ"[i], grp=moves)
         elif kind in ("stretch", "size"):
             self.new_op("scale", dict(X=1.0, Y=1.0, Z=1.0), verts=verts, c=c)
         else:
-            self.new_op("move", dict(X=0.0, Y=0.0, Z=0.0), verts=verts)
+            self.new_op("move", dict(X=0.0, Y=0.0, Z=0.0), verts=verts, grp=moves)
         self.drag = dict(key=key, state=self.move_state(verts), c0=c0, c=c, free_n=_view_dir(self.view, c0),
                          acc=0.0, vec=App.Vector(),
                          anchor=self._snap_prepare(verts) if kind == "free" else None)
@@ -10896,6 +11139,7 @@ class SubDSession:
             self.refresh()
             return
         self.last_op, self.op = self.op, None
+        self._group_follow(((self.last_op or {}).get("args") or {}).get("grp"))
         self.refresh()
 
     # --- olaylar (Coin olayi icinde sahneye dokunulmaz; isler Qt zamanlayicisiyla olaydan sonra yapilir) ---
@@ -11525,6 +11769,38 @@ def handle_dim_geom(h):
     axis = frame.Rotation.multVec(App.Vector(0, 0, 1))
     q = h.Placement.Base
     return q - axis * off.Base.z, q, off.Base.z
+
+
+def rigid_fit(P, Q):
+    """P noktalarini Q'ya en iyi oturtan donusum (Kabsch): Q ~ P @ R.T + t. 3'ten az ya da bir dogru uzerindeki
+    noktalarda yalniz oteleme (donme belirsiz)."""
+    P, Q = np.asarray(P, float).reshape(-1, 3), np.asarray(Q, float).reshape(-1, 3)
+    cp, cq = P.mean(0), Q.mean(0)
+    R = np.eye(3)
+    if len(P) >= 3:
+        U, S, Vt = np.linalg.svd((P - cp).T @ (Q - cq))
+        if S[1] > 1e-9 * max(S[0], 1e-12):
+            d = np.sign(np.linalg.det(Vt.T @ U.T)) or 1.0
+            R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+    return R, cq - R @ cp
+
+
+def set_handle_placement(h, pl):
+    """Tutamagin kuresel yerini pl yapar (bagliysa ofseti ayarlanir; Distance ifadesi varsa o da). Dondurur: basarildi mi."""
+    try:
+        if _is_attached(h):
+            h.recompute()
+            frame = h.Placement.multiply(h.AttachmentOffset.inverse())
+            off = frame.inverse().multiply(pl)
+            if "Distance" in h.PropertiesList and h.ExpressionEngine:
+                h.Distance = off.Base.z
+            h.AttachmentOffset = off
+        else:
+            h.Placement = pl
+        h.recompute()
+        return h.Placement.isSame(pl, 1e-6)
+    except Exception:
+        return False
 
 
 def keep_handle_place(h, p_old):
