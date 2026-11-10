@@ -28,6 +28,26 @@ mesh while you work). **Solid (STEP)** turns it into a parametric `Part` solid m
 On a 95 mm test model the B-rep deviates at most ~0.02 mm from the subdivision surface. Evaluating the exact
 Catmull-Clark limit surface is on the roadmap.
 
+## Scope: what this workbench is, and what it is not
+
+SubD Modeler is a **simple, direct subdivision modeler** in the spirit of LightWave Modeler: you shape a control
+cage with polygon tools and exact numeric input, see the smooth surface live, and finish with a real B-rep solid
+(**Solid (STEP)**) for Part / PartDesign. The goal is to make everyday modeling easy, not to rebuild Blender.
+
+By design, it does **not** have:
+
+- **A history or feature tree.** Operations are applied directly to the cage (with undo, and the last operation can
+  be redone with new values from its panel). For parametric work, model the shape here, turn it into a solid and
+  continue in PartDesign. Special-purpose parametric tools for Part / PartDesign belong in the author's other
+  workbench, PimpMyFreeCAD.
+- **A Boolean tool.** A Boolean would leave triangles and n-gons in the cage. Join shapes by rebuilding the cage
+  instead: see [Joining shapes](#joining-shapes-use-bridge-instead-of-a-boolean).
+- **Blender-scale features.** Very detailed or specialised mesh work is better done in Blender (OBJ / USD export for
+  round-trips is on the roadmap).
+
+Requests that make direct modeling quicker, improve the FreeCAD integration (sketch links, snapping, From face),
+or improve the quality of the B-rep are very welcome.
+
 ## Features
 
 **Cage modeling (in the 3D view)**
@@ -222,3 +242,7 @@ interface and documentation are in English.
 FreeCAD için LightWave / Blender tarzı SubD (alt bölümlemeli yüzey) modelleyici: 3B görünümün içinde kafes
 modelleme ve sonunda STEP'e aktarılabilen gerçek bir B-rep katı. Arayüz dili alt çubuktaki **EN / TR**
 düğmesiyle Türkçeye çevrilebilir. Kurulum ve kullanım yukarıdaki İngilizce bölümle aynıdır.
+
+**Kapsam:** basit, doğrudan (LightWave tarzı) bir modelleyici. İşlem geçmişi / parametrik ağaç ve Boolean aracı
+bilerek yoktur; şekilleri birleştirmek için Hole + Bridge kullanılır, parametrik işler için de **Solid (STEP)** ile
+katıya çevirip PartDesign'da devam edilir.
