@@ -11738,16 +11738,16 @@ def handle_attach_after(obj):
 
 
 def handle_ref(h):
-    """Bagli tutamagin referansi baska bir grup tutamagiysa o; degilse None."""
+    """Bagli tutamagin referansi (baska bir grup tutamagi, LCS, duzlem, nesne yuzu ...); bagli degilse None."""
     if not _is_handle(h) or not _is_attached(h):
         return None
     sup = h.AttachmentSupport if "AttachmentSupport" in h.PropertiesList else getattr(h, "Support", [])
     ref = sup[0][0] if sup else None
-    return ref if ref is not None and _is_handle(ref) else None
+    return ref
 
 
 def handle_dim_setup(h):
-    """Bir grup tutamagi baska bir grup tutamagina baglandiysa aralarindaki mesafeyi FreeCAD ifadesine baglar:
+    """Bir grup tutamagi bir referansa (baska tutamak, LCS ...) baglandiysa aralarindaki mesafeyi FreeCAD ifadesine baglar:
     tutamakta Distance ozelligi (Data sekmesi) olusur, AttachmentOffset.Base.z = Distance. Distance degisince
     tutamak ve grubun noktalari kayar. Zaten kuruluysa dokunmaz. Dondurur: kuruldu mu."""
     if handle_ref(h) is None or "Distance" in h.PropertiesList:
