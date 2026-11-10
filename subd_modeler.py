@@ -4759,6 +4759,7 @@ class SubDSession:
         self.dim_root = self.dim_group = None   # olculerin sahne dugumu (_dim_scene)
         self.dim_list = None      # Distances liste penceresi (_DimList)
         self.dim_list_was_open = False
+        self._hd_key, self._hd_names = None, []   # grup tutamaklarinin olculeri (_handle_dim_items)
         self.dim_sel = None       # listede secili olcu (kafes sirasi)
         self.dim_hits = []        # kalici olculerin x dugmeleri (tiklayinca silinir)
         self._dim_imgs = {}       # olcu yazisi goruntuleri onbellegi
@@ -5905,6 +5906,8 @@ class SubDSession:
             h = self.obj.Document.getObject(g["name"])
             if h is not None and not h.Label2:              # renk onceden verilmis ama kare yok
                 h.Label2 = group_square(group_rgb(g))
+            if h is not None:
+                _quiet(lambda: handle_dim_setup(h))         # baska bir gruba bagliysa mesafe ifadesi
 
     def _group_faces(self, fast):
         """Tum kosesi bir grupta olan cokgenleri grubun rengine boyar. Uyeler kayitli konumlarindan bulunur;
@@ -9290,6 +9293,7 @@ class SubDSession:
             for o, i, d, P, Q in self._dim_obj_all():
                 if P is not None and Q is not None and not d.get("hide"):
                     out.append(dict(P=P, Q=Q, kind="keep", idx=None, d=d))
+        out += self._handle_dim_items()
         if self.dim_tmp is not None:
             pq = self._dim_resolve(self.dim_tmp)
             if pq is not None:
@@ -9299,6 +9303,59 @@ class SubDSession:
             if P is not None:
                 out.append(dict(P=P, Q=self.dim_live_q, kind="live", idx=None))
         return out
+
+    def _handle_dim_items(self):
+        """Birbirine bagli grup tutamaklarinin arasindaki olculer (oklu; degeri tiklayinca degistirilir)."""
+        doc = App.ActiveDocument
+        if doc is None:
+            return []
+        key = (doc.Name, len(doc.Objects))
+        if self._hd_key != key:                            # her adimda tum nesneleri gezme: yalniz sayi degisince
+            self._hd_key = key
+            self._hd_names = [o.Name for o in doc.Objects if _is_handle(o)]
+        edit = self.mode != "object" and _alive(self.obj)
+        out = []
+        for name in self._hd_names:
+            h = doc.getObject(name)
+            if h is None or (edit and h.SubDGroup != self.obj.Name):
+                continue
+            g = handle_dim_geom(h)
+            if g is not None:
+                out.append(dict(P=np.array(tuple(g[0])), Q=np.array(tuple(g[1])), kind="handle", idx=None,
+                                hd=name, val=float(g[2])))
+        return out
+
+    def _dim_hit_label(self, pos):
+        """Grup olcusunun yazisi imlecin altindaysa tutamagin adi, yoksa None."""
+        for h in reversed(self.dim_hits):
+            if h.get("hd") is None:
+                continue
+            c = self._proj_np(h["mid"])[0]
+            if abs(pos[0] - c[0]) <= h["w"] / 2 and abs(pos[1] - c[1]) <= h["h"] / 2:
+                return h["hd"]
+        return None
+
+    def handle_dim_edit(self, name):
+        """Grup olcusunun degerini yazdirir: tutamagin Distance ozelligi (ifadeyle ofsete bagli) degisir, tutamak ve
+        grubun noktalari kayar."""
+        doc = App.ActiveDocument
+        h = doc.getObject(name) if doc is not None else None
+        if h is None:
+            return
+        handle_dim_setup(h)
+        if "Distance" not in h.PropertiesList:
+            return
+        ref = handle_ref(h)
+        v, ok = QtWidgets.QInputDialog.getDouble(
+            Gui.getMainWindow(), T("Group distance"),
+            T("Distance %s - %s (mm)") % (h.Label, ref.Label if ref is not None else ""),
+            float(h.Distance.Value), -1e7, 1e7, 3)
+        if ok and abs(v - float(h.Distance.Value)) > 1e-9:
+            doc.openTransaction(T("Group distance"))
+            h.Distance = v
+            doc.recompute()
+            doc.commitTransaction()
+        self.refresh()
 
     def _dim_scene(self):
         """Olculerin 3B sahnedeki dugumu: kamerayla birlikte cizilir, gorunumu dondururken titremez / geride kalmaz."""
@@ -9318,7 +9375,7 @@ class SubDSession:
             self.parent.addChild(self.dim_root)
         return self.dim_group
 
-    DIM_COL = {"keep": (163, 230, 53), "tmp": (245, 158, 11), "live": (34, 211, 238),
+    DIM_COL = {"keep": (163, 230, 53), "tmp": (245, 158, 11), "live": (34, 211, 238), "handle": (255, 140, 40),
                "sel": (96, 165, 250), "bad": (248, 113, 113)}   # sel: listede secili, bad: hedeften tolerans disi
     DIM_TEXT_SCALE = 1.5          # olcu yazisi ve x dugmesi: gizmo boyut carpanina ek carpan
 
@@ -9392,7 +9449,7 @@ class SubDSession:
         for it in items:
             d = it.get("d") or {}
             Q = it["Q"]
-            val = None if Q is None else float(np.linalg.norm(Q - it["P"]))
+            val = it["val"] if it.get("val") is not None else None if Q is None else float(np.linalg.norm(Q - it["P"]))
             tgt = d.get("target")
             bad = val is not None and tgt is not None and abs(val - tgt) > float(d.get("tol", DIM_TOL))
             sel = it["kind"] == "keep" and it["idx"] is not None and it["idx"] == self.dim_sel and self.mode != "object"
@@ -9428,6 +9485,23 @@ class SubDSession:
             ps = coin.SoPointSet()
             ps.numPoints = len(pts)
             grp.addChild(ps)
+            if Q is not None and kind == "handle":         # iki ucta ok ucu: ok yonu ile bakis yonune dik
+                u = Q - P
+                ln = float(np.linalg.norm(u))
+                if ln > 1e-9:
+                    u = u / ln
+                    pp = np.cross(u, np.array(tuple(self.view.getViewDirection())))
+                    if np.linalg.norm(pp) < 1e-9:
+                        pp = np.cross(u, np.array([1.0, 0.0, 0.0]) if abs(u[0]) < 0.9 else np.array([0.0, 1.0, 0.0]))
+                    pp = pp / np.linalg.norm(pp) * ln * 0.032
+                    L = u * ln * 0.08
+                    ends = [P + L + pp, P, P + L - pp, Q - L + pp, Q, Q - L - pp]
+                    co2 = coin.SoCoordinate3()
+                    co2.point.setValues(0, 6, [tuple(float(x) for x in e) for e in ends])
+                    al = coin.SoLineSet()
+                    al.numVertices.setValues(0, 2, [3, 3])
+                    grp.addChild(co2)
+                    grp.addChild(al)
             if Q is not None:
                 with_x = kind == "keep" and it["idx"] is not None and self.mode != "object"
                 hot = with_x and it["idx"] == self.dim_hot
@@ -9444,6 +9518,8 @@ class SubDSession:
                 grp.addChild(im)
                 if with_x:
                     self.dim_hits.append(dict(idx=it["idx"], mid=mid, w=w, h=h, xw=xw))
+                elif kind == "handle":
+                    self.dim_hits.append(dict(idx=None, hd=it["hd"], mid=mid, w=w, h=h, xw=0))
             g.addChild(grp)
 
     def _dim_hot_check(self):
@@ -10820,6 +10896,11 @@ class SubDSession:
                 _later(self.refresh)
             return
         if self.dim_hits and self.dim_p0 is None and self.mode != "object":
+            hd = self._dim_hit_label(pos)
+            if hd is not None:                             # grup olcusunun degeri: tiklayinca degistirilir
+                cb.setHandled()
+                _later(lambda: self.handle_dim_edit(hd))
+                return
             i = self._dim_hit_x(pos)
             if i is not None:                              # Distance olcusunun x dugmesi: olcuyu sil
                 cb.setHandled()
@@ -11368,6 +11449,40 @@ def handle_attach_after(obj):
         _attach_before.pop(key, None)
 
 
+def handle_ref(h):
+    """Bagli tutamagin referansi baska bir grup tutamagiysa o; degilse None."""
+    if not _is_handle(h) or not _is_attached(h):
+        return None
+    sup = h.AttachmentSupport if "AttachmentSupport" in h.PropertiesList else getattr(h, "Support", [])
+    ref = sup[0][0] if sup else None
+    return ref if ref is not None and _is_handle(ref) else None
+
+
+def handle_dim_setup(h):
+    """Bir grup tutamagi baska bir grup tutamagina baglandiysa aralarindaki mesafeyi FreeCAD ifadesine baglar:
+    tutamakta Distance ozelligi (Data sekmesi) olusur, AttachmentOffset.Base.z = Distance. Distance degisince
+    tutamak ve grubun noktalari kayar. Zaten kuruluysa dokunmaz. Dondurur: kuruldu mu."""
+    if handle_ref(h) is None or "Distance" in h.PropertiesList:
+        return False
+    h.addProperty("App::PropertyDistance", "Distance", "SubD", "Distance to the group it is attached to, along its normal")
+    h.Distance = h.AttachmentOffset.Base.z
+    h.setExpression("AttachmentOffset.Base.z", "Distance")
+    h.recompute()
+    return True
+
+
+def handle_dim_geom(h):
+    """Iki grup tutamagi arasindaki olcunun dunya noktalari (P: referans duzlemindeki iz, Q: tutamak) ve mesafe
+    (referans duzleminin normali boyunca = ofsetin z'si); referans bir grup tutamagi degilse None."""
+    if handle_ref(h) is None:
+        return None
+    off = h.AttachmentOffset
+    frame = h.Placement.multiply(off.inverse())             # ofsetsiz baglanti duzlemi
+    axis = frame.Rotation.multVec(App.Vector(0, 0, 1))
+    q = h.Placement.Base
+    return q - axis * off.Base.z, q, off.Base.z
+
+
 def keep_handle_place(h, p_old):
     """Bagli tutamagin ofsetini, Placement'i p_old olacak sekilde yazar. Dondurur: degisti mi."""
     if not _is_attached(h) or not h.AttachmentOffset.isSame(App.Placement(), 1e-9):
@@ -11408,10 +11523,11 @@ def _attach_poll():
             keep_handle_place(h, p_old)                     # onizleme: tutamak atlamasin
             continue
         _attach_pending.pop(key, None)                      # pencere kapandi: son durum
+        doc.openTransaction(T("SubD keep handle place"))
         if h.AttachmentOffset.isSame(App.Placement(), 1e-9) and not h.Placement.isSame(p_old, 1e-6):
-            doc.openTransaction(T("SubD keep handle place"))
             keep_handle_place(h, p_old)
-            doc.commitTransaction()
+        handle_dim_setup(h)                                 # grup tutamagina baglandiysa mesafe ifadesi
+        doc.commitTransaction()
     if not _attach_pending:
         while _attach_timer:
             _attach_timer.pop().stop()
