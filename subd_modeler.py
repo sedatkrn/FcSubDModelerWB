@@ -11671,17 +11671,19 @@ class SubDSession:
                 self._show_edited()
             except Exception as e:
                 App.Console.PrintError(T("SubD could not be saved: %s\n") % e)
-        if True:                                           # askidayken kaldirilmis olsa da zararsiz: kapanan oturumdan iz kalmasin
+        if not doc_gone:                                   # askidayken kaldirilmis olsa da zararsiz: kapanan oturumdan iz kalmasin
             _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoMouseButtonEvent.getClassTypeId(), self._cb_btn))
             _quiet(lambda: self.view.removeEventCallbackPivy(coin.SoLocation2Event.getClassTypeId(), self._cb_mov))
+        if True:
             # belge kapanirken 3B gorunum (gv + viewport) silinirken gelir: ona dokunmak cokertir, filtre zaten gider
             for w in (self.key_targets[2:] if doc_gone else self.key_targets):
                 _quiet(lambda w=w: w.removeEventFilter(self.key_filter))
             _quiet(lambda: QtWidgets.QApplication.instance().removeEventFilter(self.wheel_guard))
             _quiet(lambda: QtWidgets.QApplication.instance().removeEventFilter(self.history_guard))
-        _quiet(lambda: self.parent.removeChild(self.root))
-        if self.dim_root is not None:
-            _quiet(lambda: self.parent.removeChild(self.dim_root))
+        if not doc_gone:                                   # belge kapanirken sahne zaten yok edilir; pivy'ye dokunmak cokertir
+            _quiet(lambda: self.parent.removeChild(self.root))
+            if self.dim_root is not None:
+                _quiet(lambda: self.parent.removeChild(self.dim_root))
         if self.overlay is not None:
             if not doc_gone:                               # belge kapanirken 3B gorunum (ve cocuklari) silinirken gelir
                 _quiet(self.overlay.close)
