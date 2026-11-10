@@ -207,6 +207,7 @@ TR = {
     "Group: some of the points already belong to a group": "Grup: bazı noktalar zaten bir grupta",
     "SubD group": "SubD grubu",
     "Group distance": "Grup mesafesi",
+    "Group distance: the Distance value can be edited here": "Grup ölçüsü: Distance değeri burada değiştirilebilir",
     "Unlock": "Kilidi aç",
     "Lock": "Kilitle",
     "Add to group": "Gruba ekle",

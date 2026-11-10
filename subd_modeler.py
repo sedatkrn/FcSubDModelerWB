@@ -9922,7 +9922,29 @@ class SubDSession:
         else:
             for o, i, d, P, Q in self._dim_obj_all():
                 rows.append(row(o.Label, i, d, P, Q, False))
+        doc = App.ActiveDocument                           # grup tutamaklari arasi olculer (Distance duzenlenebilir)
+        for it in self._handle_dim_items():
+            h = doc.getObject(it["hd"])
+            ref = handle_ref(h)
+            v = it["Q"] - it["P"]
+            rows.append(dict(obj=h.SubDGroup, idx="h:" + it["hd"], name="%s > %s" % (h.Label, ref.Label if ref is not None else ""),
+                             hide=False, target=None, tol=DIM_TOL, dist=float(it["val"]), d3=v,
+                             editable=self.mode != "object", handle=True, hd=it["hd"]))
         return rows
+
+    def handle_dim_set(self, name, v):
+        """Listeden bir grup olcusunun mesafesi yazildi: tutamagin Distance ozelligi degisir (geri alinabilir)."""
+        doc = App.ActiveDocument
+        h = doc.getObject(name) if doc is not None else None
+        if h is None:
+            return
+        handle_dim_setup(h)
+        if "Distance" in h.PropertiesList and abs(v - float(h.Distance.Value)) > 1e-9:
+            doc.openTransaction(T("Group distance"))
+            h.Distance = v
+            doc.recompute()
+            doc.commitTransaction()
+        self.refresh()
 
     def dim_edit(self, idx, field, value):
         """Listeden bir olcunun ad / gizli / hedef / tolerans degeri degisti (geri alinabilir)."""
@@ -12429,24 +12451,28 @@ class _DimList(QtWidgets.QDockWidget):
             on.setCheckState(QtCore.Qt.Unchecked if r["hide"] else QtCore.Qt.Checked)
             on.setToolTip(T("Show / hide this distance in the 3D view"))
             t.setItem(i, 0, on)
-            name = QtWidgets.QTableWidgetItem(r["name"] or self._ph(r["idx"]))
-            if not r["name"]:
+            hd = r.get("handle")
+            name = QtWidgets.QTableWidgetItem(r["name"] or (self._ph(r["idx"]) if not hd else ""))
+            if not r["name"] and not hd:
                 name.setForeground(QtGui.QBrush(QtGui.QColor(150, 150, 150)))
             if not edit:
                 name.setText("%s > %s" % (r["obj"], r["name"] or self._ph(r["idx"])))
-            name.setFlags(rw if edit else ro)
+            name.setFlags(ro if hd or not edit else rw)
             t.setItem(i, 1, name)
+            if hd:
+                on.setFlags(ro)
+                name.setToolTip(T("Group distance: the Distance value can be edited here"))
             for c in (2, 3, 4, 5, 8):
                 it = QtWidgets.QTableWidgetItem()
-                it.setFlags(ro)
+                it.setFlags(rw if hd and edit and c == 2 else ro)
                 it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 t.setItem(i, c, it)
             for c, v in ((6, r["target"]), (7, r["tol"] if r["target"] is not None else None)):
                 it = QtWidgets.QTableWidgetItem("" if v is None else "%.3f" % v)
-                it.setFlags(rw if edit else ro)
+                it.setFlags(rw if edit and not hd else ro)
                 it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 t.setItem(i, c, it)
-            if edit:
+            if edit and not hd:
                 b = QtWidgets.QPushButton("\u00d7")
                 b.setFixedWidth(26)
                 b.setToolTip(T("Delete this distance"))
@@ -12490,6 +12516,15 @@ class _DimList(QtWidgets.QDockWidget):
         if not 0 <= row < len(self.map):
             return
         idx, s = self.map[row], self.s
+        if isinstance(idx, str):                           # grup olcusu: yalniz Distance yazilabilir
+            if col == 2:
+                try:
+                    num = float(it.text().strip().replace(",", "."))
+                except ValueError:
+                    _later(lambda: self.refresh(s._dim_rows(), force=True))
+                    return
+                _later(lambda: s.handle_dim_set(idx[2:], num))
+            return
         if col == 0:
             val = ("hide", it.checkState() != QtCore.Qt.Checked)
         elif col == 1:
@@ -12515,7 +12550,8 @@ class _DimList(QtWidgets.QDockWidget):
             return
         rows = self.table.selectionModel().selectedRows()
         r = rows[0].row() if rows else None
-        self.s.dim_select(self.map[r] if r is not None and r < len(self.map) and self.s.mode != "object" else None)
+        k = self.map[r] if r is not None and r < len(self.map) and self.s.mode != "object" else None
+        self.s.dim_select(k if isinstance(k, int) else None)
 
 
 class _WheelGuard(QtCore.QObject):
