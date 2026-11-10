@@ -8308,16 +8308,16 @@ class SubDSession:
 
     def _line_mark(self, hit):
         """Yakalama gostergesi: hedef varken imlec arti olur ve hedefte isaret cizilir; yoksa imlec eski haline doner."""
-        vp = self.gv.viewport()
         if hit is not None:
+            vp = self.gv.viewport()
             if self._line_cursor is None:
                 self._line_cursor = vp.cursor()
                 vp.setCursor(QtCore.Qt.CrossCursor)
             self._line_widget().set_mark(self._line_q(hit[0]), hit[2])
         else:
             if self._line_cursor is not None:
-                vp.setCursor(self._line_cursor)
-                self._line_cursor = None
+                cur, self._line_cursor = self._line_cursor, None
+                self.gv.viewport().setCursor(cur)
             if self.line_overlay is not None:
                 self.line_overlay.set_mark(None, None)
 
@@ -11684,7 +11684,8 @@ class SubDSession:
         if self.overlay is not None:
             _quiet(self.overlay.close)
             self.overlay = None
-        _quiet(lambda: self._line_mark(None))
+        if not doc_gone:                                   # belge kapanirken 3B gorunum silinmis olur: viewport() cokertir
+            _quiet(lambda: self._line_mark(None))
         for w in (self.rubber, self.line_overlay):
             if w is not None:
                 _quiet(w.deleteLater)
