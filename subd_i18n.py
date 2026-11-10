@@ -206,6 +206,7 @@ TR = {
     "Group released: none of its points is where it was": "Grup serbest kaldı: noktalarından hiçbiri yerinde değil",
     "Group: some of the points already belong to a group": "Grup: bazı noktalar zaten bir grupta",
     "SubD group": "SubD grubu",
+    "SubD keep handle place": "SubD tutamağı yerini koru",
     "Group handle %s removed": "Grup tutamağı %s silindi",
     "Group handle %s created again": "Grup tutamağı %s yeniden oluşturuldu",
     "Group %s: %d points": "Grup %s: %d nokta",

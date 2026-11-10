@@ -11246,6 +11246,98 @@ def _quiet(fn):
         pass
 
 
+# ---------- Tutamak Attachment'i: konum korunur ----------
+# FreeCAD'in Attachment penceresi referansi secince ofseti 0 yapar: tutamak (ve grubun noktalari) referansin
+# ustune atlar. Tutamak bagli degilken bir referansa baglanirsa onceki yer korunur: ofset, o yeri verecek sekilde
+# yazilir (ofset = bagli_yer^-1 * onceki_yer). Pencere acikken onizleme icin hemen, kapaninca (OK ofseti pencerenin
+# 0 degerleriyle ezer) bir kez daha uygulanir. Kullanici kendi ofsetini yazdiysa (0 degil) dokunulmaz.
+
+_ATTACH_PROPS = ("MapMode", "AttachmentSupport", "Support")
+_attach_before = {}      # (belge, tutamak) -> (once bagli miydi, onceki Placement)
+_attach_pending = {}     # (belge, tutamak) -> (korunacak Placement, bitis zamani)
+
+
+def _is_handle(obj):
+    return "SubDGroup" in getattr(obj, "PropertiesList", []) and "MapMode" in obj.PropertiesList
+
+
+def _is_attached(obj):
+    sup = obj.AttachmentSupport if "AttachmentSupport" in obj.PropertiesList else getattr(obj, "Support", [])
+    return str(obj.MapMode) != "Deactivated" and len(sup) > 0
+
+
+def handle_attach_before(obj):
+    if not _is_handle(obj):
+        return
+    key = (obj.Document.Name, obj.Name)
+    if key not in _attach_before:
+        _attach_before[key] = (_is_attached(obj), App.Placement(obj.Placement))
+
+
+def handle_attach_after(obj):
+    if not _is_handle(obj):
+        return
+    key = (obj.Document.Name, obj.Name)
+    was = _attach_before.get(key)
+    if was is None:
+        return
+    now = _is_attached(obj)
+    if now and not was[0]:
+        _attach_pending[key] = (was[1], time.time() + 600)
+        _attach_poll_start()
+    if now or was[0]:                                       # karar verildi (bagli ya da bagi cozuldu)
+        _attach_before.pop(key, None)
+
+
+def keep_handle_place(h, p_old):
+    """Bagli tutamagin ofsetini, Placement'i p_old olacak sekilde yazar. Dondurur: degisti mi."""
+    if not _is_attached(h) or not h.AttachmentOffset.isSame(App.Placement(), 1e-9):
+        return False
+    if h.Placement.isSame(p_old, 1e-6):
+        return False
+    h.recompute()                                           # ofset 0: Placement = referansin kendisi
+    A = App.Placement(h.Placement)
+    if A.isSame(p_old, 1e-6):
+        return False
+    h.AttachmentOffset = A.inverse().multiply(p_old)
+    h.recompute()
+    return True
+
+
+_attach_timer = []
+
+
+def _attach_poll_start():
+    if _attach_timer:
+        return
+    t = QtCore.QTimer()
+    t.setInterval(300)
+    t.timeout.connect(lambda: _quiet(_attach_poll))
+    _attach_timer.append(t)
+    t.start()
+
+
+def _attach_poll():
+    dialog_open = bool(Gui.Control.activeDialog())
+    for key, (p_old, until) in list(_attach_pending.items()):
+        doc = App.listDocuments().get(key[0])
+        h = doc.getObject(key[1]) if doc is not None else None
+        if h is None or not _is_attached(h) or time.time() > until:
+            _attach_pending.pop(key, None)
+            continue
+        if dialog_open:
+            keep_handle_place(h, p_old)                     # onizleme: tutamak atlamasin
+            continue
+        _attach_pending.pop(key, None)                      # pencere kapandi: son durum
+        if h.AttachmentOffset.isSame(App.Placement(), 1e-9) and not h.Placement.isSame(p_old, 1e-6):
+            doc.openTransaction(T("SubD keep handle place"))
+            keep_handle_place(h, p_old)
+            doc.commitTransaction()
+    if not _attach_pending:
+        while _attach_timer:
+            _attach_timer.pop().stop()
+
+
 class _DocWatcher(object):
     """Duzenlenen belge kapaninca modelleyiciyi de kapat: 3B gorunum silinince alt cubuk onunla gidiyor ama ana
     penceredeki arac paneli ve oturum ortada kaliyordu."""
@@ -11263,7 +11355,13 @@ class _DocWatcher(object):
     def slotRedoDocument(self, doc):
         self.slotUndoDocument(doc)
 
+    def slotBeforeChangeObject(self, obj, prop):
+        if prop in _ATTACH_PROPS:
+            _quiet(lambda: handle_attach_before(obj))
+
     def slotChangedObject(self, obj, prop):
+        if prop in _ATTACH_PROPS:
+            _quiet(lambda: handle_attach_after(obj))
         # Sketch bagi: kaynagin sekli degisince bagli SubD'ler hemen izlesin. Sketcher'da Cancel sketch'i geri yukleyip
         # yalniz onu yeniden hesapliyor; SubD "Touched" kalip duzenlenmis haliyle duruyordu.
         if prop != "Shape" or not App.GuiUp:
