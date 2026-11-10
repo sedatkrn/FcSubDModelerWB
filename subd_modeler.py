@@ -3849,6 +3849,36 @@ def is_subd(obj):
     return obj is not None and "CageFaces" in getattr(obj, "PropertiesList", [])
 
 
+class SubDViewProvider:
+    """SubD nesnesinin gorunum sinifi: grup tutamaklari agacta SubD'nin altinda toplanir."""
+
+    def __init__(self, vobj):
+        vobj.Proxy = self
+        self.Object = vobj.Object
+
+    def attach(self, vobj):
+        self.Object = vobj.Object
+
+    def claimChildren(self):
+        obj = getattr(self, "Object", None)
+        if obj is None or not _alive(obj):
+            return []
+        return [h for h in obj.Document.Objects
+                if "SubDGroup" in getattr(h, "PropertiesList", []) and h.SubDGroup == obj.Name]
+
+    def dumps(self):
+        return None
+
+    def loads(self, state):
+        return None
+
+
+def ensure_view_provider(obj):
+    """Eski belgelerdeki SubD nesnesine de gorunum sinifini ver (agac duzeni)."""
+    if App.GuiUp and obj.ViewObject is not None and not isinstance(obj.ViewObject.Proxy, SubDViewProvider):
+        _quiet(lambda: SubDViewProvider(obj.ViewObject))
+
+
 class SubDObject:
     def __init__(self, obj):
         obj.addProperty("App::PropertyVectorList", "CagePoints", "SubD", "Cage points (mm)")
@@ -5044,7 +5074,7 @@ class SubDSession:
         o = doc.addObject("Mesh::FeaturePython", "SubD")
         SubDObject(o)
         if App.GuiUp:
-            o.ViewObject.Proxy = 0
+            SubDViewProvider(o.ViewObject)
         cage_to_obj(cage, o)
         set_surface(o, self.levels, self.rules)
         o.recompute()
@@ -5109,7 +5139,7 @@ class SubDSession:
             n = doc.addObject("Mesh::FeaturePython", "SubD")
             SubDObject(n)
             if App.GuiUp:
-                n.ViewObject.Proxy = 0
+                SubDViewProvider(n.ViewObject)
             cage_to_obj(cage_from_obj(o), n)
             set_surface(n, o.Levels, obj_rules(o))
             n.Placement = o.Placement
@@ -5138,7 +5168,7 @@ class SubDSession:
             n = doc.addObject("Mesh::FeaturePython", "SubD")
             SubDObject(n)
             if App.GuiUp:
-                n.ViewObject.Proxy = 0
+                SubDViewProvider(n.ViewObject)
             cage_to_obj(m, n)
             set_surface(n, o.Levels, obj_rules(o))
             n.Label = o.Label + "_Mirror" + "XYZ"[axis]
@@ -5977,6 +6007,7 @@ class SubDSession:
         """Renk eklenmeden once kurulan gruplara renk verir (kayda yazilir, tutamak da o renge boyanir)."""
         if not _alive(self.obj):
             return
+        ensure_view_provider(self.obj)                     # grup tutamaklari agacta SubD'nin altinda
         for g in self.cage.groups:
             if not g.get("color"):
                 g["color"] = list(group_rgb(g))
@@ -6856,7 +6887,7 @@ class SubDSession:
             self.obj = doc.addObject("Mesh::FeaturePython", "SubD")
             SubDObject(self.obj)
             if App.GuiUp:
-                self.obj.ViewObject.Proxy = 0
+                SubDViewProvider(self.obj.ViewObject)
             self.obj.ViewObject.Visibility = False
             self._write(full)
             doc.commitTransaction()
@@ -8059,7 +8090,7 @@ class SubDSession:
         o = doc.addObject("Mesh::FeaturePython", "SubD")
         SubDObject(o)
         if App.GuiUp:
-            o.ViewObject.Proxy = 0
+            SubDViewProvider(o.ViewObject)
         cage_to_obj(sub, o)
         set_surface(o, self.levels, self.rules)
         o.Placement = obj.Placement                        # kafes yerel koordinatta: ayni yerde dursun
@@ -10575,7 +10606,7 @@ class SubDSession:
             o = doc.addObject("Mesh::FeaturePython", "SubD")
             SubDObject(o)
             if App.GuiUp:
-                o.ViewObject.Proxy = 0
+                SubDViewProvider(o.ViewObject)
             cage_to_obj(test, o)
             set_surface(o, self.levels, self.rules)
             o.recompute()
@@ -10800,7 +10831,7 @@ class SubDSession:
         o = doc.addObject("Mesh::FeaturePython", "SubD")
         SubDObject(o)
         if App.GuiUp:
-            o.ViewObject.Proxy = 0
+            SubDViewProvider(o.ViewObject)
         cage_to_obj(_clipboard, o)                         # dunya koordinati: Placement birim
         set_surface(o, self.levels, self.rules)
         o.recompute()
