@@ -80,6 +80,7 @@ or improve the quality of the B-rep are very welcome.
   other objects or the surface) in Edit and Object mode. With *Keep (fixed)* the measurement stays, follows the cage
   points when they move and is deleted with the × next to its text; otherwise it is temporary.
   The **≡** button opens a list of the distances: names, target / tolerance, show / hide, delete, CSV export.
+  ![Distance tool: fixed measurements in the view and the distances list, with the Move panel taking exact values](docs/distance_tool.png)
 - **Shortcuts for Array and Twist**: none by default; assign one with `subd_modeler.set_user_key("twist", "Shift+T")`.
 - Crease (sharp or semi-sharp edges) — makes the surface hit exact dimensions
 - Copy / cut / paste polygons (with their creases): paste in place into the same cage, into another SubD
