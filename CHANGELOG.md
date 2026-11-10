@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.3 (2026-11-10)
+
+- **Fix: FreeCAD crashed when a document was closed while SubD mode was open** (closing the tab or the file,
+  especially after an object was created). The modeler no longer touches the already destroyed 3D view, its widgets
+  or its scene when the document goes away; the SubD tool panel is still removed.
+- **Fix: parametric groups could get mixed up after Knife (line).** Unmerged points at the same place now belong
+  to the group together and move together; a point can no longer end up in two groups.
+
 ## 0.4.2 (2026-11-10)
 
 - **New: parametric groups.** Select polygons, edges or points and press *Parametric group*: the group gets a FreeCAD
