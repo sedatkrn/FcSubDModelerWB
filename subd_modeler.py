@@ -11996,15 +11996,11 @@ class _DocWatcher(object):
                 App.Console.PrintError(T("SubD could not be saved: %s\n") % e)
 
 
-    def slotDeletedObject(self, obj):
-        _quiet(lambda: _handle_moved(obj))
-
-
 _handle_pending = set()  # yeri degisen grup tutamaklarinin SubD'leri (belge, nesne): olay dongusunde bir kez islenir
 
 
 def _handle_moved(h):
-    """Grup tutamagi tasindi ya da silindi: SubD'nin grubu izlesin (SubD tutamaga bagli degil: bagimlilik dongusu yok)."""
+    """Grup tutamagi tasindi: SubD'nin grubu izlesin (SubD tutamaga bagli degil: bagimlilik dongusu yok)."""
     if "SubDGroup" not in getattr(h, "PropertiesList", []) or not h.SubDGroup:
         return
     key = (h.Document.Name, h.SubDGroup)
