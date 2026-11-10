@@ -3621,6 +3621,17 @@ def group_rgb(g):
     return tuple(group_color(int(tail) if tail.isdigit() else 0))
 
 
+# Agacin Description sutunu (Label2) grubun renginde bir kare gosterir; Label'dan ayri oldugu icin ad degisince kalir.
+GROUP_SQUARES = ((0.0, "\U0001F7E5"), (0.08, "\U0001F7E7"), (0.14, "\U0001F7E8"),
+                 (0.33, "\U0001F7E9"), (0.60, "\U0001F7E6"), (0.76, "\U0001F7EA"))
+
+
+def group_square(rgb):
+    """Renge en yakin tonlu renkli kare (kirmizi, turuncu, sari, yesil, mavi, mor)."""
+    hue = colorsys.rgb_to_hsv(*rgb)[0]
+    return min(GROUP_SQUARES, key=lambda hs: min(abs(hue - hs[0]), 1.0 - abs(hue - hs[0])))[1]
+
+
 def group_new(name, pts, loc, H, color=None):
     return dict(name=name, pts=np.asarray(pts, float).tolist(), loc=np.asarray(loc, float).tolist(),
                 w=[1.0] * len(pts), H=np.asarray(H, float).flatten().tolist(), color=list(color) if color else None)
@@ -3698,6 +3709,8 @@ def group_handle(doc, obj, name, placement, extent=10.0, color=None):
             _quiet(lambda attr=attr: setattr(h.ViewObject, attr, max(float(extent), 10.0)))
         if color:                                           # tutamak da grubun renginde
             _quiet(lambda: setattr(h.ViewObject, "ShapeColor", tuple(color)))
+    if color:
+        h.Label2 = group_square(color)                      # agacta Description sutununda renkli kare
     return h
 
 
@@ -5889,6 +5902,9 @@ class SubDSession:
                 h = self.obj.Document.getObject(g["name"])
                 if h is not None and App.GuiUp:
                     _quiet(lambda: setattr(h.ViewObject, "ShapeColor", tuple(g["color"])))
+            h = self.obj.Document.getObject(g["name"])
+            if h is not None and not h.Label2:              # renk onceden verilmis ama kare yok
+                h.Label2 = group_square(group_rgb(g))
 
     def _group_faces(self, fast):
         """Tum kosesi bir grupta olan cokgenleri grubun rengine boyar. Uyeler kayitli konumlarindan bulunur;
