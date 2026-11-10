@@ -206,6 +206,8 @@ TR = {
     "Group released: none of its points is where it was": "Grup serbest kaldı: noktalarından hiçbiri yerinde değil",
     "Group: some of the points already belong to a group": "Grup: bazı noktalar zaten bir grupta",
     "SubD group": "SubD grubu",
+    "Group handle %s removed": "Grup tutamağı %s silindi",
+    "Group handle %s created again": "Grup tutamağı %s yeniden oluşturuldu",
     "Group %s: %d points": "Grup %s: %d nokta",
     "Merge polygons: select at least two adjacent polygons": "Çokgenleri birleştir: en az iki bitişik çokgen seçin",
     "Merge polygons: the selected polygons are not adjacent": "Çokgenleri birleştir: seçili çokgenler bitişik değil",

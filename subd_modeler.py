@@ -3671,6 +3671,49 @@ def groups_update(cage, doc, placement):
     return changed, errs, ended
 
 
+def group_handle(doc, obj, name, placement, extent=10.0):
+    """SubD grubunun datum plane tutamagini belgeye ekler (Part::DatumPlane, ad = etiket, SubDGroup = SubD nesnesi)."""
+    h = doc.addObject("Part::DatumPlane", name)
+    h.Label = name
+    h.addProperty("App::PropertyString", "SubDGroup", "SubD", "SubD object this handle belongs to").SubDGroup = obj.Name
+    h.setEditorMode("SubDGroup", 1)
+    h.Placement = placement
+    if App.GuiUp:
+        _quiet(lambda: setattr(h.ViewObject, "Visibility", True))
+        for attr in ("Length", "Width"):
+            _quiet(lambda attr=attr: setattr(h.ViewObject, attr, max(float(extent), 10.0)))
+    return h
+
+
+def groups_reconcile(cage, obj):
+    """Geri al / ileri al kafesi eski bir haline dondurdukten sonra grup kayitlari ile belgedeki tutamaklari
+    eslestirir: kayitta olmayan tutamak (grup olusturma geri alindi) silinir, tutamagi olmayan kayit (silinen
+    olusturma ileri alindi) icin tutamak yeniden kurulur (Attachment ayari kaybolur, yer kalir). Tutamagin kayitli
+    yeri, noktalarin yeri ile ayni sayilir: tutamak tasinmis olsa da geri alinan noktalar yerinde kalir, bundan
+    sonraki tutamak hareketleri o yerden olculur. Dondurur: mesaj listesi."""
+    doc, msgs = obj.Document, []
+    names = {g["name"] for g in cage.groups}
+    for h in list(doc.Objects):
+        if "SubDGroup" in getattr(h, "PropertiesList", []) and h.SubDGroup == obj.Name and h.Name not in names:
+            name = h.Name                                  # silinen nesnenin ozelligine erisilemez
+            doc.removeObject(name)
+            msgs.append(T("Group handle %s removed") % name)
+    for g in cage.groups:
+        h = doc.getObject(g["name"])
+        if h is None:
+            H = np.array(g["H"], float).reshape(4, 4)
+            pts = np.array(g["pts"], float).reshape(-1, 3)
+            pl = App.Placement(App.Matrix(*H.flatten().tolist()))
+            group_handle(doc, obj, g["name"], pl, float(np.ptp(pts, 0).max()) if len(pts) > 1 else 10.0)
+            msgs.append(T("Group handle %s created again") % g["name"])
+        else:
+            try:
+                g["H"] = _mat4(h.getGlobalPlacement()).flatten().tolist()
+            except Exception:
+                g["H"] = _mat4(h.Placement).flatten().tolist()
+    return msgs
+
+
 def obj_groups_update(obj):
     """Nesne yeniden hesaplanirken: tutamak tasindiysa grubun noktalari onu izler (obj_links_update'in esi)."""
     if "ParamGroups" not in obj.PropertiesList or not obj.ParamGroups:
@@ -6740,16 +6783,8 @@ class SubDSession:
         W = self.l2w(P)
         center = W.mean(0)
         doc.openTransaction(T("SubD group"))
-        h = doc.addObject("Part::DatumPlane", name)
-        h.Label = name
-        h.addProperty("App::PropertyString", "SubDGroup", "SubD", "SubD object this handle belongs to").SubDGroup = obj.Name
-        h.setEditorMode("SubDGroup", 1)
-        h.Placement = App.Placement(App.Vector(*center), obj.Placement.Rotation)   # eksenleri nesneyle ayni
-        if App.GuiUp:
-            _quiet(lambda: setattr(h.ViewObject, "Visibility", True))
-            ext = float(np.ptp(W, 0).max()) if len(W) > 1 else 10.0
-            for attr in ("Length", "Width"):
-                _quiet(lambda attr=attr: setattr(h.ViewObject, attr, max(ext, 10.0)))
+        h = group_handle(doc, obj, name, App.Placement(App.Vector(*center), obj.Placement.Rotation),   # eksenler nesneyle ayni
+                         float(np.ptp(W, 0).max()) if len(W) > 1 else 10.0)
         H = _mat4(h.getGlobalPlacement())
         loc = (W - H[:3, 3]) @ H[:3, :3]
         self.push()
@@ -6856,6 +6891,10 @@ class SubDSession:
         self.grab = None
         self.op = self.last_op = None
         self.dirty = True                                  # kafes kaydedilmis olabilir (or. Knife ayirma): yeniden yaz
+        if _alive(self.obj) and (self.cage.groups or any(h.SubDGroup == self.obj.Name for h in self._handles())):
+            msgs = groups_reconcile(self.cage, self.obj)
+            if msgs:
+                self.info = msgs[0]
         r = self._rail()
         if r is None:                                      # kilavuzun olusturulmasi geri alindi
             self.rail = None
@@ -6863,6 +6902,12 @@ class SubDSession:
             self.rail["pick"] = []
             if self.rail["sel"] is not None and self.rail["sel"] >= len(r["pts"]):
                 self.rail["sel"] = None
+
+    def _handles(self):
+        """Belgedeki bu SubD'nin grup tutamaklari (bos olabilir: nesne henuz yok)."""
+        if not _alive(self.obj):
+            return []
+        return [h for h in self.obj.Document.Objects if "SubDGroup" in getattr(h, "PropertiesList", [])]
 
     def _keep_history(self):
         """Object moduna gecerken adimlar saklanir; nesne degismediyse geri donunce Ctrl+Z / Redo devam eder.
