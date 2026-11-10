@@ -11710,6 +11710,7 @@ class _ToolPanel(QtWidgets.QFrame):
             QDoubleSpinBox:focus { border-color: #f59e0b; }
             QDoubleSpinBox:disabled { color: #f59e0b; background: #333; }
             QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 0px; height: 0px; border: none; margin: 0px; padding: 0px; }
+            QDoubleSpinBox::up-arrow, QDoubleSpinBox::down-arrow { image: none; width: 0px; height: 0px; }
             QCheckBox { color: #e0e0e0; spacing: 3px; }""")
         # Oklar (yukari / asagi dugmeleri) setButtonSymbols(NoButtons) ile degil, yukaridaki stil kuraliyla gizlenir:
         # Qt 6.11'de (FreeCAD 27.x) stil dosyali kutuda NoButtons duzenleme alanini 1 piksele daraltiyor, yazi gorunmuyordu.
