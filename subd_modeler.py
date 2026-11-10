@@ -2803,13 +2803,7 @@ def cage_to_obj(cage, obj):
         txt = json.dumps(cage.groups) if cage.groups else ""
         if obj.ParamGroups != txt:
             obj.ParamGroups = txt
-        hs = []
-        for g in cage.groups:
-            h = obj.Document.getObject(g["name"])
-            if h is not None and h not in hs:
-                hs.append(h)
-        if list(obj.GroupHandles) != hs:                  # bagimlilik: tutamak (datum) degisince nesne yeniden hesaplanir
-            obj.GroupHandles = hs
+        drop_handle_links(obj)
 
 
 def _link_props(obj):
@@ -3589,7 +3583,8 @@ def obj_links_update(obj):
 # Secili noktalar bir grup olur; belgede ayni konumda bir datum plane (SubD_PG_0001) olusur. Noktalar tutamagin
 # YEREL koordinatinda saklanir (loc); tutamak FreeCAD'in Placement / Attachment araclariyla tasininca (dunya
 # matrisi H degisince) noktalar farki izler: yeni = nokta + agirlik * (H_simdi * loc - H_son * loc). Tutamak SubD'ye
-# bagli degil, SubD tutamaga bagli (GroupHandles) - tersi dongu olur. Uye nokta, kaydedilen yerinde duran
+# bagli degil ve SubD de tutamaga FreeCAD bagimliligi ile bagli degil (LCS / yuz gibi SubD'ye bagli referanslarda
+# dongu olurdu): tutamagin Placement'i degisince belge gozlemcisi SubD'yi gunceller. Uye nokta, kaydedilen yerinde duran
 # kafes noktasidir (Sketch bagi gibi): elle tasinan nokta gruptan cikar, hicbiri yerinde degilse grup biter.
 # Kayit: name (datum), pts (uyelerin son yeri, nesne yerel), loc (tutamak yerel), w (agirlik 0..1), H (son 4x4).
 
@@ -3600,8 +3595,14 @@ def _group_props(obj):
     if "ParamGroups" not in obj.PropertiesList:
         obj.addProperty("App::PropertyString", "ParamGroups", "SubD", "Parametric groups of points (JSON)")
         obj.setEditorMode("ParamGroups", 2)
-        obj.addProperty("App::PropertyLinkListGlobal", "GroupHandles", "SubD", "Datum handles of the parametric groups")
-        obj.setEditorMode("GroupHandles", 1)
+    drop_handle_links(obj)
+
+
+def drop_handle_links(obj):
+    """Eski surumler SubD'yi tutamaklara baglardi (GroupHandles): tutamak SubD'nin ya da ona bagli bir seyin (LCS ...)
+    uzerinden referans alinca bagimlilik dongusu olusuyordu. Bag kalktı; tutamak degisince SubD'yi gozlemci izler."""
+    if "GroupHandles" in obj.PropertiesList:
+        obj.removeProperty("GroupHandles")
 
 
 def _mat4(pl):
@@ -6008,6 +6009,8 @@ class SubDSession:
         if not _alive(self.obj):
             return
         ensure_view_provider(self.obj)                     # grup tutamaklari agacta SubD'nin altinda
+        if "GroupHandles" in self.obj.PropertiesList:      # eski surumun bagimlilik baglari (dongu yapardi)
+            _quiet(lambda: drop_handle_links(self.obj))
         for g in self.cage.groups:
             if not g.get("color"):
                 g["color"] = list(group_rgb(g))
@@ -11948,6 +11951,8 @@ class _DocWatcher(object):
     def slotChangedObject(self, obj, prop):
         if prop in _ATTACH_PROPS:
             _quiet(lambda: handle_attach_after(obj))
+        if prop == "Placement":
+            _quiet(lambda: _handle_moved(obj))
         # Sketch bagi: kaynagin sekli degisince bagli SubD'ler hemen izlesin. Sketcher'da Cancel sketch'i geri yukleyip
         # yalniz onu yeniden hesapliyor; SubD "Touched" kalip duzenlenmis haliyle duruyordu.
         if prop != "Shape" or not App.GuiUp:
@@ -11971,6 +11976,37 @@ class _DocWatcher(object):
                 s.save(full=False)
             except Exception as e:
                 App.Console.PrintError(T("SubD could not be saved: %s\n") % e)
+
+
+    def slotDeletedObject(self, obj):
+        _quiet(lambda: _handle_moved(obj))
+
+
+_handle_pending = set()  # yeri degisen grup tutamaklarinin SubD'leri (belge, nesne): olay dongusunde bir kez islenir
+
+
+def _handle_moved(h):
+    """Grup tutamagi tasindi ya da silindi: SubD'nin grubu izlesin (SubD tutamaga bagli degil: bagimlilik dongusu yok)."""
+    if "SubDGroup" not in getattr(h, "PropertiesList", []) or not h.SubDGroup:
+        return
+    key = (h.Document.Name, h.SubDGroup)
+    if key not in _handle_pending:
+        _handle_pending.add(key)
+        _later(lambda: _quiet(lambda: _handles_follow(*key)))
+
+
+def _handles_follow(doc_name, name):
+    _handle_pending.discard((doc_name, name))
+    doc = App.listDocuments().get(doc_name)
+    obj = doc.getObject(name) if doc is not None else None
+    if obj is None or "ParamGroups" not in obj.PropertiesList or not obj.ParamGroups:
+        return
+    s = _sessions.get(doc_name)
+    if s is not None and s.mode != "object" and s.obj is obj:
+        s.groups_refresh()
+        return
+    obj_groups_update(obj)
+    obj.recompute()
 
 
 _link_pending = set()    # sekli degisen bag kaynaklari (belge, nesne): olay dongusunde bir kez islenir
