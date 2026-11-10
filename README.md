@@ -39,7 +39,7 @@ By design, it does **not** have:
 - **A history or feature tree.** Operations are applied directly to the cage (with undo, and the last operation can
   be redone with new values from its panel). For parametric work, model the shape here, turn it into a solid and
   continue in PartDesign. Special-purpose parametric tools for Part / PartDesign belong in the author's other
-  workbench, PimpMyFreeCAD.
+  workbench, [PimpMyFreeCAD](https://github.com/sedatkrn/PimpMyFreeCAD).
 - **A Boolean tool.** A Boolean would leave triangles and n-gons in the cage. Join shapes by rebuilding the cage
   instead: see [Joining shapes](#joining-shapes-use-bridge-instead-of-a-boolean).
 - **Blender-scale features.** Very detailed or specialised mesh work is better done in Blender (OBJ / USD export for
