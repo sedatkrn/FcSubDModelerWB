@@ -11686,7 +11686,10 @@ class _ToolPanel(QtWidgets.QFrame):
             QDoubleSpinBox { background: #2c2c2c; color: #facc15; border: 1px solid #1e1e1e; padding: 1px 3px; }
             QDoubleSpinBox:focus { border-color: #f59e0b; }
             QDoubleSpinBox:disabled { color: #f59e0b; background: #333; }
+            QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 0px; height: 0px; border: none; margin: 0px; padding: 0px; }
             QCheckBox { color: #e0e0e0; spacing: 3px; }""")
+        # Oklar (yukari / asagi dugmeleri) setButtonSymbols(NoButtons) ile degil, yukaridaki stil kuraliyla gizlenir:
+        # Qt 6.11'de (FreeCAD 27.x) stil dosyali kutuda NoButtons duzenleme alanini 1 piksele daraltiyor, yazi gorunmuyordu.
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(5, 4, 5, 6)
         lay.setSpacing(3)
@@ -11767,7 +11770,8 @@ class _ToolPanel(QtWidgets.QFrame):
                 box.setDecimals(dec)
                 box.setSuffix(suffix)
                 box.setKeyboardTracking(False)
-                box.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+                # NoButtons burada kullanilmaz: Qt 6.11'de stil dosyasiyla birlikte metin alanini 1 piksele daraltir
+                # (oklar __init__ icindeki stil kuraliyla sifir genislige indirildi)
                 box.setAlignment(QtCore.Qt.AlignRight)
                 # fare tekerlegi alanin ustunde: deger bir adim degisir ve islem hemen yeniden yapilir (segment,
                 # kesim sayisi, mm); adim: tam sayi / mm / derece 1, carpan (4 ondalik) 0.05, oteki 0.1
