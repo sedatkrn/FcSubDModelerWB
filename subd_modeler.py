@@ -21,6 +21,7 @@
 #
 # Code comments are mostly in Turkish (the author's language); the user interface is English by default
 # with a Turkish option (subd_i18n.py).
+import colorsys
 import copy
 import json
 import math
@@ -3607,9 +3608,22 @@ def _mat4(pl):
     return np.array(pl.toMatrix().A, float).reshape(4, 4)
 
 
-def group_new(name, pts, loc, H):
+def group_color(n):
+    """n. grubun rengi: altin oranla donen ton, birbirini izleyen gruplar rastgele gorunur ama hep ayirt edilir."""
+    return [round(c, 3) for c in colorsys.hsv_to_rgb((0.13 + 0.61803398875 * n) % 1.0, 0.55, 0.95)]
+
+
+def group_rgb(g):
+    """Grup kaydinin rengi (eski kayitlarda yok: adindaki siraya gore)."""
+    if g.get("color"):
+        return tuple(g["color"])
+    tail = str(g.get("name", ""))[len(GROUP_PREFIX):]
+    return tuple(group_color(int(tail) if tail.isdigit() else 0))
+
+
+def group_new(name, pts, loc, H, color=None):
     return dict(name=name, pts=np.asarray(pts, float).tolist(), loc=np.asarray(loc, float).tolist(),
-                w=[1.0] * len(pts), H=np.asarray(H, float).flatten().tolist())
+                w=[1.0] * len(pts), H=np.asarray(H, float).flatten().tolist(), color=list(color) if color else None)
 
 
 def group_update(cage, g, H_now, R_inv):
@@ -3671,7 +3685,7 @@ def groups_update(cage, doc, placement):
     return changed, errs, ended
 
 
-def group_handle(doc, obj, name, placement, extent=10.0):
+def group_handle(doc, obj, name, placement, extent=10.0, color=None):
     """SubD grubunun datum plane tutamagini belgeye ekler (Part::DatumPlane, ad = etiket, SubDGroup = SubD nesnesi)."""
     h = doc.addObject("Part::DatumPlane", name)
     h.Label = name
@@ -3682,6 +3696,8 @@ def group_handle(doc, obj, name, placement, extent=10.0):
         _quiet(lambda: setattr(h.ViewObject, "Visibility", True))
         for attr in ("Length", "Width"):
             _quiet(lambda attr=attr: setattr(h.ViewObject, attr, max(float(extent), 10.0)))
+        if color:                                           # tutamak da grubun renginde
+            _quiet(lambda: setattr(h.ViewObject, "ShapeColor", tuple(color)))
     return h
 
 
@@ -3704,7 +3720,8 @@ def groups_reconcile(cage, obj):
             H = np.array(g["H"], float).reshape(4, 4)
             pts = np.array(g["pts"], float).reshape(-1, 3)
             pl = App.Placement(App.Matrix(*H.flatten().tolist()))
-            group_handle(doc, obj, g["name"], pl, float(np.ptp(pts, 0).max()) if len(pts) > 1 else 10.0)
+            group_handle(doc, obj, g["name"], pl, float(np.ptp(pts, 0).max()) if len(pts) > 1 else 10.0,
+                         group_rgb(g))
             msgs.append(T("Group handle %s created again") % g["name"])
         else:
             try:
@@ -4656,6 +4673,7 @@ class SubDSession:
         self.cage = cage_from_obj(obj) if obj is not None else \
             Cage.cube([_last_box[n] for n in self.BOX_SIZE])   # nesnesiz Object modu: gorunmeyen yer tutucu
         self.hidden = []     # duzenlerken gizlenen nesneler (SubD ve ondan uretilen katilar); kapatinca geri
+        self._groups_backfill_color()
         self._snapshot()
         if not object_mode:
             self._hide_edited()
@@ -5300,8 +5318,16 @@ class SubDSession:
             self.env_on = False
         self._matcap_apply()
         self.c_switch = coin.SoSwitch()
+        self.grp_faces = coin.SoIndexedFaceSet()           # grup cokgenleri: her grubun kendi renginde
+        self.grp_mat = coin.SoMaterial()
+        self.grp_mat.specularColor = (0.3, 0.3, 0.3)
+        self.grp_mat.shininess = 0.4
+        grp_bind = coin.SoMaterialBinding()
+        grp_bind.value = coin.SoMaterialBinding.PER_FACE
+        self._grp_key = None
         self.c_switch.addChild(_sep(
             _sep(self.ghost_blend, hints(0.0), self.cage_mat, offset(), self.c_coord, self.c_faces),
+            _sep(hints(0.0), self.grp_mat, grp_bind, offset(), self.c_coord, self.grp_faces),
             _sep(hints(0.0), material((1.0, 0.55, 0.15)), self.c_coord, self.sel_faces)))
 
         def lines(color, width, node):
@@ -5853,6 +5879,41 @@ class SubDSession:
         cd, sd = np.ptp(V, 0), np.ptp(S, 0)
         self.dims_label.setText(T("Cage:  %.2f x %.2f x %.2f mm\nSurface:  %.2f x %.2f x %.2f mm") % (tuple(cd) + tuple(sd)))
 
+    def _groups_backfill_color(self):
+        """Renk eklenmeden once kurulan gruplara renk verir (kayda yazilir, tutamak da o renge boyanir)."""
+        if not _alive(self.obj):
+            return
+        for g in self.cage.groups:
+            if not g.get("color"):
+                g["color"] = list(group_rgb(g))
+                h = self.obj.Document.getObject(g["name"])
+                if h is not None and App.GuiUp:
+                    _quiet(lambda: setattr(h.ViewObject, "ShapeColor", tuple(g["color"])))
+
+    def _group_faces(self, fast):
+        """Tum kosesi bir grupta olan cokgenleri grubun rengine boyar. Uyeler kayitli konumlarindan bulunur;
+        surukleme sirasinda (fast) uyelik yeniden hesaplanmaz."""
+        gs, F, V = self.cage.groups, self.cage.F, self.cage.V
+        key = (len(V), len(F), tuple((g["name"], len(g["pts"])) for g in gs))
+        if fast and key == self._grp_key:
+            return
+        self._grp_key = key
+        faces, cols = [], []
+        if gs and F:
+            at = {r.tobytes(): i for i, r in enumerate(np.round(V, 5) + 0.0)}
+            for g in gs:
+                P = np.round(np.array(g["pts"], float).reshape(-1, 3), 5) + 0.0
+                mem = {at[r.tobytes()] for r in P if r.tobytes() in at}
+                col = group_rgb(g)
+                for f in F:
+                    if all(v in mem for v in f):
+                        faces.append(f)
+                        cols.append(col)
+        _set_index(self.grp_faces, _poly_index(faces))
+        if cols:
+            self.grp_mat.diffuseColor.setValues(0, len(cols), cols)
+            self.grp_mat.diffuseColor.setNum(len(cols))
+
     def refresh(self, fast=False):
         if self.mode == "object":
             if not (self.drag and fast):               # surukleme sirasinda gizmo nesneyle birlikte tasinir
@@ -5870,6 +5931,7 @@ class SubDSession:
         _set_index(self.crease_lines, _poly_index([list(e) for e in self.cage.C]))
         sel = [F[i] for i in sorted(self.sel) if i < len(F)] if self.mode == "face" else []
         _set_index(self.sel_faces, _poly_index(sel))
+        self._group_faces(fast)
         if self.mode == "edge":
             _set_index(self.sel_lines, _poly_index([list(e) for e in self.sel_e]))
         else:
@@ -6779,16 +6841,17 @@ class SubDSession:
         while "%s%04d" % (GROUP_PREFIX, n) in names:
             n += 1
         name = "%s%04d" % (GROUP_PREFIX, n)
+        color = group_color(n)
         P = self.cage.V[verts]                              # nesne yereli
         W = self.l2w(P)
         center = W.mean(0)
         doc.openTransaction(T("SubD group"))
         h = group_handle(doc, obj, name, App.Placement(App.Vector(*center), obj.Placement.Rotation),   # eksenler nesneyle ayni
-                         float(np.ptp(W, 0).max()) if len(W) > 1 else 10.0)
+                         float(np.ptp(W, 0).max()) if len(W) > 1 else 10.0, color)
         H = _mat4(h.getGlobalPlacement())
         loc = (W - H[:3, 3]) @ H[:3, :3]
         self.push()
-        self.cage.groups.append(group_new(name, P, loc, H))
+        self.cage.groups.append(group_new(name, P, loc, H, color))
         self.save(full=False)
         doc.commitTransaction()
         doc.recompute()
