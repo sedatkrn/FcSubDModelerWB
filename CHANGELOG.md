@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.2 (2026-11-10)
+
+- **New: parametric groups.** Select polygons, edges or points and press *Parametric group*: the group gets a FreeCAD
+  datum plane (`SubD_PG_NNNN`) in the tree and its own colour (also shown in the tree's Description column). Moving
+  the datum (Placement, Attachment, expressions) moves the group's points.
+- **Distances between groups.** Attach a group's datum to another group's datum, an LCS, a plane or a face: a
+  dimension with arrows is drawn (offset from the centre, alternating sides), its value is bound to a `Distance`
+  property through a FreeCAD expression and can be edited in the 3D view or in the Distances list.
+- **Locked groups.** Groups are locked by default. Selecting a group's points opens a panel with *Unlock / Lock*,
+  *Add to group* and *Remove from group*. Moving or rotating one member moves the whole group and its datum;
+  scaling is blocked until the group is unlocked. Undo / Redo restore the datum too.
+- Attaching a group datum keeps its current place instead of jumping onto the reference.
+
 ## 0.4.1 (2026-11-07)
 
 - **Fixed: two documents open.** Each document now has its own modeler session. Switching to another document tab
