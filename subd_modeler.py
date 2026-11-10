@@ -3696,6 +3696,19 @@ def group_index(cage, g):
     return out
 
 
+def group_index_all(cage, g):
+    """group_index'in esi, ama her uye icin ayni yerdeki TUM kafes noktalari (Knife / ayirma sonrasi birlesmemis
+    ciftler): [[j, ...], ...]; kilit aciksa idx tek tek. Ciftlerin hepsi birlikte tasinir, karisma olmaz."""
+    if g.get("locked", True) is False:
+        return [[j] if j is not None else [] for j in group_index(cage, g)]
+    V = cage.V
+    old = np.array(g["pts"], float).reshape(-1, 3)
+    if not len(old) or not len(V):
+        return [[] for _ in old]
+    tol = 1e-6 * max(np.ptp(np.vstack([V, old]), 0).max(), 1.0)
+    return [[int(j) for j in np.where(np.linalg.norm(V - p, axis=1) < tol)[0]] for p in old]
+
+
 def group_member_sets(V, groups):
     """{grup adi: uye indeks kumesi}; kafes noktalari bir kez sozluge konur (cok grup / cok nokta icin hizli)."""
     out, at = {}, None
@@ -3705,9 +3718,11 @@ def group_member_sets(V, groups):
             out[g["name"]] = set(idx) if g.get("nv") == len(V) else set()
             continue
         if at is None:
-            at = {r.tobytes(): i for i, r in enumerate(np.round(V, 5) + 0.0)}
+            at = {}
+            for i, r in enumerate(np.round(V, 5) + 0.0):
+                at.setdefault(r.tobytes(), []).append(i)
         P = np.round(np.array(g["pts"], float).reshape(-1, 3), 5) + 0.0
-        out[g["name"]] = {at[r.tobytes()] for r in P if r.tobytes() in at}
+        out[g["name"]] = {i for r in P for i in at.get(r.tobytes(), ())}
     return out
 
 
@@ -3717,8 +3732,8 @@ def group_update(cage, g, H_now, R_inv):
     if g.get("locked", True) is False:
         return None
     old = np.array(g["pts"], float).reshape(-1, 3)
-    idx = group_index(cage, g)
-    keep = [k for k, j in enumerate(idx) if j is not None]
+    idx = group_index_all(cage, g)
+    keep = [k for k, j in enumerate(idx) if j]
     if not keep:
         return LINK_ENDED
     loc, w = np.array(g["loc"], float).reshape(-1, 3), np.array(g["w"], float)
@@ -3733,10 +3748,14 @@ def group_update(cage, g, H_now, R_inv):
     at = lambda H: loc @ H[:3, :3].T + H[:3, 3]
     delta = (at(H_now) - at(H_last)) @ R_inv.T             # dunya farki -> nesne yereli
     V = cage.V.copy()
-    for k, j in enumerate(idx):
-        V[j] = V[j] + w[k] * delta[k]
+    done = set()
+    for k, js in enumerate(idx):
+        for j in js:
+            if j not in done:                              # ayni yerdeki kayitlar bir noktayi iki kez surmesin
+                done.add(j)
+                V[j] = V[j] + w[k] * delta[k]
     cage.V = V
-    g["pts"] = V[idx].tolist()
+    g["pts"] = [V[js[0]].tolist() for js in idx]
     g["H"] = H_now.flatten().tolist()
     return True
 
@@ -6988,7 +7007,7 @@ class SubDSession:
         vs = set(verts)
         for g in self.cage.groups:
             if g.get("locked", True) and set(verts) & sets.get(g["name"], set()):
-                pairs = [(k, j) for k, j in enumerate(group_index(self.cage, g)) if j is not None]
+                pairs = [(k, j) for k, js in enumerate(group_index_all(self.cage, g)) for j in js]
                 moves[g["name"]] = pairs
                 vs |= {j for _, j in pairs}
         return sorted(vs), moves
@@ -7062,11 +7081,10 @@ class SubDSession:
         V = self.cage.V
         self.push()
         if g.get("locked", True):                          # kilidi ac: uyeler indeksle izlenir
-            idx = group_index(self.cage, g)
-            keep = [k for k, j in enumerate(idx) if j is not None]
+            pairs = [(k, j) for k, js in enumerate(group_index_all(self.cage, g)) for j in js]
             for key in ("pts", "loc", "w"):
-                g[key] = [g[key][k] for k in keep]
-            g["idx"], g["nv"], g["locked"] = [idx[k] for k in keep], len(V), False
+                g[key] = [g[key][k] for k, _ in pairs]
+            g["idx"], g["nv"], g["locked"] = [j for _, j in pairs], len(V), False
             self.info = T("Group %s unlocked: its points can be edited, Lock binds them again") % g["name"]
         else:                                              # kilitle: yeni yerlerinde tutamaga yeniden bagla
             h = self.obj.Document.getObject(g["name"]) if _alive(self.obj) else None
@@ -7123,8 +7141,8 @@ class SubDSession:
         verts = set(self.selected_verts())
         if g is None or not verts or self.drag or self.grab:
             return
-        idx = group_index(self.cage, g)
-        drop = [k for k, j in enumerate(idx) if j is not None and j in verts]
+        idx = group_index_all(self.cage, g)
+        drop = [k for k, js in enumerate(idx) if verts & set(js)]
         if not drop:
             self.info = T("Group %s: none of the selected points belongs to it") % g["name"]
             self.refresh()
