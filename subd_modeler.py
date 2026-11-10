@@ -3632,6 +3632,44 @@ def group_square(rgb):
     return min(GROUP_SQUARES, key=lambda hs: min(abs(hue - hs[0]), 1.0 - abs(hue - hs[0])))[1]
 
 
+def group_axes(V, faces, inside):
+    """Grubun yerel ekseni (nesne yereli, sutunlar x y z; z = dista bakan normal) ya da None (belirsizse: nesnenin
+    eksenleri). V: grubun noktalari, faces: secili cokgenlerin kose koordinatlari (nokta / kenar seciminde bos:
+    en iyi uyan duzlem), inside: kafesin ortasi (normal buna ters yone bakar). x = yukari x normal (duvar boyunca
+    yatay), y = normal x x (duvar boyunca yukari)."""
+    V = np.asarray(V, float).reshape(-1, 3)
+    n = np.zeros(3)
+    tot = 0.0
+    for P in faces:
+        P = np.asarray(P, float)
+        a = np.cross(P - P.mean(0), np.roll(P - P.mean(0), -1, 0)).sum(0)   # alan agirlikli (Newell) normal
+        n += a
+        tot += np.linalg.norm(a)
+    if tot > 1e-12:
+        if np.linalg.norm(n) < 0.3 * tot:                  # normaller birbirini goturuyor (silindir halkasi gibi)
+            return None
+    elif len(V) >= 3:
+        u, sv, vt = np.linalg.svd(V - V.mean(0), full_matrices=False)
+        if sv[1] < 1e-9 * max(sv[0], 1e-12):                # tek dogru uzerinde
+            return None
+        n = vt[2]
+        if np.dot(n, V.mean(0) - np.asarray(inside, float)) < 0:
+            n = -n
+    else:
+        return None
+    ln = np.linalg.norm(n)
+    if ln < 1e-12:
+        return None
+    n = n / ln
+    up = np.array([0.0, 0.0, 1.0])
+    if abs(n @ up) > 0.95:                                  # tavan / taban: x nesnenin X'i
+        x = np.array([1.0, 0.0, 0.0]) - n * n[0]
+    else:
+        x = np.cross(up, n)
+    x = x / np.linalg.norm(x)
+    return np.c_[x, np.cross(n, x), n]
+
+
 def group_new(name, pts, loc, H, color=None):
     return dict(name=name, pts=np.asarray(pts, float).tolist(), loc=np.asarray(loc, float).tolist(),
                 w=[1.0] * len(pts), H=np.asarray(H, float).flatten().tolist(), color=list(color) if color else None)
@@ -6865,7 +6903,13 @@ class SubDSession:
         W = self.l2w(P)
         center = W.mean(0)
         doc.openTransaction(T("SubD group"))
-        h = group_handle(doc, obj, name, App.Placement(App.Vector(*center), obj.Placement.Rotation),   # eksenler nesneyle ayni
+        faces = [self.cage.V[self.cage.F[fi]] for fi in sorted(self.sel) if fi < len(self.cage.F)] if self.mode == "face" else []
+        Rl = group_axes(P, faces, self.cage.V.mean(0))     # secilenin kendi ekseni: z = dista bakan normal
+        rot = obj.Placement.Rotation
+        if Rl is not None:
+            rot = rot.multiply(App.Placement(App.Matrix(Rl[0, 0], Rl[0, 1], Rl[0, 2], 0, Rl[1, 0], Rl[1, 1], Rl[1, 2], 0,
+                                                       Rl[2, 0], Rl[2, 1], Rl[2, 2], 0, 0, 0, 0, 1)).Rotation)
+        h = group_handle(doc, obj, name, App.Placement(App.Vector(*center), rot),
                          float(np.ptp(W, 0).max()) if len(W) > 1 else 10.0, color)
         H = _mat4(h.getGlobalPlacement())
         loc = (W - H[:3, 3]) @ H[:3, :3]
