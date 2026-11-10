@@ -12,6 +12,8 @@
   *Add to group* and *Remove from group*. Moving or rotating one member moves the whole group and its datum;
   scaling is blocked until the group is unlocked. Undo / Redo restore the datum too.
 - Attaching a group datum keeps its current place instead of jumping onto the reference.
+- Group datums are shown under their SubD object in the tree. The SubD does not depend on its datums in the FreeCAD
+  graph, so a datum can reference the SubD itself, its faces or an LCS attached to it without a dependency cycle.
 
 ## 0.4.1 (2026-11-07)
 
