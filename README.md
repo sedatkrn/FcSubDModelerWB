@@ -180,6 +180,19 @@ document; save the document as usual (Ctrl+S).
 | Ctrl (while dragging) | mm / degree steps | Shift (while dragging) | fine control |
 | Esc / right click | cancel the running tool / turn the knife off | Mouse wheel (edge bevel) | segments |
 
+## Joining shapes: use Bridge instead of a Boolean
+
+The cage is a control mesh, so there is no Boolean tool: a Boolean would leave triangles and n-gons in the cage,
+and the surface would no longer subdivide cleanly. Join shapes by rebuilding the cage between them instead; it
+stays all-quad and the surface keeps flowing. For example, a cylinder going into a cube:
+
+1. Get both shapes into one cage: copy the cylinder's polygons (**Ctrl+C**), edit the cube and paste them
+   (**Ctrl+V**, paste in place), then move them into position. A **Topo cylinder** (all-quad caps) works best.
+2. On the cube face where the cylinder enters, make a **Hole**. Set its radius and segments in the panel to match
+   the cylinder, so both openings have the same number of edges.
+3. Delete the cylinder's end cap (**Del**) so it has an open edge loop, select it together with the hole's edge
+   loop and use **Bridge**. (Bridge also takes two face regions and removes their faces itself.)
+
 ## Language
 
 The interface is English by default and **Turkish** is built in. The **EN / TR** button at the right end of the
