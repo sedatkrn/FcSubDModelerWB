@@ -7220,10 +7220,9 @@ class SubDSession:
         g = self._grp()
         if g is not None and not group_refs(g):            # referans verilmediyse: grubun noktalarinin merkezine kure
             idx = self._grp_sets.get(g["name"], set()) if g.get("locked", True) else set(g.get("idx") or [])
-            P = self.cage.V[sorted(idx)] if idx else np.array(g["pts"], float).reshape(-1, 3)
-            if len(P):
+            if idx:
                 self.push()
-                group_refs(g).append(P.mean(0).tolist())
+                group_refs(g).append(self._group_centroid(idx).tolist())
                 self.dirty = True
                 self.info = T("Group %s: reference sphere placed at the centre") % g["name"]
         if self.ref_armed == (g or {}).get("name"):
@@ -7344,7 +7343,7 @@ class SubDSession:
         P = self.cage.V[verts]                              # nesne yereli
         self.push()
         ng = group_new(name, P, P, np.eye(4), group_color(n))
-        ng["refs"] = [P.mean(0).tolist()]                   # kure hemen merkezde; Set reference ilk kureyi yerinden alir
+        ng["refs"] = [self._group_centroid(verts).tolist()]                   # kure hemen merkezde; Set reference ilk kureyi yerinden alir
         ng["auto"] = True
         self.cage.groups.append(ng)
         self.dirty = True
@@ -10042,9 +10041,8 @@ class SubDSession:
         for g in self.cage.groups:                          # referansi olmayan (eski) gruplar: merkezde kure
             if not group_refs(g):
                 idx = self._grp_sets.get(g["name"], set()) if g.get("locked", True) else set(g.get("idx") or [])
-                P = self.cage.V[sorted(idx)] if idx else np.array(g["pts"], float).reshape(-1, 3)
-                if len(P):
-                    g["refs"], g["auto"] = [P.mean(0).tolist()], True
+                if idx:
+                    g["refs"], g["auto"] = [self._group_centroid(idx).tolist()], True
                     self.dirty = True
         self.pd_tool, self.pd_pick = None, []
         self._pd_sig = None
@@ -10151,9 +10149,25 @@ class SubDSession:
             return 0.0
         return float(math.degrees(math.acos(min(max(float(a @ b) / (na * nb), -1.0), 1.0))))
 
+    def _group_centroid(self, idx):
+        """Grup noktalarinin agirlik merkezi: grubun tamamen icindeki cokgenlerin alan agirlikli merkezi; cokgen
+        yoksa (nokta / kenar secimi) noktalarin ortalamasi."""
+        idx = sorted(idx)
+        V, S = self.cage.V, set(idx)
+        num, tot = np.zeros(3), 0.0
+        for f in self.cage.F:
+            if len(f) >= 3 and all(v in S for v in f):
+                P = V[list(f)]
+                for k in range(1, len(P) - 1):               # ucgen yelpazesi
+                    a, b, c = P[0], P[k], P[k + 1]
+                    ar = float(np.linalg.norm(np.cross(b - a, c - a))) / 2.0
+                    num += ar * (a + b + c) / 3.0
+                    tot += ar
+        return (num / tot) if tot > 1e-12 else V[idx].mean(0)
+
     def _pd_items(self):
         out = []
-        if self.mode == "object":
+        if self.mode == "object" or self.armed != "pd":     # olculer yalniz PD acikken gorunur
             return out
         for i, d in enumerate(self.cage.pdims):
             P, v = self._pd_pts(d), self.pd_value(d)
