@@ -4916,10 +4916,8 @@ class SubDSession:
         self.timer.timeout.connect(self.gizmo.update_scale)
         self.timer.timeout.connect(self._ghost_tick)
         self.timer.start(50)
-        self._m_ref = None        # son gercek fare olayi: (Coin konumu, genel ekran konumu)
-        self.edge_timer = QtCore.QTimer()   # imlec gorunumun disina cikinca da deger vermeye devam etsin (_edge_poll)
-        self.edge_timer.timeout.connect(self._edge_poll)
-        self.edge_timer.start(15)
+        self._wrap = [0, 0]       # arac surerken imlec kenara gelince ortaya tasinir: birikmis kayma (bkz. _wrap_mouse)
+        self._wrap_pend = None    # tasima sonrasi: (eski kayma, yeni kayma), ortada ilk olay gelene kadar
         self.autosave = QtCore.QTimer()   # degisiklikler belgeye duzenli yazilsin (FreeCAD kapanirsa kaybolmasin)
         self.autosave.timeout.connect(self._autosave)
         self.autosave.start(20000)
@@ -11247,7 +11245,7 @@ class SubDSession:
     def _on_button(self, cb):
         ev = cb.getEvent()
         pos = ev.getPosition().getValue()
-        self.mouse = pos
+        self.mouse = (pos[0] + self._wrap[0], pos[1] + self._wrap[1]) if self.grab else pos
         down = ev.getState() == coin.SoButtonEvent.DOWN
         left = ev.getButton() == coin.SoMouseButtonEvent.BUTTON1
         if self.drag is not None:
@@ -11343,8 +11341,9 @@ class SubDSession:
 
     def _on_motion(self, cb):
         pos = cb.getEvent().getPosition().getValue()
-        self.mouse = pos
-        self._m_ref = ((pos[0], pos[1]), QtGui.QCursor.pos())
+        self.mouse = self._wrap_mouse(pos) if self.grab else pos
+        if not self.grab:
+            self._wrap, self._wrap_pend = [0, 0], None
         if self.magnet_size is not None:
             cb.setHandled()
             if QtWidgets.QApplication.mouseButtons() & QtCore.Qt.RightButton:
@@ -11419,29 +11418,39 @@ class SubDSession:
         self._pending = False
         self.grab_move()
 
-    def _edge_poll(self):
-        """Surukleme / arac surerken imlec 3B gorunumun disina cikarsa Coin olay gondermez ve deger durur.
-        Burada genel imlec konumundan son gercek olaya gore konum hesaplanip is surdurulur."""
-        if getattr(self, "closed", False) or self.suspended or self._m_ref is None or not (self.grab or self.drag is not None):
-            return
+    def _wrap_mouse(self, pos):
+        """Arac surerken (extrude, bevel...) imlec 3B gorunumun kenarina gelince olay gelmez ve deger durur
+        (gorunumun disinda baska pencere / panel var; Wayland'de imlec konumu da bilinmez). Blender gibi:
+        imlec kenara yaklasinca gorunumun ortasina tasinir, yapilan hareket _wrap kaymasinda birikir; boylece
+        deger sinirsiz surer. Doner: kaymayla duzeltilmis (sanal) fare konumu."""
+        raw = (pos[0], pos[1])
         try:
             vp = self.gv.viewport()
-            qp = QtGui.QCursor.pos()
-            if vp.rect().contains(vp.mapFromGlobal(qp)):
-                return                                     # gorunum icinde: olaylar zaten geliyor
-            (cx, cy), q0 = self._m_ref
             dpr = vp.devicePixelRatioF()
-            pos = (int(round(cx + (qp.x() - q0.x()) * dpr)), int(round(cy - (qp.y() - q0.y()) * dpr)))   # Coin'de y yukari
+            W, H = vp.width() * dpr, vp.height() * dpr
         except Exception:
-            return
-        if pos == tuple(self.mouse):
-            return
-        self.mouse = pos
-        if self.drag is not None:
-            if _left_held():
-                self._schedule(self.drag_apply)
-        elif self.grab:
-            self._schedule(self._grab_step)
+            return pos
+        m = max(24.0, 0.08 * min(W, H))
+        inside = m <= raw[0] <= W - m and m <= raw[1] <= H - m
+        if self._wrap_pend is not None:
+            old, new = self._wrap_pend
+            if inside:                                     # tasima uygulandi: yeni kayma gecerli
+                self._wrap_pend = None
+            else:                                          # tasimadan once kuyruga girmis olay: eski kayma
+                return (raw[0] + old[0], raw[1] + old[1])
+        off = self._wrap
+        if not inside:
+            c = (W / 2.0, H / 2.0)
+            new = [off[0] + raw[0] - c[0], off[1] + raw[1] - c[1]]
+            try:
+                g = vp.mapToGlobal(QtCore.QPoint(int(c[0] / dpr), int((H - c[1]) / dpr)))   # Coin'de y yukari
+                QtGui.QCursor.setPos(g)
+            except Exception:
+                return (raw[0] + off[0], raw[1] + off[1])
+            self._wrap_pend = (list(off), list(new))
+            self._wrap = new
+            return (raw[0] + off[0], raw[1] + off[1])
+        return (raw[0] + off[0], raw[1] + off[1])
 
     def key(self, k, ctrl=False):
         if self.drag is not None:
@@ -11631,7 +11640,6 @@ class SubDSession:
         _quiet(lambda: app.removeEventFilter(self.wheel_guard))
         _quiet(lambda: app.removeEventFilter(self.history_guard))
         _quiet(self.timer.stop)
-        _quiet(self.edge_timer.stop)
         _quiet(self.dim_timer.stop)
         if self.dim_root is not None:
             _quiet(lambda: self.parent.removeChild(self.dim_root))   # olculer de baska tezgahta gorunmesin
@@ -11687,7 +11695,6 @@ class SubDSession:
         self.closed = True
         _quiet(lambda: _zebra_button(False))
         _quiet(self.timer.stop)
-        _quiet(self.edge_timer.stop)
         _quiet(self.autosave.stop)
         _quiet(lambda: self.wb_timer.stop())
         if getattr(self, "_mdi", None) is not None:
