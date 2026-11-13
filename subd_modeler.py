@@ -4949,6 +4949,7 @@ class SubDSession:
         self.pd_tool, self.pd_pick = None, []   # PD: secili olcu turu (h / v / d / a), tiklanan kureler (grup adlari)
         self.pd_root = self.pd_group = None     # referans kurelerinin sahne dugumu (_pd_spheres)
         self._pd_sig = None
+        self._pd_live = {}                                  # surukleme sirasinda referans kurelerinin gecici yeri
         self.dim_sel = None       # listede secili olcu (kafes sirasi)
         self.dim_hits = []        # kalici olculerin x dugmeleri (tiklayinca silinir)
         self._dim_imgs = {}       # olcu yazisi goruntuleri onbellegi
@@ -6145,6 +6146,8 @@ class SubDSession:
             self.grp_mat.diffuseColor.setNum(len(cols))
 
     def refresh(self, fast=False):
+        if not fast:
+            self._pd_live = {}
         if self.mode == "object":
             if not (self.drag and fast):               # surukleme sirasinda gizmo nesneyle birlikte tasinir
                 c = self.objects_center()
@@ -7103,8 +7106,23 @@ class SubDSession:
                 vs |= {j for _, j in pairs}
         return sorted(vs), moves
 
+    def _live_refs(self, moves):
+        """Surukleme sirasinda: tasinan kilitli gruplarin referans kureleri noktalarla birlikte gorunsun (gecici;
+        kalici kayit birakinca _group_follow'da)."""
+        if not moves:
+            return
+        for name, pairs in moves.items():
+            g = self._grp(name)
+            rf = group_refs(g) if g is not None else []
+            if not rf or not pairs:
+                continue
+            ks, js = [k for k, _ in pairs], [j for _, j in pairs]
+            R, t = rigid_fit(np.array(g["pts"], float).reshape(-1, 3)[ks], self.cage.V[js])
+            self._pd_live[name] = (np.array(rf, float).reshape(-1, 3) @ R.T + t).tolist()
+
     def _group_follow(self, moves):
         """Tasinan / donen kilitli grubun tutamagini noktalarin yeni yerine getirir (iki yonlu baglanti)."""
+        self._pd_live = {}
         if not moves or not _alive(self.obj):
             return
         doc = self.obj.Document
@@ -7408,6 +7426,7 @@ class SubDSession:
 
     def do_undo(self, record=True):
         """Son adimi geri alir. record=False: basarisiz islemin kendi kaydini atmak (Redo listesine girmez)."""
+        self._pd_live = {}
         if record and self._born_undo():
             return
         if not self.undo:
@@ -10011,7 +10030,7 @@ class SubDSession:
         """[((grup adi, sira), dunya konumu)]: tum referans kureleri."""
         out = []
         for g in self.cage.groups:
-            rf = group_refs(g)
+            rf = self._pd_live.get(g["name"]) or group_refs(g)
             if rf:
                 W = self.l2w(np.array(rf, float).reshape(-1, 3))
                 out += [((g["name"], i), W[i]) for i in range(len(rf))]
@@ -11616,6 +11635,7 @@ class SubDSession:
         V[st["verts"]] = f(st["orig"])
         V[st["on_plane"], 0] = st["plane_x"]              # simetri duzlemindeki noktalar duzlemde kalir
         V[st["mirrored"]] = fm(st["morig"])               # aynadaki es noktalar
+        self._live_refs(((self.op or {}).get("args") or {}).get("grp"))
         self.refresh(fast=True)
 
     def grab_move(self):
