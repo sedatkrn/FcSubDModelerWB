@@ -7343,7 +7343,10 @@ class SubDSession:
         name = "%s%04d" % (GROUP_PREFIX, n)
         P = self.cage.V[verts]                              # nesne yereli
         self.push()
-        self.cage.groups.append(group_new(name, P, P, np.eye(4), group_color(n)))
+        ng = group_new(name, P, P, np.eye(4), group_color(n))
+        ng["refs"] = [P.mean(0).tolist()]                   # kure hemen merkezde; Set reference ilk kureyi yerinden alir
+        ng["auto"] = True
+        self.cage.groups.append(ng)
         self.dirty = True
         self.info = T("Group %s: %d points") % (name, len(verts))
         self.refresh()
@@ -7371,7 +7374,10 @@ class SubDSession:
             self.refresh()
             return
         self.push()
-        group_refs(g).append(self.cage.V[sel].mean(0).tolist())   # her basis yeni bir kure
+        if g.pop("auto", False) and group_refs(g):
+            g["refs"][0] = self.cage.V[sel].mean(0).tolist()   # otomatik merkez kuresi yerini alir (olculer bozulmaz)
+        else:
+            group_refs(g).append(self.cage.V[sel].mean(0).tolist())   # her basis yeni bir kure
         self.ref_armed = None
         self.dirty = True
         self.grp_dismissed = None
@@ -10033,6 +10039,13 @@ class SubDSession:
             return
         self.drop_tool()
         self.armed = "pd"
+        for g in self.cage.groups:                          # referansi olmayan (eski) gruplar: merkezde kure
+            if not group_refs(g):
+                idx = self._grp_sets.get(g["name"], set()) if g.get("locked", True) else set(g.get("idx") or [])
+                P = self.cage.V[sorted(idx)] if idx else np.array(g["pts"], float).reshape(-1, 3)
+                if len(P):
+                    g["refs"], g["auto"] = [P.mean(0).tolist()], True
+                    self.dirty = True
         self.pd_tool, self.pd_pick = None, []
         self._pd_sig = None
         self.info = T("PD: choose a dimension type, then click the reference spheres (first: fixed, red; next: green, "
