@@ -10294,6 +10294,11 @@ class SubDSession:
     def _pd_spheres(self):
         """PD acikken gruplarin referans kureleri: sabit ekran boyutunda; ilk tiklanan kirmizi, sonrakiler yesil."""
         show = self.armed == "pd" and self.mode != "object" and _alive(self.obj)
+        if not show:                                       # PD kapali: kureler sahneden kalkar (imza None'a donmus olsa da)
+            if self.pd_group is not None and self.pd_group.getNumChildren():
+                self.pd_group.removeAllChildren()
+            self._pd_sig = None
+            return
         sig = None
         if show:
             sig = (self._cam_sig(), tuple((k, tuple(np.round(w, 3))) for k, w in self._pd_refs()),
