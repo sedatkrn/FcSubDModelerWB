@@ -325,6 +325,7 @@ TR = {
     "Number of Cuts": "Kesim sayısı",
     "Twist": "Burgu",
     "Circle": "Daire",
+    "Undo: the new object was removed": "Geri al: yeni nesne kaldırıldı",
     "Strength": "Güç",
     "Auto radius": "Otomatik yarıçap",
     "Even spacing": "Eşit aralık",

@@ -4928,6 +4928,7 @@ class SubDSession:
         wb = _active_wb()
         self.wb_home = {"SubDModelerWorkbench"} | ({wb} if wb else set())   # modelleyicinin gorundugu tezgahlar
         self._pending = False
+        self._born = None         # az once eklenen Box / Cylinder nesnesinin adi (bkz. _born_undo)
         self.mouse = (0, 0)
         self.gizmo = MoveGizmo(self.view)
         self._build_scene()
@@ -5058,6 +5059,7 @@ class SubDSession:
             o = objs[-1] if objs else self.obj
         if o is None:
             return
+        self._born = None
         Gui.Selection.clearSelection()
         self.obj = o
         self.cage = cage_from_obj(o)
@@ -5127,6 +5129,7 @@ class SubDSession:
         self.edit_mode = "face"
         self.edit_object(o)
         self.push()
+        self._born = o.Name
 
     CYL_FIELDS = ("Diameter", "Height", "Segments", "Height Segments")
 
@@ -7296,6 +7299,8 @@ class SubDSession:
 
     def do_undo(self, record=True):
         """Son adimi geri alir. record=False: basarisiz islemin kendi kaydini atmak (Redo listesine girmez)."""
+        if record and self._born_undo():
+            return
         if not self.undo:
             self.info = T("Nothing to undo in this edit (O: object mode, Ctrl+Z undoes whole edits)")
             self.refresh()
@@ -7306,6 +7311,36 @@ class SubDSession:
         if self._undo_splits():                            # ayrilan nesne silindi: ileri alinacak kafes eksik kalirdi
             self.redo = []
         self.refresh()
+
+    def _born_undo(self):
+        """Yeni eklenen Box / Cylinder'da kafes olusturuldugu gibiyken (ya da geri alinacak adim kalmadiysa) Ctrl+Z
+        nesnenin kendisini geri alir: nesne silinir, Object moduna gecilir. Aksi halde baslangic kafesi ayni haliyle
+        geri yuklenir ve hicbir sey olmamis gibi gorunurdu."""
+        o = self.obj
+        if self._born is None or self.mode == "object" or not _alive(o) or o.Name != self._born:
+            return False
+        if self.undo:
+            try:
+                a, b = self.undo[0][0], self.cage
+                same = len(self.undo) == 1 and len(a.V) == len(b.V) and a.F == b.F and np.allclose(a.V, b.V)
+            except Exception:
+                same = False
+            if not same:
+                return False
+        self._drop_empty()                                 # nesneyi belgeden siler (tek geri alma adimi)
+        self._show_edited()
+        self.drop_tool()
+        self.dim_sel = None
+        self.mode = "object"
+        self.geo_switch.whichChild = -1
+        self.op = self.last_op = None
+        self.rail = None
+        self.undo, self.redo, self.splits = [], [], []
+        self._born = None
+        Gui.Selection.clearSelection()
+        self.info = T("Undo: the new object was removed")
+        self.refresh()
+        return True
 
     def do_redo(self):
         if not self.redo:
