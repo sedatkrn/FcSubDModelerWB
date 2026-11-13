@@ -7099,11 +7099,12 @@ class SubDSession:
             return list(verts), moves
         sets = group_member_sets(self.cage.V, self.cage.groups)
         vs = set(verts)
-        for g in self.cage.groups:
-            if g.get("locked", True) and set(verts) & sets.get(g["name"], set()):
-                pairs = [(k, j) for k, js in enumerate(group_index_all(self.cage, g)) for j in js]
-                moves[g["name"]] = pairs
-                vs |= {j for _, j in pairs}
+        hit = [g for g in self.cage.groups if g.get("locked", True) and vs & sets.get(g["name"], set())]
+        full = [g for g in hit if sets.get(g["name"], set()) <= vs]
+        for g in (full or hit):                            # ortak noktali gruplar: tamami secili olan grup tasinir,
+            pairs = [(k, j) for k, js in enumerate(group_index_all(self.cage, g)) for j in js]   # digerleri yalniz ortak noktalarini izler
+            moves[g["name"]] = pairs
+            vs |= {j for _, j in pairs}
         return sorted(vs), moves
 
     def _live_refs(self, moves):
@@ -7129,12 +7130,14 @@ class SubDSession:
         P4 = _mat4(self.obj.Placement)
         P4i = np.linalg.inv(P4)
         done = False
+        chg = []
         for name, pairs in moves.items():
             g, h = self._grp(name), doc.getObject(name)
             if g is not None and g.get("nh") and pairs:    # datum'suz grup: kayit ve referans noktasi noktalarla birlikte tasinir
                 ks, js = [k for k, _ in pairs], [j for _, j in pairs]
                 allp = np.array(g["pts"], float).reshape(-1, 3)
                 R, t = rigid_fit(allp[ks], self.cage.V[js])
+                chg.append((allp[ks].copy(), self.cage.V[js].copy()))
                 allp[ks] = self.cage.V[js]
                 g["pts"] = allp.tolist()
                 rf = group_refs(g)
@@ -7165,8 +7168,27 @@ class SubDSession:
             if not ok:
                 self.info = T("Group %s: the handle could not follow") % name
             done = True
+        if chg:
+            self._share_update(np.vstack([a for a, _ in chg]), np.vstack([b for _, b in chg]), set(moves))
         if done:
             self.dirty = True
+
+    def _share_update(self, oldP, newP, skip):
+        """Tasinan noktalar baska gruplarla ortaksa o gruplarin kaydi da yeni yeri bilsin (uyelik kaybolmasin)."""
+        key = {r.tobytes(): n for r, n in zip(np.round(oldP, 5) + 0.0, newP)}
+        for g in self.cage.groups:
+            if g["name"] in skip or g.get("locked", True) is False:
+                continue
+            P = np.array(g["pts"], float).reshape(-1, 3)
+            ch = False
+            for k, r in enumerate(np.round(P, 5) + 0.0):
+                n = key.get(r.tobytes())
+                if n is not None:
+                    P[k], ch = n, True
+            if ch:
+                g["pts"] = P.tolist()
+                if g.get("nh"):
+                    g["loc"] = g["pts"]
 
     def _group_panel(self):
         gs = self.cage.groups
@@ -7175,6 +7197,7 @@ class SubDSession:
             return None
         verts = set(self.selected_verts())
         hit = [g["name"] for g in gs if verts & self._grp_sets.get(g["name"], set())]
+        hit.sort(key=lambda n: not (self._grp_sets.get(n, set()) <= verts))   # ortak noktada: tamami secili olan grup once
         if hit and (self.grp_dismissed is None or frozenset(verts) != self.grp_dismissed):
             if self.grp_active not in hit:
                 self.grp_active = hit[0]                   # uyesine tiklanan grup acilir
@@ -7306,9 +7329,9 @@ class SubDSession:
         verts = self.selected_verts()
         if self.mode == "object" or not verts or self.drag or self.grab:
             return
-        used = set().union(*group_member_sets(self.cage.V, self.cage.groups).values()) if self.cage.groups else set()
-        if any(v in used for v in verts):
-            self.info = T("Group: some of the points already belong to a group")
+        sets = group_member_sets(self.cage.V, self.cage.groups) if self.cage.groups else {}
+        if any(set(verts) <= m for m in sets.values()):    # ortak nokta olabilir; ama tamami baska bir grubun icindeyse yeni grup olmaz
+            self.info = T("Group: these points already belong to one group")
             self.refresh()
             return
         names = {g["name"] for g in self.cage.groups}
@@ -10186,8 +10209,10 @@ class SubDSession:
             return
         self.push()
         V = self.cage.V.copy()
+        old_js = V[js].copy()
         V[js] = self.w2l(tf(self.l2w(V[js])))
         self.cage.V = V
+        self._share_update(old_js, V[js], {mover["name"]})
         allp = np.array(mover["pts"], float).reshape(-1, 3)
         for kk, js_ in enumerate(idx):
             if js_:
