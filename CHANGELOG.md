@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Changed: parametric groups no longer use FreeCAD datum planes.** Existing groups keep their points and colour;
+  their datum is removed. A group can get a **reference point** (panel: *Set reference point*, select 1, 2 or 4
+  points; the middle is used) shown as a sphere.
+- **New: PD (Parametric Dimension)** in the top bar. Shows the reference spheres and the dimension types
+  Horizontal / Vertical (along the world axis nearest to the screen direction), Aligned and Angle (3 spheres).
+  Click the spheres in order: the first is fixed (red), the next ones (green) move when you type a new value into the
+  dimension's text. Dimensions are saved with the object.
+- **Fix: Undo right after adding a Box / Cylinder removes the new object.**
+- Topo cylinder segments: 8 to 32 in steps of 4.
 - **New: Circle (Modify tab).** Arranges the selected points, an edge loop / chain, or the boundary of a polygon
   region (one region without holes) on a circle in their best-fit plane; the region's inner points follow
   proportionally. Panel: *Radius* (type a number; *Auto radius* turns off), *Strength* %, *Auto radius*,

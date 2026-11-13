@@ -240,7 +240,8 @@ class Cage:
         self.rails = []                   # Rail bridge kilavuzlari (rail_* fonksiyonlari; nokta indeksleriyle)
         self.links = []                   # Sketch baglari (link_update; nokta konumlariyla, From face > Edge)
         self.dims = []                    # Distance olculeri (kalici; _dim_* ve DIM_KEEP; nokta indeksleriyle)
-        self.groups = []                  # Parametrik gruplar (group_update; datum tutamagina bagli noktalar)
+        self.groups = []                  # Parametrik gruplar (artik datum'suz: nh=True; ref = referans noktasi)
+        self.pdims = []                   # Parametrik olculer: referans kureleri arasi (pd_value / pd_apply)
 
     @staticmethod
     def cube(size=20.0):
@@ -323,6 +324,7 @@ class Cage:
         c.links = copy.deepcopy(self.links)
         c.dims = copy.deepcopy(self.dims)
         c.groups = copy.deepcopy(self.groups)
+        c.pdims = copy.deepcopy(self.pdims)
         return c
 
     def face_edges(self):
@@ -2804,6 +2806,13 @@ def cage_to_obj(cage, obj):
         if obj.ParamGroups != txt:
             obj.ParamGroups = txt
         drop_handle_links(obj)
+    if cage.pdims or "ParamDims" in obj.PropertiesList:
+        if "ParamDims" not in obj.PropertiesList:
+            obj.addProperty("App::PropertyString", "ParamDims", "SubD", "Parametric dimensions between group reference points (JSON)")
+            obj.setEditorMode("ParamDims", 2)
+        txt = json.dumps(cage.pdims) if cage.pdims else ""
+        if obj.ParamDims != txt:
+            obj.ParamDims = txt
 
 
 def _link_props(obj):
@@ -2855,6 +2864,11 @@ def cage_from_obj(obj):
             cage.groups = json.loads(obj.ParamGroups)
         except ValueError:
             cage.groups = []
+    if "ParamDims" in obj.PropertiesList and obj.ParamDims:
+        try:
+            cage.pdims = json.loads(obj.ParamDims)
+        except ValueError:
+            cage.pdims = []
     return cage
 
 
@@ -3673,7 +3687,8 @@ def group_axes(V, faces, inside):
 
 def group_new(name, pts, loc, H, color=None):
     return dict(name=name, pts=np.asarray(pts, float).tolist(), loc=np.asarray(loc, float).tolist(),
-                w=[1.0] * len(pts), H=np.asarray(H, float).flatten().tolist(), color=list(color) if color else None)
+                w=[1.0] * len(pts), H=np.asarray(H, float).flatten().tolist(), color=list(color) if color else None,
+                nh=True, ref=None)          # nh: datum tutamagi yok; ref: referans noktasi (nesne yereli) ya da None
 
 
 def group_index(cage, g):
@@ -3765,6 +3780,9 @@ def groups_update(cage, doc, placement):
     changed, errs, ended, keep = False, [], False, []
     R_inv = _mat4(placement)[:3, :3].T
     for g in cage.groups:
+        if g.get("nh"):                                    # datum'suz grup: tutamak yok, kendi baslarina tasinmaz
+            keep.append(g)
+            continue
         h = doc.getObject(g["name"])
         if h is None:
             errs.append(T("Group handle %s is gone: the group is released") % g["name"])
@@ -3817,6 +3835,8 @@ def groups_reconcile(cage, obj):
             doc.removeObject(name)
             msgs.append(T("Group handle %s removed") % name)
     for g in cage.groups:
+        if g.get("nh"):
+            continue
         h = doc.getObject(g["name"])
         if h is None:
             H = np.array(g["H"], float).reshape(4, 4)
@@ -4915,6 +4935,10 @@ class SubDSession:
         self._hd_key, self._hd_names = None, []   # grup tutamaklarinin olculeri (_handle_dim_items)
         self._grp_sets = {}                       # grup adi -> uye indeksleri (_group_faces)
         self.grp_active = self.grp_dismissed = None   # grup paneli: acik grup, kapatilan secim
+        self.ref_armed = None     # referans noktasi seciliyor: grup adi (bkz. group_ref)
+        self.pd_tool, self.pd_pick = None, []   # PD: secili olcu turu (h / v / d / a), tiklanan kureler (grup adlari)
+        self.pd_root = self.pd_group = None     # referans kurelerinin sahne dugumu (_pd_spheres)
+        self._pd_sig = None
         self.dim_sel = None       # listede secili olcu (kafes sirasi)
         self.dim_hits = []        # kalici olculerin x dugmeleri (tiklayinca silinir)
         self._dim_imgs = {}       # olcu yazisi goruntuleri onbellegi
@@ -6051,11 +6075,30 @@ class SubDSession:
         cd, sd = np.ptp(V, 0), np.ptp(S, 0)
         self.dims_label.setText(T("Cage:  %.2f x %.2f x %.2f mm\nSurface:  %.2f x %.2f x %.2f mm") % (tuple(cd) + tuple(sd)))
 
+    def _groups_drop_datums(self):
+        """Eski gruplar datum plane'e bagliydi: datum belgeden silinir, grup noktalariyla kalir (nh); referans
+        kuresi sonradan paneldeki Set reference point ile belirlenir."""
+        legacy = [g for g in self.cage.groups if not g.get("nh")]
+        if not legacy:
+            return
+        doc = self.obj.Document
+        doc.openTransaction(T("SubD group: datum removed"))
+        for g in legacy:
+            h = doc.getObject(g["name"])
+            if h is not None and _is_handle(h):
+                _quiet(lambda n=h.Name: doc.removeObject(n))
+            g["nh"] = True
+            g.setdefault("ref", None)
+            g["H"] = np.eye(4).flatten().tolist()
+        doc.commitTransaction()
+        self.dirty = True
+
     def _groups_backfill_color(self):
         """Renk eklenmeden once kurulan gruplara renk verir (kayda yazilir, tutamak da o renge boyanir)."""
         if not _alive(self.obj):
             return
         ensure_view_provider(self.obj)                     # grup tutamaklari agacta SubD'nin altinda
+        self._groups_drop_datums()
         if "GroupHandles" in self.obj.PropertiesList:      # eski surumun bagimlilik baglari (dongu yapardi)
             _quiet(lambda: drop_handle_links(self.obj))
         for g in self.cage.groups:
@@ -7060,6 +7103,16 @@ class SubDSession:
         done = False
         for name, pairs in moves.items():
             g, h = self._grp(name), doc.getObject(name)
+            if g is not None and g.get("nh") and pairs:    # datum'suz grup: kayit ve referans noktasi noktalarla birlikte tasinir
+                ks, js = [k for k, _ in pairs], [j for _, j in pairs]
+                allp = np.array(g["pts"], float).reshape(-1, 3)
+                R, t = rigid_fit(allp[ks], self.cage.V[js])
+                allp[ks] = self.cage.V[js]
+                g["pts"] = allp.tolist()
+                if g.get("ref"):
+                    g["ref"] = (R @ np.array(g["ref"], float) + t).tolist()
+                done = True
+                continue
             if g is None or h is None or not pairs:
                 continue
             ks, js = [k for k, _ in pairs], [j for _, j in pairs]
@@ -7103,9 +7156,12 @@ class SubDSession:
             return None
         locked = g.get("locked", True)
         n = len(self._grp_sets.get(g["name"], ())) if locked else len(g.get("idx") or [])
-        title = "%s %s %s (%d)" % ("\U0001F512" if locked else "\U0001F513", g["name"], group_square(group_rgb(g)), n)
+        title = "%s %s %s (%d)%s" % ("\U0001F512" if locked else "\U0001F513", g["name"], group_square(group_rgb(g)), n,
+                                    " \u25CE" if g.get("ref") else "")
         buttons = [("Unlock" if locked else "Lock", self.group_toggle_lock), ("Add to group", self.group_add),
-                   ("Remove from group", self.group_remove), ("Done", self.group_done)]
+                   ("Remove from group", self.group_remove),
+                   ("Apply reference" if self.ref_armed == g["name"] else "Set reference point", self.group_ref),
+                   ("Done", self.group_done)]
         return title, [], True, [], None, buttons
 
     def group_done(self):
@@ -7127,7 +7183,13 @@ class SubDSession:
         else:                                              # kilitle: yeni yerlerinde tutamaga yeniden bagla
             h = self.obj.Document.getObject(g["name"]) if _alive(self.obj) else None
             idx = g.get("idx") or []
-            if h is None or g.get("nv") != len(V) or not idx:
+            if g.get("nh") and g.get("nv") == len(V) and idx:        # datum'suz: yeni yerlerinde yeniden kilitlenir
+                P = V[idx]
+                g.update(pts=P.tolist(), loc=P.tolist(), w=[1.0] * len(idx), locked=True)
+                g.pop("idx", None)
+                g.pop("nv", None)
+                self.info = T("Group %s locked") % g["name"]
+            elif (h is None and not g.get("nh")) or g.get("nv") != len(V) or not idx:
                 self.cage.groups = [x for x in self.cage.groups if x is not g]
                 self.grp_active = None
                 self.info = T("Group %s released: its points or handle changed, it cannot be locked again") % g["name"]
@@ -7199,8 +7261,8 @@ class SubDSession:
         self.refresh()
 
     def make_group(self):
-        """Secili noktalar (cokgen / kenar secimi de olur) bir parametrik grup olur: belgede ayni konumda bir datum
-        plane (SubD_PG_0001) olusur; onu tasiyinca / Attachment ile baglayinca noktalar izler."""
+        """Secili noktalar (cokgen / kenar secimi de olur) bir parametrik grup olur. Datum plane yok: grup kendi
+        referans noktasini (kure) paneldeki Set reference point ile alir; PD ile gruplar arasi olcu verilir."""
         verts = self.selected_verts()
         if self.mode == "object" or not verts or self.drag or self.grab:
             return
@@ -7209,34 +7271,55 @@ class SubDSession:
             self.info = T("Group: some of the points already belong to a group")
             self.refresh()
             return
-        obj = self.obj if _alive(self.obj) else self.save(full=False)
-        doc = obj.Document
-        names = {o.Name for o in doc.Objects}
+        names = {g["name"] for g in self.cage.groups}
+        if _alive(self.obj):
+            names |= {o.Name for o in self.obj.Document.Objects}
         n = 1
         while "%s%04d" % (GROUP_PREFIX, n) in names:
             n += 1
         name = "%s%04d" % (GROUP_PREFIX, n)
-        color = group_color(n)
         P = self.cage.V[verts]                              # nesne yereli
-        W = self.l2w(P)
-        center = W.mean(0)
-        doc.openTransaction(T("SubD group"))
-        faces = [self.cage.V[self.cage.F[fi]] for fi in sorted(self.sel) if fi < len(self.cage.F)] if self.mode == "face" else []
-        Rl = group_axes(P, faces, self.cage.V.mean(0))     # secilenin kendi ekseni: z = dista bakan normal
-        rot = obj.Placement.Rotation
-        if Rl is not None:
-            rot = rot.multiply(App.Placement(App.Matrix(Rl[0, 0], Rl[0, 1], Rl[0, 2], 0, Rl[1, 0], Rl[1, 1], Rl[1, 2], 0,
-                                                       Rl[2, 0], Rl[2, 1], Rl[2, 2], 0, 0, 0, 0, 1)).Rotation)
-        h = group_handle(doc, obj, name, App.Placement(App.Vector(*center), rot),
-                         float(np.ptp(W, 0).max()) if len(W) > 1 else 10.0, color)
-        H = _mat4(h.getGlobalPlacement())
-        loc = (W - H[:3, 3]) @ H[:3, :3]
         self.push()
-        self.cage.groups.append(group_new(name, P, loc, H, color))
-        self.save(full=False)
-        doc.commitTransaction()
-        doc.recompute()
+        self.cage.groups.append(group_new(name, P, P, np.eye(4), group_color(n)))
+        self.dirty = True
         self.info = T("Group %s: %d points") % (name, len(verts))
+        self.refresh()
+
+    # --- referans noktasi (kure): grubun olcu noktasi ---
+    # Panelde Set reference point: nokta moduna gecilir, grubun 1, 2 ya da 4 noktasi secilip Apply reference (ya da
+    # Enter) ile onaylanir; referans secilen noktalarin ortasidir. Grup tasininca referans da onunla tasinir.
+
+    def group_ref(self):
+        g = self._grp()
+        if g is None or self.drag or self.grab:
+            return
+        if self.ref_armed != g["name"]:
+            self.ref_armed = g["name"]
+            if self.mode != "point":
+                self.set_mode("point")
+            self.sel, self.sel_v, self.sel_e = set(), set(), set()
+            self.info = T("Reference point: select 1, 2 or 4 points of the group, then Apply reference (Enter, Esc: cancel)")
+            self.refresh()
+            return
+        mem = self._grp_sets.get(g["name"], set()) if g.get("locked", True) else set(g.get("idx") or [])
+        sel = sorted(self.sel_v)
+        if len(sel) not in (1, 2, 4) or any(v not in mem for v in sel):
+            self.info = T("Reference point: select 1, 2 or 4 points that belong to the group")
+            self.refresh()
+            return
+        self.push()
+        g["ref"] = self.cage.V[sel].mean(0).tolist()
+        self.ref_armed = None
+        self.dirty = True
+        self.grp_dismissed = None
+        self.info = T("Group %s: reference point set") % g["name"]
+        if self.armed != "pd":
+            self.pd_toggle()                                # kure hemen gorunsun
+        self.refresh()
+
+    def group_ref_cancel(self):
+        self.ref_armed = None
+        self.info = ""
         self.refresh()
 
     def _restore_start(self):
@@ -8431,6 +8514,9 @@ class SubDSession:
         if self.armed:
             if self.armed == "dim":
                 self._dim_end()
+            if self.armed == "pd":
+                self.pd_tool, self.pd_pick = None, []
+                self._pd_sig = None
             self.armed = None
             self.info = ""
             self.magnet_size = None
@@ -9833,6 +9919,7 @@ class SubDSession:
                 if P is not None and Q is not None and not d.get("hide"):
                     out.append(dict(P=P, Q=Q, kind="keep", idx=None, d=d))
         out += self._handle_dim_items()
+        out += self._pd_items()
         if self.dim_tmp is not None:
             pq = self._dim_resolve(self.dim_tmp)
             if pq is not None:
@@ -9864,6 +9951,283 @@ class SubDSession:
                                 hd=name, val=float(g[2])))
         return out
 
+    # --- PD (Parametric Dimension): gruplarin referans kureleri arasinda olcu ---
+    # Ust cubuktaki PD acilinca referans kureleri gorunur ve olcu turleri cikar: Horizontal / Vertical (bakisa gore
+    # ekrana en yakin dunya ekseni boyunca), Aligned (dogrudan mesafe), Angle (3 kure: ortadaki tepe). Kureler
+    # sirayla tiklanir: ilk kure KIRMIZI = sabit, sonrakiler YESIL = degeri degistirince grubu hareket eder (aci
+    # olcusunde ilk ikisi sabit, ucuncu doner). Olcunun yazisina tiklayinca deger degistirilir / olcu silinir.
+
+    PD_KINDS = ("h", "v", "d", "a")
+    PD_RED, PD_GREEN, PD_BLUE = (0.92, 0.2, 0.2), (0.2, 0.8, 0.3), (0.2, 0.45, 1.0)
+
+    def pd_toggle(self):
+        if self.drag or self.grab or self.box is not None or self.mode == "object":
+            return
+        if self.armed == "pd":
+            self.drop_tool()
+            self.refresh()
+            return
+        self.drop_tool()
+        self.armed = "pd"
+        self.pd_tool, self.pd_pick = None, []
+        self._pd_sig = None
+        self.info = T("PD: choose a dimension type, then click the reference spheres (first: fixed, red; next: green, "
+                      "moves). Esc / right click: off")
+        self.refresh()
+
+    def pd_set_tool(self, kind):
+        if self.armed != "pd":
+            return
+        self.pd_tool = None if self.pd_tool == kind else kind
+        self.pd_pick = []
+        self._pd_sig = None
+        need = 3 if kind == "a" else 2
+        self.info = T("PD: click %d spheres in order (first: fixed)") % need if self.pd_tool else ""
+        self.refresh()
+
+    def _pd_refs(self):
+        """[(grup adi, dunya konumu)] referansi olan gruplar."""
+        out = []
+        for g in self.cage.groups:
+            if g.get("ref"):
+                out.append((g["name"], self.l2w(np.array(g["ref"], float).reshape(1, 3))[0]))
+        return out
+
+    def pd_click(self, pos):
+        self._pending = False
+        refs = self._pd_refs()
+        if not refs:
+            self.info = T("PD: no group has a reference point yet (group panel: Set reference point)")
+            self.refresh()
+            return
+        if self.pd_tool is None:
+            self.info = T("PD: choose a dimension type first")
+            self.refresh()
+            return
+        scr = self.project(np.array([self.w2l(w) for _, w in refs]))
+        d = np.linalg.norm(scr - np.array(pos[:2], float), axis=1)
+        j = int(d.argmin())
+        if d[j] > 18.0:
+            self.info = T("PD: click a reference sphere")
+            self.refresh()
+            return
+        name = refs[j][0]
+        if name in self.pd_pick:
+            return
+        self.pd_pick.append(name)
+        need = 3 if self.pd_tool == "a" else 2
+        if len(self.pd_pick) < need:
+            self._pd_sig = None
+            self.info = T("PD: click the next sphere")
+            self.refresh()
+            return
+        dim = dict(kind=self.pd_tool, g=list(self.pd_pick))
+        if self.pd_tool in ("h", "v"):
+            P = self._pd_pts(dim)
+            cam = self.view.getCameraNode().orientation.getValue()
+            ax = cam.multVec(coin.SbVec3f(1.0, 0.0, 0.0) if self.pd_tool == "h" else coin.SbVec3f(0.0, 1.0, 0.0))
+            ax = np.array(tuple(ax), float)
+            i = int(np.argmax(np.abs(ax)))                  # ekranin yatay / dikeyine en yakin dunya ekseni
+            a = np.eye(3)[i]
+            if float((P[1] - P[0]) @ a) < 0:                # deger pozitif olsun
+                a = -a
+            dim["axis"] = a.tolist()
+        self.push()
+        self.cage.pdims.append(dim)
+        self.pd_pick = []
+        self._pd_sig = None
+        self.dim_sig = None
+        self.dirty = True
+        self.info = T("PD: dimension added (click its text to change the value)")
+        self.refresh()
+
+    def _pd_pts(self, d):
+        P = []
+        for n in d["g"]:
+            g = self._grp(n)
+            if g is None or not g.get("ref"):
+                return None
+            P.append(self.l2w(np.array(g["ref"], float).reshape(1, 3))[0])
+        return P
+
+    def pd_value(self, d):
+        P = self._pd_pts(d)
+        if P is None:
+            return None
+        k = d["kind"]
+        if k in ("h", "v"):
+            return float((P[1] - P[0]) @ np.array(d["axis"], float))
+        if k == "d":
+            return float(np.linalg.norm(P[1] - P[0]))
+        a, b = P[0] - P[1], P[2] - P[1]
+        na, nb = float(np.linalg.norm(a)), float(np.linalg.norm(b))
+        if na < 1e-9 or nb < 1e-9:
+            return 0.0
+        return float(math.degrees(math.acos(min(max(float(a @ b) / (na * nb), -1.0), 1.0))))
+
+    def _pd_items(self):
+        out = []
+        if self.mode == "object":
+            return out
+        for i, d in enumerate(self.cage.pdims):
+            P, v = self._pd_pts(d), self.pd_value(d)
+            if P is None or v is None:
+                continue
+            k = d["kind"]
+            if k == "a":
+                A, B, C = P
+                ua, uc = A - B, C - B
+                ra, rc = float(np.linalg.norm(ua)), float(np.linalg.norm(uc))
+                bis = ua / max(ra, 1e-9) + uc / max(rc, 1e-9)
+                nb = float(np.linalg.norm(bis))
+                mid = B + bis / nb * 0.35 * min(ra, rc) if nb > 1e-9 else B
+                out.append(dict(P=A, Q=C, kind="pd", idx=None, hd="pd:%d" % i, val=v, txt="%.2f°" % v,
+                                poly=[A, B, C], mid=mid, noline=True))
+                continue
+            a = np.array(d["axis"], float) if k in ("h", "v") else None
+            Q = P[0] + a * v if a is not None else P[1]
+            label = "D" + "XYZ"[int(np.argmax(np.abs(a)))] if a is not None else "D"
+            out.append(dict(P=P[0], Q=Q, kind="pd", idx=None, hd="pd:%d" % i, val=v,
+                            txt="%s  %.3f mm" % (label, v)))
+        return out
+
+    def pd_apply(self, i, new):
+        """Olcunun degeri degisti: son kurenin grubu (aci olcusunda ucuncu) yeni degere gore tasinir / doner."""
+        if not 0 <= i < len(self.cage.pdims):
+            return
+        d = self.cage.pdims[i]
+        P, cur = self._pd_pts(d), self.pd_value(d)
+        mover = self._grp(d["g"][-1])
+        if P is None or cur is None or mover is None:
+            return
+        k = d["kind"]
+        if k == "a":
+            n = np.cross(P[0] - P[1], P[2] - P[1])
+            if np.linalg.norm(n) < 1e-9:
+                self.info = T("PD: the three spheres are on one line, the angle cannot be changed")
+                self.refresh()
+                return
+            n, c0, th = n / np.linalg.norm(n), P[1], math.radians(new - cur)
+
+            def tf(W):
+                V = W - c0
+                return c0 + V * math.cos(th) + np.cross(n, V) * math.sin(th) + np.outer(V @ n, n) * (1 - math.cos(th))
+        else:
+            if k in ("h", "v"):
+                dl = (new - cur) * np.array(d["axis"], float)
+            else:
+                u = P[1] - P[0]
+                ln = float(np.linalg.norm(u))
+                dl = (new - cur) * (u / ln if ln > 1e-9 else np.array([1.0, 0.0, 0.0]))
+            tf = lambda W: W + dl
+        idx = group_index_all(self.cage, mover)
+        js = sorted({j for js_ in idx for j in js_})
+        if not js:
+            self.info = T("PD: the moving group has no points left")
+            self.refresh()
+            return
+        self.push()
+        V = self.cage.V.copy()
+        V[js] = self.w2l(tf(self.l2w(V[js])))
+        self.cage.V = V
+        allp = np.array(mover["pts"], float).reshape(-1, 3)
+        for kk, js_ in enumerate(idx):
+            if js_:
+                allp[kk] = V[js_[0]]
+        mover["pts"] = allp.tolist()
+        mover["ref"] = self.w2l(tf(self.l2w(np.array(mover["ref"], float).reshape(1, 3))))[0].tolist()
+        self.op = self.last_op = None
+        self.dirty = True
+        self.dim_sig = None
+        self._pd_sig = None
+        self.info = T("PD: %s moved") % mover["name"]
+        self.refresh()
+
+    def pd_dim_edit(self, i):
+        """Olcu yazisina tiklayinca: degeri yazdir / olcuyu sil."""
+        if not 0 <= i < len(self.cage.pdims):
+            return
+        d = self.cage.pdims[i]
+        cur = self.pd_value(d)
+        if cur is None:
+            return
+        dlg = QtWidgets.QDialog(Gui.getMainWindow())
+        dlg.setWindowTitle(T("Parametric dimension"))
+        lay = QtWidgets.QVBoxLayout(dlg)
+        lay.addWidget(QtWidgets.QLabel(" - ".join(d["g"]) + "\n" + T("The last (green) group moves")))
+        sp = QtWidgets.QDoubleSpinBox()
+        sp.setRange(-1e7, 180.0 if d["kind"] == "a" else 1e7)
+        sp.setDecimals(3)
+        sp.setSuffix(" °" if d["kind"] == "a" else " mm")
+        sp.setValue(cur)
+        lay.addWidget(sp)
+        bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        dele = bb.addButton(T("Delete dimension"), QtWidgets.QDialogButtonBox.ActionRole)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        dele.clicked.connect(lambda: dlg.done(2))
+        lay.addWidget(bb)
+        r = dlg.exec()
+        if r == 2:
+            self.push()
+            del self.cage.pdims[i]
+            self.dirty = True
+            self.dim_sig = None
+            self.refresh()
+        elif r == 1 and abs(sp.value() - cur) > 1e-9:
+            self.pd_apply(i, sp.value())
+        else:
+            self.refresh()
+
+    def _pd_spheres(self):
+        """PD acikken gruplarin referans kureleri: sabit ekran boyutunda; ilk tiklanan kirmizi, sonrakiler yesil."""
+        show = self.armed == "pd" and self.mode != "object" and _alive(self.obj)
+        sig = None
+        if show:
+            sig = (self._cam_sig(), tuple((g["name"], tuple(np.round(g["ref"], 3))) for g in self.cage.groups if g.get("ref")),
+                   tuple(self.pd_pick), self.pd_tool)
+        if sig == self._pd_sig:
+            return
+        self._pd_sig = sig
+        if self.pd_root is None:
+            if not show:
+                return
+            r = self.pd_root = coin.SoSeparator()
+            ps = coin.SoPickStyle()
+            ps.style = coin.SoPickStyle.UNPICKABLE
+            lm = coin.SoLightModel()
+            lm.model = coin.SoLightModel.BASE_COLOR
+            db = coin.SoDepthBuffer()                      # kure modelin icinden de gorunsun
+            db.test = False
+            for n in (ps, lm, db):
+                r.addChild(n)
+            self.pd_group = coin.SoSeparator()
+            r.addChild(self.pd_group)
+        if self.parent.findChild(self.pd_root) < 0:
+            self.parent.addChild(self.pd_root)
+        g = self.pd_group
+        g.removeAllChildren()
+        if not show:
+            return
+        vv, W, H = _vv(self.view)
+        need = 3 if self.pd_tool == "a" else 2
+        for name, w in self._pd_refs():
+            col = self.PD_BLUE
+            if name in self.pd_pick:
+                pos = self.pd_pick.index(name)
+                col = self.PD_RED if pos < need - 1 else self.PD_GREEN
+            r = 9.0 * float(vv.getWorldToScreenScale(coin.SbVec3f(*[float(x) for x in w]), 1.0 / float(H)))
+            sep = coin.SoSeparator()
+            bc = coin.SoBaseColor()
+            bc.rgb = col
+            tr = coin.SoTranslation()
+            tr.translation = tuple(float(x) for x in w)
+            sp = coin.SoSphere()
+            sp.radius = r
+            for n in (bc, tr, sp):
+                sep.addChild(n)
+            g.addChild(sep)
+
     def _dim_hit_label(self, pos):
         """Grup olcusunun yazisi imlecin altindaysa tutamagin adi, yoksa None."""
         for h in reversed(self.dim_hits):
@@ -9877,6 +10241,9 @@ class SubDSession:
     def handle_dim_edit(self, name):
         """Grup olcusunun degerini yazdirir: tutamagin Distance ozelligi (ifadeyle ofsete bagli) degisir, tutamak ve
         grubun noktalari kayar."""
+        if str(name).startswith("pd:"):
+            self.pd_dim_edit(int(str(name)[3:]))
+            return
         doc = App.ActiveDocument
         h = doc.getObject(name) if doc is not None else None
         if h is None:
@@ -9914,7 +10281,7 @@ class SubDSession:
             self.parent.addChild(self.dim_root)
         return self.dim_group
 
-    DIM_COL = {"keep": (163, 230, 53), "tmp": (245, 158, 11), "live": (34, 211, 238), "handle": (255, 140, 40),
+    DIM_COL = {"keep": (163, 230, 53), "tmp": (245, 158, 11), "live": (34, 211, 238), "handle": (255, 140, 40), "pd": (255, 140, 40),
                "sel": (96, 165, 250), "bad": (248, 113, 113)}   # sel: listede secili, bad: hedeften tolerans disi
     DIM_TEXT_SCALE = 1.5          # olcu yazisi ve x dugmesi: gizmo boyut carpanina ek carpan
 
@@ -9977,6 +10344,7 @@ class SubDSession:
         """Sahnedeki olculeri noktalar ya da gorunen metin degisince yeniden kur (kamera donerken is yok)."""
         if self.suspended:
             return
+        _quiet(self._pd_spheres)
         if self.dim_list is not None and self.dim_list.isVisible():
             self.dim_list.refresh(self._dim_rows())
         items = self._dim_items()
@@ -10033,16 +10401,23 @@ class SubDSession:
             co.point.setValues(0, len(pts), pts)
             for n in (bc, ds, co):
                 grp.addChild(n)
-            if Q is not None:
+            if Q is not None and not it.get("noline"):
                 ls = coin.SoLineSet()
                 ls.numVertices = len(pts) if O is not None else 2
                 grp.addChild(ls)
+            if it.get("poly") is not None:                 # aci olcusu: A - B - C kollari
+                cop = coin.SoCoordinate3()
+                cop.point.setValues(0, len(it["poly"]), [tuple(float(x) for x in e) for e in it["poly"]])
+                lsp = coin.SoLineSet()
+                lsp.numVertices = len(it["poly"])
+                grp.addChild(cop)
+                grp.addChild(lsp)
             ps = coin.SoPointSet()
             ps.numPoints = len(pts)
             grp.addChild(ps)
             if O is not None:
                 P, Q = P + O, Q + O                        # ok ucu ve yazi olcu cizgisinde
-            if Q is not None and kind == "handle":         # iki ucta ok ucu: ok yonu ile bakis yonune dik
+            if Q is not None and kind in ("handle", "pd") and not it.get("noline"):   # iki ucta ok ucu: ok yonu ile bakis yonune dik
                 u = Q - P
                 ln = float(np.linalg.norm(u))
                 if ln > 1e-9:
@@ -10062,9 +10437,9 @@ class SubDSession:
             if Q is not None:
                 with_x = kind == "keep" and it["idx"] is not None and self.mode != "object"
                 hot = with_x and it["idx"] == self.dim_hot
-                text = ("%s  " % name if name else "") + "%.3f mm" % val
+                text = it.get("txt") or (("%s  " % name if name else "") + "%.3f mm" % val)
                 data, w, h, xw = self._dim_label(text, ck, hot, with_x, k)
-                mid = (P + Q) / 2
+                mid = it["mid"] if it.get("mid") is not None else (P + Q) / 2
                 tr = coin.SoTranslation()
                 tr.translation = tuple(float(x) for x in mid)
                 im = coin.SoImage()
@@ -10075,7 +10450,7 @@ class SubDSession:
                 grp.addChild(im)
                 if with_x:
                     self.dim_hits.append(dict(idx=it["idx"], mid=mid, w=w, h=h, xw=xw))
-                elif kind == "handle":
+                elif kind in ("handle", "pd"):
                     self.dim_hits.append(dict(idx=None, hd=it["hd"], mid=mid, w=w, h=h, xw=0))
             g.addChild(grp)
 
@@ -11511,6 +11886,10 @@ class SubDSession:
             cb.setHandled()
             _later(lambda: self.dim_click(pos))
             return
+        if self.armed == "pd":                             # PD: referans kuresi tikla
+            cb.setHandled()
+            _later(lambda: self.pd_click(pos))
+            return
         if self.armed in ("knife", "loop", "addpoint"):
             cb.setHandled()
             fn = {"knife": self.knife, "loop": self.loop_select, "addpoint": self.add_point_at}[self.armed]
@@ -11629,6 +12008,13 @@ class SubDSession:
     def key(self, k, ctrl=False):
         if self.drag is not None:
             return
+        if self.ref_armed and not self.grab:
+            if k in ("return", "enter"):
+                self.group_ref()
+                return
+            if k == "escape":
+                self.group_ref_cancel()
+                return
         if self.box is not None and self.box.get("kind") == "line":
             if k == "escape":                              # knife cizgisi cekilirken: canli kesimi iptal
                 self.line_cancel()
@@ -11817,6 +12203,8 @@ class SubDSession:
         _quiet(self.dim_timer.stop)
         if self.dim_root is not None:
             _quiet(lambda: self.parent.removeChild(self.dim_root))   # olculer de baska tezgahta gorunmesin
+        if self.pd_root is not None:
+            _quiet(lambda: self.parent.removeChild(self.pd_root))
         self.dim_list_was_open = self.dim_list is not None and self.dim_list.isVisible()
         if self.dim_list is not None:
             _quiet(self.dim_list.hide)
@@ -11845,6 +12233,7 @@ class SubDSession:
         self.dim_sig = None
         if self.dim_root is not None:
             _quiet(self._dim_scene)                          # sahneye geri tak
+        self._pd_sig = None
         if self.dim_list_was_open and self.dim_list is not None:
             _quiet(self.dim_list.show)
         _quiet(self._dim_tick)
@@ -11896,6 +12285,8 @@ class SubDSession:
             _quiet(lambda: self.parent.removeChild(self.root))
             if self.dim_root is not None:
                 _quiet(lambda: self.parent.removeChild(self.dim_root))
+            if self.pd_root is not None:
+                _quiet(lambda: self.parent.removeChild(self.pd_root))
         if self.overlay is not None:
             _quiet(lambda: self.overlay.close(doc_gone))       # arac paneli ana pencerede: her durumda kaldirilir
             self.overlay = None
@@ -12493,6 +12884,8 @@ QMenu::item:selected { background: #3f6fb0; }
 
 # Arac sutunu ve alt cubuk dugmelerinin ipuclari; acilir menu ogeleri "Dugme>Oge". Kisayol dugmenin uzerinde yaziyor.
 TOOL_TIPS = {
+    "PD": "Parametric Dimension: show the groups' reference spheres and dimension types; the first clicked sphere is fixed (red), the next ones (green) move when the value changes",
+    "Set reference point": "Select 1, 2 or 4 points of the group: their middle becomes the group's reference point (sphere)",
     "Save": "Write the cage to the document now (it is also saved automatically every 20 s)",
     "Solid (STEP)": "Make a parametric B-rep solid from the SubD surface, ready for STEP export and PartDesign",
     "Close": "Write the cage to the document and close the modeler",
@@ -13157,6 +13550,52 @@ _align_icons = {}         # Align dugmelerinin simgeleri (yatay / dikey), bir ke
 _mode_icons = {}          # Point / Edge / Polygon dugmelerinin simgeleri, bir kez cizilir
 
 
+def _pd_icon(kind):
+    """PD olcu turu simgesi: h / v / d (aligned) / a (aci); iki kure (kirmizi sabit, yesil) ve olcu cizgisi."""
+    pm = QtGui.QPixmap(40, 40)
+    pm.setDevicePixelRatio(2.0)
+    pm.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.Antialiasing)
+    P = QtCore.QPointF
+    org = QtGui.QColor("#ff8c28")
+    red, grn = QtGui.QColor("#eb3333"), QtGui.QColor("#33cc4d")
+
+    def ball(pt, col):
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(col)
+        p.drawEllipse(pt, 2.8, 2.8)
+
+    p.setPen(QtGui.QPen(org, 1.6))
+    if kind == "h":
+        a, b = P(3.5, 15), P(16.5, 15)
+        p.drawLine(a, b)
+        p.drawLine(P(3.5, 11), P(3.5, 18))
+        p.drawLine(P(16.5, 11), P(16.5, 18))
+        ball(P(3.5, 6), red)
+        ball(P(16.5, 6), grn)
+    elif kind == "v":
+        p.drawLine(P(10, 3.5), P(10, 16.5))
+        p.drawLine(P(6, 3.5), P(14, 3.5))
+        p.drawLine(P(6, 16.5), P(14, 16.5))
+        ball(P(16, 3.5), red)
+        ball(P(16, 16.5), grn)
+    elif kind == "d":
+        p.drawLine(P(4, 16), P(16, 4))
+        ball(P(4, 16), red)
+        ball(P(16, 4), grn)
+    else:
+        p.drawLine(P(3, 16), P(10, 16))
+        p.drawLine(P(3, 16), P(15, 5))
+        p.setBrush(QtCore.Qt.NoBrush)
+        p.drawArc(QtCore.QRectF(-1, 12, 14, 8), 0, 40 * 16)
+        ball(P(3, 16), red)
+        ball(P(10, 16), red)
+        ball(P(15, 5), grn)
+    p.end()
+    return QtGui.QIcon(pm)
+
+
 def _mode_icon(kind):
     """Secim modu simgesi (Blender'daki gibi): tel kup; "point" bir kose, "edge" bir kenar, "face" on yuz sari."""
     if kind in _mode_icons:
@@ -13463,11 +13902,35 @@ class _Overlay(object):
         _min_width(lb, 28)
         tog("Distances", "", s.dim_list_toggle, lambda: s.dim_list is not None and s.dim_list.isVisible(),
             lb).setToolTip(_tool_tip("Distances"))
+        pb = _lw_button("PD")                               # Parametric Dimension: referans kureleri + olcu turleri
+        pb.setProperty("tool", True)
+        self.tool_buttons.append(pb)
+        tog("PD", "", s.pd_toggle, lambda: s.armed == "pd", pb).setToolTip(_tool_tip("PD"))
         row.addSpacing(10)
         self.sel_label = QtWidgets.QLabel()
         self.sel_label.setMinimumWidth(52)
         row.addWidget(self.sel_label)
         self.modes.show()
+
+        self.pd_bar = QtWidgets.QFrame(self.vp)             # PD acikken: olcu turleri (yatay / dikey / hizali / aci)
+        self.pd_bar.setObjectName("lwBar")
+        self.pd_bar.setStyleSheet(OVERLAY_CSS)
+        prow = QtWidgets.QHBoxLayout(self.pd_bar)
+        prow.setContentsMargins(4, 3, 4, 3)
+        prow.setSpacing(2)
+        for kind, tip in (("h", "Horizontal"), ("v", "Vertical"), ("d", "Aligned"), ("a", "Angle (3 spheres)")):
+            b = QtWidgets.QPushButton()
+            b.setFocusPolicy(QtCore.Qt.NoFocus)
+            b.setIcon(_pd_icon(kind))
+            b.setIconSize(QtCore.QSize(20, 20))
+            b.setFixedSize(30, 26)
+            _min_width(b, 30)
+            b.setCheckable(True)
+            b.setToolTip(T("PD: " + tip))
+            b.clicked.connect(lambda _=False, k=kind: s.pd_set_tool(k))
+            self.toggles["PD:" + kind] = (b, lambda k=kind: s.pd_tool == k)
+            prow.addWidget(b)
+        self.pd_bar.hide()
 
         row = groups[1]
         tog("Symmetry", "Y", s.toggle_sym, lambda: s.sym)
@@ -13644,6 +14107,9 @@ class _Overlay(object):
                 my = ov["OverlayTop"].bottom() + 9
         self.modes.move(left + 8, my)
         self.modes.raise_()
+        self.pd_bar.adjustSize()
+        self.pd_bar.move(left + 8, my + self.modes.height() + 4)
+        self.pd_bar.raise_()
         avail = self.scroll.viewport().height() - 8        # cerceve kenarlari
         self._flow_columns(avail if avail > 100 else 1 << 30)   # sekmesi arkada / henuz acilmamis panel: tek sutun
         bar = self.scroll.verticalScrollBar().sizeHint().width() if self.left.height() > avail > 92 else 0
@@ -13751,6 +14217,11 @@ class _Overlay(object):
                 name.setStyleSheet("color:#1a1a1a;" if lit else "")
                 key.setStyleSheet("color:#4a3a00;" if lit else "color:#a8a8a8;")
         is_obj = s.mode == "object"
+        want = s.armed == "pd" and not is_obj
+        if self.pd_bar.isVisible() != want:
+            self.pd_bar.setVisible(want)
+            if want:
+                self.relayout()
         doc = App.ActiveDocument
         for b, redo in self.history_buttons:
             if is_obj:
@@ -13781,7 +14252,7 @@ class _Overlay(object):
             self.relayout()
             self.sync()
         else:
-            for w in (self.tool_dock, self.bar, self.modes, self.panel, self.info_label):
+            for w in (self.tool_dock, self.bar, self.modes, self.pd_bar, self.panel, self.info_label):
                 _quiet(w.hide)
 
     def close(self, doc_gone=False):
@@ -13792,7 +14263,7 @@ class _Overlay(object):
         _quiet(d.deleteLater)
         if doc_gone:                                       # bar / panel ... 3B gorunumun cocuklari: gorunumle gitti, dokunma
             return
-        for w in (self.bar, self.modes, self.panel, self.info_label):   # gorunumun cocuklari: silinmis olabilir
+        for w in (self.bar, self.modes, self.pd_bar, self.panel, self.info_label):   # gorunumun cocuklari: silinmis olabilir
             _quiet(w.hide)
             _quiet(w.deleteLater)
 
