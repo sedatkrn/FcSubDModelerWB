@@ -5153,8 +5153,8 @@ class SubDSession:
         for n in ("Diameter", "Height"):
             v[n] = max(float(v[n]), 0.001)
         segs = min(max(int(round(v["Segments"])), 3), 128)
-        if topo:
-            segs = max(4 * int(round(segs / 4.0)), 4)
+        if topo:                                           # dortgen kapak izgarasi: 4'un kati, 8..32
+            segs = min(max(4 * int(round(segs / 4.0)), 8), 32)
         v["Segments"] = float(segs)
         v["Height Segments"] = float(min(max(int(round(v["Height Segments"])), 1), 64))
         self.cyl_vals = dict(v)
@@ -6534,7 +6534,11 @@ class SubDSession:
                 return T("Box"), [mm(n) for n in self.BOX_SIZE] + \
                     [(n, v[n], "", 0, r(n)) for n in self.BOX_SEGS], self.drag is None
             if k == "cylinder":
-                return T("Topo cylinder" if a["topo"] else "Cylinder"), [mm("Diameter"), mm("Height")] +                     [(n, v[n], "", 0, r(n)) for n in ("Segments", "Height Segments")], self.drag is None
+                segs = (("Segments", v["Segments"], "", 0, r("Segments"), (4, 8, 32)) if a["topo"]
+                        else ("Segments", v["Segments"], "", 0, r("Segments")))   # Topo: 8..32, 4'er 4'er
+                return T("Topo cylinder" if a["topo"] else "Cylinder"), [mm("Diameter"), mm("Height"), segs,
+                                                                         ("Height Segments", v["Height Segments"], "", 0,
+                                                                          r("Height Segments"))], self.drag is None
             if k == "plane":
                 return T("Knife (plane: N.p = Offset)"), [("Normal X", v["Nx"], "", 4, r("Nx")),
                                                        ("Normal Y", v["Ny"], "", 4, r("Ny")),
@@ -12986,7 +12990,7 @@ class _ToolPanel(QtWidgets.QFrame):
                     wdg.setParent(None)
                     wdg.deleteLater()
             self.rows = []
-            for r, (name, val, suffix, dec, fn) in enumerate(fields):
+            for r, (name, val, suffix, dec, fn, *ext) in enumerate(fields):
                 lb = QtWidgets.QLabel(T(name))
                 box = QtWidgets.QDoubleSpinBox()
                 box.setRange(-1e7, 1e7)
@@ -12999,6 +13003,9 @@ class _ToolPanel(QtWidgets.QFrame):
                 # fare tekerlegi alanin ustunde: deger bir adim degisir ve islem hemen yeniden yapilir (segment,
                 # kesim sayisi, mm); adim: tam sayi / mm / derece 1, carpan (4 ondalik) 0.05, oteki 0.1
                 box.setSingleStep(1.0 if dec == 0 or suffix.strip() in ("mm", "°") else 0.05 if dec >= 4 else 0.1)
+                if ext:                                    # alan tanimina ek: (adim, en az, en cok)
+                    box.setRange(ext[0][1], ext[0][2])
+                    box.setSingleStep(ext[0][0])
                 box.editingFinished.connect(lambda b=box, i=r: self._commit(i, b))
                 box.valueChanged.connect(lambda val, b=box, i=r: self._commit(i, b))
                 box.lineEdit().installEventFilter(self._focus_filter)
