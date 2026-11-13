@@ -3685,10 +3685,20 @@ def group_axes(V, faces, inside):
     return np.c_[x, np.cross(n, x), n]
 
 
+def group_refs(g):
+    """Grubun referans noktalari (nesne yereli, liste); eski tek "ref" kaydi listeye cevrilir."""
+    if "refs" not in g:
+        r = g.pop("ref", None)
+        g["refs"] = [list(r)] if r else []
+    else:
+        g.pop("ref", None)
+    return g["refs"]
+
+
 def group_new(name, pts, loc, H, color=None):
     return dict(name=name, pts=np.asarray(pts, float).tolist(), loc=np.asarray(loc, float).tolist(),
                 w=[1.0] * len(pts), H=np.asarray(H, float).flatten().tolist(), color=list(color) if color else None,
-                nh=True, ref=None)          # nh: datum tutamagi yok; ref: referans noktasi (nesne yereli) ya da None
+                nh=True, refs=[])           # nh: datum tutamagi yok; refs: referans noktalari (nesne yereli, birden cok olabilir)
 
 
 def group_index(cage, g):
@@ -6088,7 +6098,7 @@ class SubDSession:
             if h is not None and _is_handle(h):
                 _quiet(lambda n=h.Name: doc.removeObject(n))
             g["nh"] = True
-            g.setdefault("ref", None)
+            group_refs(g)
             g["H"] = np.eye(4).flatten().tolist()
         doc.commitTransaction()
         self.dirty = True
@@ -7109,8 +7119,9 @@ class SubDSession:
                 R, t = rigid_fit(allp[ks], self.cage.V[js])
                 allp[ks] = self.cage.V[js]
                 g["pts"] = allp.tolist()
-                if g.get("ref"):
-                    g["ref"] = (R @ np.array(g["ref"], float) + t).tolist()
+                rf = group_refs(g)
+                if rf:
+                    g["refs"] = (np.array(rf, float).reshape(-1, 3) @ R.T + t).tolist()
                 done = True
                 continue
             if g is None or h is None or not pairs:
@@ -7157,7 +7168,7 @@ class SubDSession:
         locked = g.get("locked", True)
         n = len(self._grp_sets.get(g["name"], ())) if locked else len(g.get("idx") or [])
         title = "%s %s %s (%d)%s" % ("\U0001F512" if locked else "\U0001F513", g["name"], group_square(group_rgb(g)), n,
-                                    " \u25CE" if g.get("ref") else "")
+                                    " \u25CE" if group_refs(g) else "")
         buttons = [("Unlock" if locked else "Lock", self.group_toggle_lock), ("Add to group", self.group_add),
                    ("Remove from group", self.group_remove),
                    ("Apply reference" if self.ref_armed == g["name"] else "Set reference point", self.group_ref),
@@ -7308,11 +7319,11 @@ class SubDSession:
             self.refresh()
             return
         self.push()
-        g["ref"] = self.cage.V[sel].mean(0).tolist()
+        group_refs(g).append(self.cage.V[sel].mean(0).tolist())   # her basis yeni bir kure
         self.ref_armed = None
         self.dirty = True
         self.grp_dismissed = None
-        self.info = T("Group %s: reference point set") % g["name"]
+        self.info = T("Group %s: reference point set (%d)") % (g["name"], len(group_refs(g)))
         if self.armed != "pd":
             self.pd_toggle()                                # kure hemen gorunsun
         self.refresh()
@@ -9986,11 +9997,13 @@ class SubDSession:
         self.refresh()
 
     def _pd_refs(self):
-        """[(grup adi, dunya konumu)] referansi olan gruplar."""
+        """[((grup adi, sira), dunya konumu)]: tum referans kureleri."""
         out = []
         for g in self.cage.groups:
-            if g.get("ref"):
-                out.append((g["name"], self.l2w(np.array(g["ref"], float).reshape(1, 3))[0]))
+            rf = group_refs(g)
+            if rf:
+                W = self.l2w(np.array(rf, float).reshape(-1, 3))
+                out += [((g["name"], i), W[i]) for i in range(len(rf))]
         return out
 
     def pd_click(self, pos):
@@ -10016,12 +10029,18 @@ class SubDSession:
             return
         self.pd_pick.append(name)
         need = 3 if self.pd_tool == "a" else 2
+        if len(self.pd_pick) == need and self.pd_tool == "a" and self.pd_pick[-1][0] in [k[0] for k in self.pd_pick[:-1]]:
+            self.pd_pick = []                              # aci: donen grup (3. kure) diger ikisiyle ayni olamaz
+            self._pd_sig = None
+            self.info = T("PD: the third sphere must belong to another group")
+            self.refresh()
+            return
         if len(self.pd_pick) < need:
             self._pd_sig = None
             self.info = T("PD: click the next sphere")
             self.refresh()
             return
-        dim = dict(kind=self.pd_tool, g=list(self.pd_pick))
+        dim = dict(kind=self.pd_tool, g=[k[0] for k in self.pd_pick], i=[k[1] for k in self.pd_pick])
         if self.pd_tool in ("h", "v"):
             P = self._pd_pts(dim)
             cam = self.view.getCameraNode().orientation.getValue()
@@ -10043,11 +10062,12 @@ class SubDSession:
 
     def _pd_pts(self, d):
         P = []
-        for n in d["g"]:
+        for n, i in zip(d["g"], d.get("i") or [0] * len(d["g"])):
             g = self._grp(n)
-            if g is None or not g.get("ref"):
+            rf = group_refs(g) if g is not None else []
+            if i >= len(rf):
                 return None
-            P.append(self.l2w(np.array(g["ref"], float).reshape(1, 3))[0])
+            P.append(self.l2w(np.array(rf[i], float).reshape(1, 3))[0])
         return P
 
     def pd_value(self, d):
@@ -10120,6 +10140,14 @@ class SubDSession:
                 ln = float(np.linalg.norm(u))
                 dl = (new - cur) * (u / ln if ln > 1e-9 else np.array([1.0, 0.0, 0.0]))
             tf = lambda W: W + dl
+            if len(d["g"]) == 2 and d["g"][0] == d["g"][1]:    # ayni grubun iki kuresi: grup esner (ilk kure sabit)
+                if new <= 1e-9 or cur <= 1e-9:
+                    self.info = T("PD: a stretch dimension needs a value above zero")
+                    self.refresh()
+                    return
+                ax = np.array(d["axis"], float) if k in ("h", "v") else (P[1] - P[0]) / cur
+                sc, c0 = new / cur, P[0]
+                tf = lambda W: W + np.outer((W - c0) @ ax, ax) * (sc - 1.0)
         idx = group_index_all(self.cage, mover)
         js = sorted({j for js_ in idx for j in js_})
         if not js:
@@ -10135,12 +10163,12 @@ class SubDSession:
             if js_:
                 allp[kk] = V[js_[0]]
         mover["pts"] = allp.tolist()
-        mover["ref"] = self.w2l(tf(self.l2w(np.array(mover["ref"], float).reshape(1, 3))))[0].tolist()
+        mover["refs"] = self.w2l(tf(self.l2w(np.array(group_refs(mover), float).reshape(-1, 3)))).tolist()
         self.op = self.last_op = None
         self.dirty = True
         self.dim_sig = None
         self._pd_sig = None
-        self.info = T("PD: %s moved") % mover["name"]
+        self.info = T("PD: %s stretched") % mover["name"] if len(d["g"]) == 2 and d["g"][0] == d["g"][1] else T("PD: %s moved") % mover["name"]
         self.refresh()
 
     def pd_dim_edit(self, i):
@@ -10154,7 +10182,9 @@ class SubDSession:
         dlg = QtWidgets.QDialog(Gui.getMainWindow())
         dlg.setWindowTitle(T("Parametric dimension"))
         lay = QtWidgets.QVBoxLayout(dlg)
-        lay.addWidget(QtWidgets.QLabel(" - ".join(d["g"]) + "\n" + T("The last (green) group moves")))
+        same = len(d["g"]) == 2 and d["g"][0] == d["g"][1]
+        lay.addWidget(QtWidgets.QLabel(" - ".join(d["g"]) + "\n" + T("The group is stretched from the first sphere" if same
+                                                                      else "The last (green) group moves")))
         sp = QtWidgets.QDoubleSpinBox()
         sp.setRange(-1e7, 180.0 if d["kind"] == "a" else 1e7)
         sp.setDecimals(3)
@@ -10184,7 +10214,7 @@ class SubDSession:
         show = self.armed == "pd" and self.mode != "object" and _alive(self.obj)
         sig = None
         if show:
-            sig = (self._cam_sig(), tuple((g["name"], tuple(np.round(g["ref"], 3))) for g in self.cage.groups if g.get("ref")),
+            sig = (self._cam_sig(), tuple((k, tuple(np.round(w, 3))) for k, w in self._pd_refs()),
                    tuple(self.pd_pick), self.pd_tool)
         if sig == self._pd_sig:
             return

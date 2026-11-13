@@ -9,6 +9,9 @@
   Horizontal / Vertical (along the world axis nearest to the screen direction), Aligned and Angle (3 spheres).
   Click the spheres in order: the first is fixed (red), the next ones (green) move when you type a new value into the
   dimension's text. Dimensions are saved with the object.
+- **PD: stretch.** A group can have several reference spheres (each *Set reference point* adds one). A dimension
+  between two spheres of the *same* group stretches the group along the measured direction from the first (red)
+  sphere, so a width can be changed; between different groups the second group still moves.
 - **Fix: Undo right after adding a Box / Cylinder removes the new object.**
 - Topo cylinder segments: 8 to 32 in steps of 4.
 - **New: Circle (Modify tab).** Arranges the selected points, an edge loop / chain, or the boundary of a polygon

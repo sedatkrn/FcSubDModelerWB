@@ -787,4 +787,9 @@ TR = {
     "Reference point: select 1, 2 or 4 points of the group, then Apply reference (Enter, Esc: cancel)": "Referans noktası: grubun 1, 2 veya 4 noktasını seçin, sonra Referansı uygula (Enter, Esc: vazgeç)",
     "Reference point: select 1, 2 or 4 points that belong to the group": "Referans noktası: gruba ait 1, 2 veya 4 nokta seçin",
     "Group %s: reference point set": "Grup %s: referans noktası belirlendi",
+    "PD: the third sphere must belong to another group": "PD: üçüncü küre diğerlerinden farklı bir gruba ait olmalı",
+    "PD: a stretch dimension needs a value above zero": "PD: esnetme ölçüsünün değeri sıfırdan büyük olmalı",
+    "PD: %s stretched": "PD: %s esnetildi",
+    "The group is stretched from the first sphere": "Grup ilk küreden itibaren esnetilir",
+    "Group %s: reference point set (%d)": "Grup %s: referans noktası belirlendi (%d)",
 }
