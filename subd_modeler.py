@@ -4916,6 +4916,10 @@ class SubDSession:
         self.timer.timeout.connect(self.gizmo.update_scale)
         self.timer.timeout.connect(self._ghost_tick)
         self.timer.start(50)
+        self._m_ref = None        # son gercek fare olayi: (Coin konumu, genel ekran konumu)
+        self.edge_timer = QtCore.QTimer()   # imlec gorunumun disina cikinca da deger vermeye devam etsin (_edge_poll)
+        self.edge_timer.timeout.connect(self._edge_poll)
+        self.edge_timer.start(15)
         self.autosave = QtCore.QTimer()   # degisiklikler belgeye duzenli yazilsin (FreeCAD kapanirsa kaybolmasin)
         self.autosave.timeout.connect(self._autosave)
         self.autosave.start(20000)
@@ -11340,6 +11344,7 @@ class SubDSession:
     def _on_motion(self, cb):
         pos = cb.getEvent().getPosition().getValue()
         self.mouse = pos
+        self._m_ref = ((pos[0], pos[1]), QtGui.QCursor.pos())
         if self.magnet_size is not None:
             cb.setHandled()
             if QtWidgets.QApplication.mouseButtons() & QtCore.Qt.RightButton:
@@ -11413,6 +11418,30 @@ class SubDSession:
     def _grab_step(self):
         self._pending = False
         self.grab_move()
+
+    def _edge_poll(self):
+        """Surukleme / arac surerken imlec 3B gorunumun disina cikarsa Coin olay gondermez ve deger durur.
+        Burada genel imlec konumundan son gercek olaya gore konum hesaplanip is surdurulur."""
+        if getattr(self, "closed", False) or self.suspended or self._m_ref is None or not (self.grab or self.drag is not None):
+            return
+        try:
+            vp = self.gv.viewport()
+            qp = QtGui.QCursor.pos()
+            if vp.rect().contains(vp.mapFromGlobal(qp)):
+                return                                     # gorunum icinde: olaylar zaten geliyor
+            (cx, cy), q0 = self._m_ref
+            dpr = vp.devicePixelRatioF()
+            pos = (int(round(cx + (qp.x() - q0.x()) * dpr)), int(round(cy - (qp.y() - q0.y()) * dpr)))   # Coin'de y yukari
+        except Exception:
+            return
+        if pos == tuple(self.mouse):
+            return
+        self.mouse = pos
+        if self.drag is not None:
+            if _left_held():
+                self._schedule(self.drag_apply)
+        elif self.grab:
+            self._schedule(self._grab_step)
 
     def key(self, k, ctrl=False):
         if self.drag is not None:
@@ -11602,6 +11631,7 @@ class SubDSession:
         _quiet(lambda: app.removeEventFilter(self.wheel_guard))
         _quiet(lambda: app.removeEventFilter(self.history_guard))
         _quiet(self.timer.stop)
+        _quiet(self.edge_timer.stop)
         _quiet(self.dim_timer.stop)
         if self.dim_root is not None:
             _quiet(lambda: self.parent.removeChild(self.dim_root))   # olculer de baska tezgahta gorunmesin
@@ -11657,6 +11687,7 @@ class SubDSession:
         self.closed = True
         _quiet(lambda: _zebra_button(False))
         _quiet(self.timer.stop)
+        _quiet(self.edge_timer.stop)
         _quiet(self.autosave.stop)
         _quiet(lambda: self.wb_timer.stop())
         if getattr(self, "_mdi", None) is not None:
