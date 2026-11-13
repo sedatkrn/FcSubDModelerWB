@@ -4032,6 +4032,31 @@ def _param():
     return App.ParamGet(subd_i18n.PARAM)
 
 
+def _chain_order(edges):
+    """Kenarlar tek bir acik zincir ya da kapali halka ise noktalarini sirayla dondurur: (sira, kapali); degilse None."""
+    adj = {}
+    for e in edges:
+        x, y = tuple(e)
+        adj.setdefault(x, []).append(y)
+        adj.setdefault(y, []).append(x)
+    if not adj or any(len(n) > 2 for n in adj.values()):
+        return None
+    ends = [x for x, n in adj.items() if len(n) == 1]
+    if len(ends) not in (0, 2):
+        return None
+    start = min(ends) if ends else min(adj)
+    order, prev, cur = [start], None, start
+    while True:
+        nxt = [x for x in adj[cur] if x != prev]
+        if not nxt or nxt[0] == start:
+            break
+        order.append(nxt[0])
+        prev, cur = cur, nxt[0]
+    if len(order) != len(adj):
+        return None
+    return order, not ends
+
+
 TWIST_FALLOFFS = ("Linear", "Smooth", "Ease in", "Ease out", "Peak", "Dome")
 AXIS_OPS = ("array", "twist")          # ekseni cizgiyle / dugmeyle verilen son islemler (Draw axis, Axis X / Y / Z)
 
@@ -6400,6 +6425,10 @@ class SubDSession:
             err = self._twist(v, a["faces"])
             if err:
                 self.info = err
+        elif k == "circle":
+            err = self._circle(v, a)
+            if err:
+                self.info = err
         elif k == "knife":
             items, maxt = self._knife_cut(*a["edge"])
             self.slide_set(items, min(max(v["t"], 0.0), maxt))
@@ -6517,6 +6546,8 @@ class SubDSession:
                 return self._array_panel(v)
             if k == "twist":
                 return self._twist_panel(v)
+            if k == "circle":
+                return self._circle_panel(v)
             if k == "addpoints":
                 return T("Add points"), [("Count", v["Count"], "", 0, r("Count"))], self.drag is None
             if k == "addpoint":
@@ -9329,6 +9360,148 @@ class SubDSession:
                 ("Axis Y", lambda: self.array_axis_dir((0.0, 1.0, 0.0))),
                 ("Axis Z", lambda: self.array_axis_dir((0.0, 0.0, 1.0)))]
         return T("Twist"), fields, self.drag is None, checks, None, [("Draw axis", self.array_pick)], side
+
+    # --- Circle (Blender LoopTools Circle): secili nokta / kenar halkasi / cokgen bolgesi daire olur ---
+    # Cokgenlerde: bolgenin siniri (tek halka) daireye dizilir, ic noktalar acisi ve yaricapi orantili tasinir.
+    # Kenarlarda: tek halka ya da zincir (zincir de tam daire olur). Noktalarda: merkez etrafindaki aciya gore
+    # siralanir. Daire en uygun duzlemde, merkezi secimin agirlik merkezindedir. Panel: Radius (mm, elle verilince
+    # Auto radius kapanir), Strength (%), Auto radius (ortalama yaricap), Even spacing (esit aralik). Simetri yok sayilir.
+
+    def circle(self):
+        """Modify > Circle: secimi daireye cevirir; yaricapi panelden sayiyla verebilirsin."""
+        if self.mode == "object":
+            self.info = T("Circle: only in edit mode")
+            self.refresh()
+            return
+        if self.drag or self.grab:
+            return
+        cage, sort, inner = self.cage, False, []
+        if self.mode == "face":
+            faces = set(self.sel)
+            cnt = {}
+            for fi in faces:
+                f = cage.F[fi]
+                for i in range(len(f)):
+                    e = _edge(f[i], f[(i + 1) % len(f)])
+                    cnt[e] = cnt.get(e, 0) + 1
+            res = _chain_order([e for e, c in cnt.items() if c == 1]) if faces else None
+            if res is None or not res[1]:
+                self.info = T("Circle: select polygons that form one region without holes, an edge loop or points")
+                self.refresh()
+                return
+            order = res[0]
+            inner = sorted({x for fi in faces for x in cage.F[fi]} - set(order))
+        elif self.mode == "edge":
+            res = _chain_order(self.sel_e) if self.sel_e else None
+            if res is None:
+                self.info = T("Circle: select one edge loop or chain, polygons or points")
+                self.refresh()
+                return
+            order = res[0]
+        else:
+            pts = sorted(self.sel_v)
+            res = _chain_order([e for e in cage.edges() if e <= self.sel_v]) if len(pts) >= 3 else None
+            if res is not None and len(res[0]) == len(pts):
+                order = res[0]
+            else:
+                order, sort = pts, True
+        if len(order) < 3:
+            self.info = T("Circle: select at least 3 points")
+            self.refresh()
+            return
+        if self._locked_block(sorted(set(order) | set(inner))):
+            return
+        self.drop_tool()
+        self.push()
+        op = self.new_op("circle", dict(Radius=0.0, Strength=100.0, Auto=1.0, Even=1.0),
+                         order=order, inner=inner, sort=sort)
+        self._apply_op(op)
+        self.last_op, self.op = op, None
+        self.refresh()
+
+    def _circle(self, v, a):
+        """Kafesi 'before' durumundan daireye cevirir; hata iletisi ya da None dondurur."""
+        cage = self.cage
+        order, inner = list(a["order"]), list(a["inner"])
+        W = self.l2w(cage.V[order])
+        Wi = self.l2w(cage.V[inner]) if inner else np.zeros((0, 3))
+        n_pts = len(order)
+        c = W.mean(0)
+        _, _, vt = np.linalg.svd(W - c)
+        if a["sort"]:                                      # noktalar: merkez etrafindaki aciya gore sirala
+            nrm = np.cross(vt[0], vt[1])
+            perm = np.argsort(np.arctan2((W - c) @ vt[1], (W - c) @ vt[0]))
+            order, W = [order[i] for i in perm], W[perm]
+        else:
+            nrm = vt[2]
+            area = sum(float(nrm.dot(np.cross(W[i] - c, W[(i + 1) % n_pts] - c))) for i in range(n_pts))
+            if area < 0:                                   # halka normale gore saat yonunun tersine gitsin
+                nrm = -nrm
+        d0 = W[0] - c
+        d0 = d0 - nrm * float(d0 @ nrm)
+        if np.linalg.norm(d0) < 1e-9:
+            d0 = vt[0] - nrm * float(vt[0] @ nrm)
+        u = d0 / np.linalg.norm(d0)
+        w = np.cross(nrm, u)
+        d = W - c
+        x, y = d @ u, d @ w
+        th = np.arctan2(y, x)
+        ang = [0.0]
+        for i in range(1, n_pts):
+            ang.append(ang[-1] + float((th[i] - th[i - 1]) % (2 * math.pi)))
+        ang = np.array(ang)
+        if ang[-1] >= 2 * math.pi - 1e-6:
+            return T("Circle: the points do not go around a centre")
+        r = np.hypot(x, y)
+        if v["Auto"] >= 0.5:
+            v["Radius"] = float(r.mean())
+        R = float(v["Radius"])
+        if R < 1e-9:
+            return T("Circle: the radius is zero")
+        k = min(max(float(v["Strength"]) / 100.0, 0.0), 1.0)
+        tau = 2 * math.pi
+        phi = tau * np.arange(n_pts) / n_pts if v["Even"] >= 0.5 else ang
+        pol = lambda ph, rho: c + rho[:, None] * (np.cos(ph)[:, None] * u + np.sin(ph)[:, None] * w)
+        new_b = W + k * (pol(phi, np.full(n_pts, R)) - W)
+        new_i = None
+        if inner:                                          # ic noktalar: aci parcali dogrusal, yaricap sinira orantili
+            di = Wi - c
+            xi, yi, hi = di @ u, di @ w, di @ nrm
+            thi = np.arctan2(yi, xi) % tau
+            ang_e, phi_e = np.append(ang, tau), np.append(phi, phi[0] + tau)
+            j = np.clip(np.searchsorted(ang_e, thi, side="right") - 1, 0, n_pts - 1)
+            t = (thi - ang_e[j]) / np.maximum(ang_e[j + 1] - ang_e[j], 1e-12)
+            phi_i = phi_e[j] + t * (phi_e[j + 1] - phi_e[j])
+            rho = np.empty(len(inner))
+            for q in range(len(inner)):                    # isin eski sinirla kesistigi yer: R0
+                p0, p1 = np.array([x[j[q]], y[j[q]]]), np.array([x[(j[q] + 1) % n_pts], y[(j[q] + 1) % n_pts]])
+                e, dd = np.array([math.cos(thi[q]), math.sin(thi[q])]), p1 - p0
+                den = e[0] * dd[1] - e[1] * dd[0]
+                lam = (p0[0] * dd[1] - p0[1] * dd[0]) / den if abs(den) > 1e-12 else 0.0
+                if lam <= 1e-9:                            # kesisim yok: iki ucun yaricapini ara degerle
+                    lam = float(r[j[q]] + t[q] * (r[(j[q] + 1) % n_pts] - r[j[q]]))
+                rho[q] = math.hypot(xi[q], yi[q]) * R / max(lam, 1e-9)
+            tgt = pol(phi_i, rho) + hi[:, None] * nrm
+            new_i = Wi + k * (tgt - Wi)
+        cage.V[order] = self.w2l(new_b)
+        if new_i is not None:
+            cage.V[inner] = self.w2l(new_i)
+        self.info = T("Circle: radius %.3f mm") % R + ("   " + T("(symmetry is ignored)") if self.sym else "")
+        return None
+
+    def circle_set(self, name, value):
+        """Panelden bir Circle degeri: Radius elle verilince Auto radius kapanir."""
+        op = self.last_op
+        if op is not None and op["kind"] == "circle" and name == "Radius":
+            op["values"]["Auto"] = 0.0
+        self.redo_last(name, value)
+
+    def _circle_panel(self, v):
+        r = lambda name: (lambda val: self.circle_set(name, val))
+        fields = [("Radius", v["Radius"], " mm", 3, r("Radius")), ("Strength", v["Strength"], " %", 1, r("Strength"))]
+        checks = [("Auto radius", v["Auto"] >= 0.5, lambda on: self.circle_set("Auto", float(bool(on)))),
+                  ("Even spacing", v["Even"] >= 0.5, lambda on: self.circle_set("Even", float(bool(on))))]
+        return T("Circle"), fields, self.drag is None, checks
 
     def _axis_op(self):
         """Eksen verilebilen son islem (Array / Twist) ya da None; Twist surerken once onaylanir."""
@@ -12310,6 +12483,8 @@ TOOL_TIPS = {
     "Subdivide": "Split the selected polygons into quads (a polygon with n sides becomes n quads)",
     "Array": "Copy the selected polygons as separate parts: around an axis (Radial) or along X / Y / Z (Rectangular); "
              "switch in the panel",
+    "Circle": "Arrange the selected points, an edge loop / chain or the boundary of a polygon region on a circle "
+              "(inner points follow). Type the Radius in the panel (Auto radius = average of the current one)",
     "Twist": "Twist the selected polygons around an axis: the angle grows along the axis by the Falloff curve. Move the "
              "mouse for the angle (Ctrl: steps), click to accept, then fine-tune in the panel",
     "Distance": "Measure the distance between two points: cage points, edge middles / edges, polygon centers, other objects (corners / edges) or the surface. Keep: the measurement stays, follows the points and is deleted with the × next to its text; otherwise it is temporary. Works in Object mode too (temporary)",
@@ -13164,6 +13339,7 @@ class _Overlay(object):
         btn("Stretch / Size", "H", lambda: s.set_gizmo("scale"), toggle=lambda: s.gizmo.mode == "scale")
         btn("Magnet", "", lambda: s.toggle_tool("magnet"), mode="edit", tool="magnet")
         btn("Twist", _key_label("twist"), s.twist, sel=True, mode="edit")    # tus atanabilir (set_user_key)
+        btn("Circle", "", s.circle, sel=True, mode="edit")
         btn("Crease", "C", s.crease_selected, sel=True, mode="edit")
         btn("Reduce points", "", s.reduce_points, mode="edit")   # secim yoksa butun kafes
         btn("Merge points", "M", s.merge_points, mode="edit")    # secim yoksa butun kafes

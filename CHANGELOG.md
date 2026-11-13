@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **New: Circle (Modify tab).** Arranges the selected points, an edge loop / chain, or the boundary of a polygon
+  region (one region without holes) on a circle in their best-fit plane; the region's inner points follow
+  proportionally. Panel: *Radius* (type a number; *Auto radius* turns off), *Strength* %, *Auto radius*,
+  *Even spacing*. No default shortcut.
+
 ## 0.4.3 (2026-11-10)
 
 - **Fix: FreeCAD crashed when a document was closed while SubD mode was open** (closing the tab or the file,
