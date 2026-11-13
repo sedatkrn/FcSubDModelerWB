@@ -792,4 +792,5 @@ TR = {
     "PD: %s stretched": "PD: %s esnetildi",
     "The group is stretched from the first sphere": "Grup ilk küreden itibaren esnetilir",
     "Group %s: reference point set (%d)": "Grup %s: referans noktası belirlendi (%d)",
+    "Group %s: reference sphere placed at the centre": "Grup %s: referans küresi merkeze konuldu",
 }

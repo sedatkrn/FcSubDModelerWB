@@ -7176,6 +7176,17 @@ class SubDSession:
         return title, [], True, [], None, buttons
 
     def group_done(self):
+        g = self._grp()
+        if g is not None and not group_refs(g):            # referans verilmediyse: grubun noktalarinin merkezine kure
+            idx = self._grp_sets.get(g["name"], set()) if g.get("locked", True) else set(g.get("idx") or [])
+            P = self.cage.V[sorted(idx)] if idx else np.array(g["pts"], float).reshape(-1, 3)
+            if len(P):
+                self.push()
+                group_refs(g).append(P.mean(0).tolist())
+                self.dirty = True
+                self.info = T("Group %s: reference sphere placed at the centre") % g["name"]
+        if self.ref_armed == (g or {}).get("name"):
+            self.ref_armed = None
         self.grp_active = None
         self.grp_dismissed = frozenset(self.selected_verts())
 
