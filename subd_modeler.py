@@ -5095,6 +5095,8 @@ class SubDSession:
         self.dim_root = self.dim_group = None   # olculerin sahne dugumu (_dim_scene)
         self.dim_list = None      # Distances liste penceresi (_DimList)
         self.dim_list_was_open = False
+        self.pg_list = None       # PG List penceresi (_GroupList): parametrik gruplarin listesi
+        self.pg_list_was_open = False
         self._hd_key, self._hd_names = None, []   # grup tutamaklarinin olculeri (_handle_dim_items)
         self._grp_sets = {}                       # grup adi -> uye indeksleri (_group_faces)
         self.grp_active = self.grp_dismissed = None   # grup paneli: acik grup, kapatilan secim
@@ -11017,6 +11019,8 @@ class SubDSession:
         _quiet(self._pd_spheres)
         if self.dim_list is not None and self.dim_list.isVisible():
             self.dim_list.refresh(self._dim_rows())
+        if self.pg_list is not None and self.pg_list.isVisible():
+            self.pg_list.refresh(self._pg_rows())
         items = self._dim_items()
         if not items and self.dim_root is None:
             return
@@ -11329,6 +11333,107 @@ class SubDSession:
         self.dirty = True
         self.dim_sig = None
         self._dim_tick()
+
+    # --- PG List: acik nesnenin parametrik gruplari (sec, kilitle, adlandir, sil) ---
+
+    def pg_list_toggle(self):
+        if self.pg_list is None:
+            self.pg_list = _GroupList(self)
+        on = not self.pg_list.isVisible()
+        self.pg_list.setVisible(on)
+        if on:
+            self.pg_list.raise_()
+            self.pg_list.refresh(self._pg_rows(), force=True)
+        if self.overlay is not None:
+            self.overlay.sync()
+
+    def _pg_rows(self):
+        """PG List satirlari (yalniz Edit modu): grup adi, renk, nokta sayisi, referans kuresi sayisi, kilit, PD sayisi."""
+        if self.mode == "object" or not self.cage.groups:
+            return []
+        sets = group_member_sets(self.cage.V, self.cage.groups)
+        use = {}
+        for d in self.cage.pdims:
+            for n in set(d.get("g") or ()):
+                use[n] = use.get(n, 0) + 1
+        rows = []
+        for g in self.cage.groups:
+            locked = g.get("locked", True)
+            rows.append(dict(name=g["name"], rgb=group_rgb(g), locked=locked,
+                             n=len(sets.get(g["name"], ())) if locked else len(g.get("idx") or []),
+                             refs=len(group_refs(g)), pd=use.get(g["name"], 0), nh=bool(g.get("nh"))))
+        return rows
+
+    def pg_select(self, name):
+        """Listeden bir grup secildi: noktalari secilir (nokta moduna gecilir) ve gorunum gruba yaklasir."""
+        g = self._grp(name)
+        if g is None or self.mode == "object" or self.drag or self.grab:
+            return
+        if g.get("locked", True):
+            idx = set(group_member_sets(self.cage.V, [g]).get(name, ()))
+        else:
+            idx = set(g.get("idx") or []) if g.get("nv") == len(self.cage.V) else set()
+        if not idx:
+            return
+        if self.mode != "point":
+            self.set_mode("point")
+        self.sel, self.sel_e = set(), set()
+        self.sel_v = set(idx)
+        self.last_v = max(idx)
+        self.grp_active = name
+        self.grp_dismissed = None
+        self.refresh()
+
+    def pg_rename(self, old, new):
+        """Grubun adi degisir (yalniz datum'suz gruplar: tutamakli eski gruplarin adi belge nesnesinin adidir).
+        PD olculeri yeni adi izler. Ayni ad varsa ya da bos ise degismez."""
+        new = new.strip()
+        g = self._grp(old)
+        if g is None or not g.get("nh") or not new or new == old or any(x["name"] == new for x in self.cage.groups):
+            self.dim_sig = None
+            self.refresh()
+            return
+        self.push()
+        g["name"] = new
+        for d in self.cage.pdims:
+            d["g"] = [new if x == old else x for x in d.get("g") or ()]
+        if self.grp_active == old:
+            self.grp_active = new
+        self.dirty = True
+        self.dim_sig = None
+        self.refresh()
+
+    def pg_lock(self, name):
+        if self._grp(name) is None or self.drag or self.grab:
+            return
+        self.grp_active = name
+        self.group_toggle_lock()
+
+    def pg_delete(self, names):
+        """Gruplari siler (geri alinabilir): noktalar kafeste yerinde kalir; gruplara bagli PD olculeri de silinir.
+        Eski (tutamakli) gruplarin datum nesnesi belgede kalir."""
+        names = set(names)
+        if not names or self.drag or self.grab:
+            return
+        gone = [g for g in self.cage.groups if g["name"] in names]
+        if not gone:
+            return
+        self.push()
+        self.cage.groups = [g for g in self.cage.groups if g["name"] not in names]
+        nd = len(self.cage.pdims)
+        self.cage.pdims = [d for d in self.cage.pdims if not names & set(d.get("g") or ())]
+        for n in names:
+            self._pd_live.pop(n, None)
+        if self.grp_active in names:
+            self.grp_active = None
+        if self.ref_armed in names:
+            self.ref_armed = None
+        self.dirty = True
+        self.dim_sig = None
+        self._pd_sig = None
+        k = nd - len(self.cage.pdims)
+        self.info = T("%d groups deleted") % len(gone) + ((", " + T("%d PD dimensions deleted") % k) if k else "")
+        self.refresh()
 
     def dim_list_toggle(self):
         if self.dim_list is None:
@@ -12928,6 +13033,9 @@ class SubDSession:
         self.dim_list_was_open = self.dim_list is not None and self.dim_list.isVisible()
         if self.dim_list is not None:
             _quiet(self.dim_list.hide)
+        self.pg_list_was_open = self.pg_list is not None and self.pg_list.isVisible()
+        if self.pg_list is not None:
+            _quiet(self.pg_list.hide)
         _quiet(lambda: self.gizmo.place(None))
         if self.overlay is not None:
             _quiet(lambda: self.overlay.set_visible(False))
@@ -12956,6 +13064,8 @@ class SubDSession:
         self._pd_sig = None
         if self.dim_list_was_open and self.dim_list is not None:
             _quiet(self.dim_list.show)
+        if self.pg_list_was_open and self.pg_list is not None:
+            _quiet(self.pg_list.show)
         _quiet(self._dim_tick)
         if self.overlay is not None:
             _quiet(lambda: self.overlay.set_visible(True))
@@ -13021,6 +13131,9 @@ class SubDSession:
         if self.dim_list is not None:
             _quiet(self.dim_list.close)
             _quiet(self.dim_list.deleteLater)
+        if self.pg_list is not None:
+            _quiet(self.pg_list.close)
+            _quiet(self.pg_list.deleteLater)
 
 
 _MARK_ROLE = int(QtCore.Qt.UserRole) + 1077   # isaretli agac satirinin gorunmez etiketi
@@ -13646,6 +13759,7 @@ TOOL_TIPS = {
              "mouse for the angle (Ctrl: steps), click to accept, then fine-tune in the panel",
     "Distance": "Measure the distance between two points: cage points, edge middles / edges, polygon centers, other objects (corners / edges) or the surface. Keep: the measurement stays, follows the points and is deleted with the × next to its text; otherwise it is temporary. Works in Object mode too (temporary)",
     "Clear all": "Delete all distances (undo brings the fixed ones back)",
+    "PG List": "List of the parametric groups of the object: click a row to select its points, double click the name to rename, lock / unlock, delete one or several (the points stay, PD dimensions using the group are deleted too)",
     "Distances": "List of the distances: give each a name and a target, show / hide, delete, export as CSV. The list stays with the object between sessions",
     "Draw axis": "Drag a line in the view to set the axis (snaps like Mirror (line)); a click gives an axis along the view",
     "Axis X": "Axis direction along X: world X, or the object's own X when Local axes is on (the axis point stays)",
@@ -13794,6 +13908,141 @@ class _LineOverlay(QtWidgets.QWidget):
                 p.drawLine(QtCore.QPointF(x - r, y - r), QtCore.QPointF(x + r, y + r))
                 p.drawLine(QtCore.QPointF(x - r, y + r), QtCore.QPointF(x + r, y - r))
         p.end()
+
+
+class _GroupList(QtWidgets.QDockWidget):
+    """PG List penceresi: acik nesnenin parametrik gruplari. Satira tikla = grubun noktalari secilir; ad cift tikla =
+    yeniden adlandir; kilit kutusu; birden cok satir secilip Delete selected ile (ya da Delete all) silinir.
+    Noktalar kafeste yerinde kalir, gruba bagli PD olculeri de silinir (geri alinabilir)."""
+    HEAD = ("", "Name", "Points", "Ref.", "PD", "Locked")
+
+    def __init__(self, session):
+        super().__init__(T("Parametric groups"), Gui.getMainWindow())
+        self.s = session
+        self.setObjectName("SubDGroups")
+        self.key = None
+        self.map = []                                      # tablo satiri -> grup adi
+        self._busy = False
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(w)
+        top = QtWidgets.QHBoxLayout()
+        for text, fn in ((T("Delete selected"), self._delete_selected), (T("Delete all"), self._delete_all)):
+            b = QtWidgets.QPushButton(text)
+            b.setFocusPolicy(QtCore.Qt.NoFocus)
+            b.clicked.connect(lambda checked=False, fn=fn: _later(fn))
+            top.addWidget(b)
+        top.addStretch()
+        lay.addLayout(top)
+        self.table = QtWidgets.QTableWidget(0, len(self.HEAD))
+        self.table.setHorizontalHeaderLabels([T(h) if h else "" for h in self.HEAD])
+        self.table.verticalHeader().hide()
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.table.setAlternatingRowColors(True)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        self.table.itemChanged.connect(self._changed)
+        self.table.itemSelectionChanged.connect(self._selected)
+        lay.addWidget(self.table)
+        self.hint = QtWidgets.QLabel()
+        self.hint.setStyleSheet("color:#9a9a9a;")
+        self.hint.setWordWrap(True)
+        lay.addWidget(self.hint)
+        self.setWidget(w)
+        Gui.getMainWindow().addDockWidget(QtCore.Qt.BottomDockWidgetArea, self)
+        self.setFloating(True)
+        self.resize(460, 280)
+
+    def refresh(self, rows, force=False):
+        if self.table.state() == QtWidgets.QAbstractItemView.EditingState:
+            return                                         # yazarken liste yeniden kurulmasin
+        key = (self.s.mode == "object", tuple((r["name"], r["locked"], r["n"], r["refs"], r["pd"]) for r in rows))
+        if force or key != self.key:
+            self.key = key
+            self._build(rows)
+
+    def _build(self, rows):
+        self._busy = True
+        t = self.table
+        keep = {self.map[i.row()] for i in t.selectedIndexes() if 0 <= i.row() < len(self.map)}
+        t.clearContents()
+        t.setRowCount(len(rows))
+        self.map = [r["name"] for r in rows]
+        ro = QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable
+        for i, r in enumerate(rows):
+            sq = QtWidgets.QTableWidgetItem()
+            c = [int(round(255 * x)) for x in r["rgb"]]
+            sq.setBackground(QtGui.QBrush(QtGui.QColor(*c)))
+            sq.setFlags(ro)
+            t.setItem(i, 0, sq)
+            name = QtWidgets.QTableWidgetItem(r["name"])
+            name.setFlags(ro | (QtCore.Qt.ItemIsEditable if r["nh"] else QtCore.Qt.NoItemFlags))
+            if not r["nh"]:
+                name.setToolTip(T("Older group with a datum handle: its name is the handle's name"))
+            t.setItem(i, 1, name)
+            for c_, v in ((2, r["n"]), (3, r["refs"]), (4, r["pd"])):
+                it = QtWidgets.QTableWidgetItem(str(v) if v else "-")
+                it.setFlags(ro)
+                it.setTextAlignment(QtCore.Qt.AlignCenter)
+                if c_ == 4 and v:
+                    it.setForeground(QtGui.QBrush(_DimList.PD_COL))
+                t.setItem(i, c_, it)
+            lk = QtWidgets.QTableWidgetItem()
+            lk.setFlags(ro | QtCore.Qt.ItemIsUserCheckable)
+            lk.setCheckState(QtCore.Qt.Checked if r["locked"] else QtCore.Qt.Unchecked)
+            lk.setToolTip(T("Locked: moving a point moves the whole group. Unlocked: its points can be edited alone"))
+            t.setItem(i, 5, lk)
+        if self.s.mode == "object":
+            self.hint.setText(T("Parametric groups are listed in Edit mode"))
+        elif not rows:
+            self.hint.setText(T("This object has no parametric groups"))
+        else:
+            self.hint.setText(T("Click a row to select the group's points; double click the name to rename; "
+                                "select several rows (Ctrl / Shift) to delete them together"))
+        for i, n in enumerate(self.map):
+            if n in keep:
+                t.selectRow(i)
+        t.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self._busy = False
+
+    def _names(self):
+        return sorted({self.map[i.row()] for i in self.table.selectedIndexes() if 0 <= i.row() < len(self.map)},
+                      key=self.map.index)
+
+    def _selected(self):
+        if self._busy:
+            return
+        n = self._names()
+        if len(n) == 1:                                    # tek satir: grubun noktalari secilir
+            _later(lambda: self.s.pg_select(n[0]))
+
+    def _changed(self, it):
+        if self._busy or not it:
+            return
+        row, col = it.row(), it.column()
+        if not 0 <= row < len(self.map):
+            return
+        name, s = self.map[row], self.s
+        if col == 1:
+            new = it.text()
+            _later(lambda: s.pg_rename(name, new))
+        elif col == 5:
+            g = s._grp(name)
+            if g is not None and (it.checkState() == QtCore.Qt.Checked) != g.get("locked", True):
+                _later(lambda: s.pg_lock(name))
+            else:
+                _later(lambda: self.refresh(s._pg_rows(), force=True))
+
+    def _delete_selected(self):
+        n = self._names()
+        if n:
+            self.s.pg_delete(n)
+
+    def _delete_all(self):
+        n = [g["name"] for g in self.s.cage.groups]
+        if n and self.s.mode != "object":
+            self.s.pg_delete(n)
 
 
 class _DimList(QtWidgets.QDockWidget):
@@ -14661,6 +14910,12 @@ class _Overlay(object):
         pb.setProperty("tool", True)
         self.tool_buttons.append(pb)
         tog("PD", "", s.pd_toggle, lambda: s.armed == "pd", pb).setToolTip(_tool_tip("PD"))
+        gb = QtWidgets.QPushButton("\u2261")               # PG List: parametrik gruplarin listesi (PD'nin yaninda)
+        gb.setFocusPolicy(QtCore.Qt.NoFocus)
+        gb.setFixedSize(28, 24)
+        _min_width(gb, 28)
+        tog("PG List", "", s.pg_list_toggle, lambda: s.pg_list is not None and s.pg_list.isVisible(),
+            gb).setToolTip(_tool_tip("PG List"))
         row.addSpacing(10)
         self.sel_label = QtWidgets.QLabel()
         self.sel_label.setMinimumWidth(52)

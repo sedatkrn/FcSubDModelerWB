@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **New: PG List (next to PD).** A list of the parametric groups of the open object: click a row to select the group's
+  points, double click the name to rename it, lock / unlock with the check box, delete one, several (Ctrl / Shift) or
+  all groups. Deleting keeps the points in the cage and also deletes the PD dimensions that use the group (undo brings
+  everything back). Older groups with a datum handle can be deleted but not renamed.
 - **Array: Join option.** Welds each copy to the surface it touches: the copy's contact points join the base points at
   the same place and the base polygons under the copy are removed, so the result is one closed surface instead of
   overlapping parts. It works when the copies line up with the base polygons (e.g. 5 copies on a cylinder with 20
