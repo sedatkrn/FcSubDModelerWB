@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 (2026-11-14)
 
 - **Parametric groups keep what Knife, Bevel, Inset and Extrude create.** New points made on the group's own edges
   (Knife line, Knife loop) or from the group's own points (Bevel, Inset, Extrude, every layer) now join the locked
