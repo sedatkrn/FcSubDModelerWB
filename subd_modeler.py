@@ -8586,6 +8586,7 @@ class SubDSession:
             if self.armed == "pd":
                 self.pd_tool, self.pd_pick = None, []
                 self._pd_sig = None
+                _quiet(lambda: self.dim_timer.start(150))
             self.armed = None
             self.info = ""
             self.magnet_size = None
@@ -10038,6 +10039,7 @@ class SubDSession:
             return
         self.drop_tool()
         self.armed = "pd"
+        _quiet(lambda: self.dim_timer.start(60))             # kameraya gore kure boyu akici guncellensin
         for g in self.cage.groups:                          # referansi olmayan (eski) gruplar: merkezde kure
             if not group_refs(g):
                 idx = self._grp_sets.get(g["name"], set()) if g.get("locked", True) else set(g.get("idx") or [])
@@ -10169,7 +10171,9 @@ class SubDSession:
         out = []
         if self.mode == "object" or self.armed != "pd":     # olculer yalniz PD acikken gorunur
             return out
-        na = 0
+        na = nl = 0
+        Wv = self.l2w(self.cage.V) if len(self.cage.V) else np.zeros((1, 3))
+        diag = max(float(np.linalg.norm(np.ptp(Wv, axis=0))), 1.0)       # sahne boyutu: kayma / ok boyu buna gore
         for i, d in enumerate(self.cage.pdims):
             P, v = self._pd_pts(d), self.pd_value(d)
             if P is None or v is None:
@@ -10189,8 +10193,28 @@ class SubDSession:
             a = np.array(d["axis"], float) if k in ("h", "v") else None
             Q = P[0] + a * v if a is not None else P[1]
             label = "D" + "XYZ"[int(np.argmax(np.abs(a)))] if a is not None else "D"
-            out.append(dict(P=P[0], Q=Q, kind="pd", idx=None, hd="pd:%d" % i, val=v,
-                            txt="%s  %.3f mm" % (label, v)))
+            it = dict(P=P[0], Q=Q, kind="pd", idx=None, hd="pd:%d" % i, val=v, txt="%s  %.3f mm" % (label, v))
+            u = Q - P[0]
+            ln = float(np.linalg.norm(u))
+            if ln > 1e-9:
+                uh = u / ln
+                n = d.get("n")
+                if n is None:                                # ilk cizimde kayma yonu bakisa gore secilir ve olcuyle saklanir
+                    n = np.cross(uh, np.array(tuple(self.view.getViewDirection())))
+                    if np.linalg.norm(n) < 1e-9:
+                        n = np.cross(uh, np.array([1.0, 0.0, 0.0]) if abs(uh[0]) < 0.9 else np.array([0.0, 1.0, 0.0]))
+                    d["n"] = (n / np.linalg.norm(n)).tolist()
+                n = np.array(d["n"], float)
+                n = n - uh * float(n @ uh)
+                n = n / np.linalg.norm(n) if np.linalg.norm(n) > 1e-9 else np.cross(uh, np.array([0.0, 0.0, 1.0]))
+                side = 1.0 if nl % 2 == 0 else -1.0          # art arda gelen olculer karsi yanlara, giderek uzaga
+                it["O"] = n * side * 0.05 * diag * (nl // 2 + 1)
+                nl += 1
+                al = min(0.022 * diag, 0.3 * ln)             # ok boyu her olcude ayni (kisa olcuyle sinirli)
+                it.update(aw=n / np.linalg.norm(n), al=al, aww=al * 0.4)
+            if k in ("h", "v") and float(np.linalg.norm(Q - P[1])) > 1e-6:
+                it["R"] = P[1]                               # olcu cizgisinden ikinci kureye uzanti cizgisi
+            out.append(it)
         return out
 
     def pd_apply(self, i, new):
@@ -10481,7 +10505,8 @@ class SubDSession:
             sel = it["kind"] == "keep" and it["idx"] is not None and it["idx"] == self.dim_sel and self.mode != "object"
             meta.append(("bad" if bad else "sel" if sel else it["kind"], d.get("name", "") if names else "", val))
         vd = np.array(tuple(self.view.getViewDirection()))
-        sig = (k, self.dim_hot, tuple(np.round(vd, 1)), tuple((it["kind"], it["idx"], tuple(np.round(it["P"], 3)),
+        hv = any(it["kind"] == "handle" for it in items)   # gorunum yonu yalniz eski grup olculerinde cizimi etkiler
+        sig = (k, self.dim_hot, tuple(np.round(vd, 1)) if hv else None, tuple((it["kind"], it["idx"], tuple(np.round(it["P"], 3)),
                                        None if it["Q"] is None else tuple(np.round(it["Q"], 3)), m)
                                       for it, m in zip(items, meta)))
         if sig == self.dim_sig:
@@ -10494,7 +10519,9 @@ class SubDSession:
         for it, (ck, name, val) in zip(items, meta):
             kind, P, Q = it["kind"], it["P"], it["Q"]
             O = None
-            if kind in ("handle", "pd") and Q is not None and not it.get("poly"):   # grup / PD olcusu: olcu cizgisi yana kayik, uzanti cizgili
+            if kind == "pd":                                   # PD: kayma ve ok boyu sahne boyutundan (_pd_items); gorunumden bagimsiz
+                O = it.get("O")
+            elif kind == "handle" and Q is not None:         # grup olcusu: olcu cizgisi merkezden yana kayik, uzanti cizgili
                 u = Q - P
                 ln = float(np.linalg.norm(u))
                 if ln > 1e-9:
@@ -10514,8 +10541,10 @@ class SubDSession:
             if kind == "live":
                 ds.linePattern = 0xF0F0
             pts = [tuple(float(x) for x in P)] + ([tuple(float(x) for x in Q)] if Q is not None else [])
-            if O is not None:                              # P -> P+O -> Q+O -> Q
+            if O is not None:                              # P -> P+O -> Q+O -> Q (PD: ardindan ikinci kureye uzanti)
                 pts = [tuple(float(x) for x in e) for e in (P, P + O, Q + O, Q)]
+                if it.get("R") is not None:
+                    pts.append(tuple(float(x) for x in it["R"]))
             co = coin.SoCoordinate3()
             co.point.setValues(0, len(pts), pts)
             for n in (bc, ds, co):
@@ -10541,11 +10570,14 @@ class SubDSession:
                 ln = float(np.linalg.norm(u))
                 if ln > 1e-9:
                     u = u / ln
-                    pp = np.cross(u, np.array(tuple(self.view.getViewDirection())))
-                    if np.linalg.norm(pp) < 1e-9:
-                        pp = np.cross(u, np.array([1.0, 0.0, 0.0]) if abs(u[0]) < 0.9 else np.array([0.0, 1.0, 0.0]))
-                    pp = pp / np.linalg.norm(pp) * ln * 0.032
-                    L = u * ln * 0.08
+                    if kind == "pd" and it.get("aw") is not None:
+                        pp, L = it["aw"] * it["aww"], u * it["al"]
+                    else:
+                        pp = np.cross(u, np.array(tuple(self.view.getViewDirection())))
+                        if np.linalg.norm(pp) < 1e-9:
+                            pp = np.cross(u, np.array([1.0, 0.0, 0.0]) if abs(u[0]) < 0.9 else np.array([0.0, 1.0, 0.0]))
+                        pp = pp / np.linalg.norm(pp) * ln * 0.032
+                        L = u * ln * 0.08
                     ends = [P + L + pp, P, P + L - pp, Q - L + pp, Q, Q - L - pp]
                     co2 = coin.SoCoordinate3()
                     co2.point.setValues(0, 6, [tuple(float(x) for x in e) for e in ends])
