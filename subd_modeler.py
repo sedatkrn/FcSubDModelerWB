@@ -2746,7 +2746,7 @@ def _poly_planar(P, tol):
     return float(np.abs((P - c) @ n).max()) <= tol
 
 
-def cage_brep(cage, tol=0.001):
+def cage_brep(cage, tol=0.001, merge=True):
     """Kafesi dogrudan B-rep yap: her cokgen duz bir yuz; duz olmayanlar ucgenlere bolunur (dortgen: kisa kosegen,
     daha cok kenarli: merkezden yelpaze). Yuzler dikilir; kapaliysa Solid, degilse Shell dondurur."""
     import Part
@@ -2783,15 +2783,23 @@ def cage_brep(cage, tol=0.001):
         shell.sewShape()
     except Exception:
         pass
+    out = shell
     try:
         if shell.isClosed():
             sol = Part.Solid(shell)
             if sol.Volume < 0:
                 sol.reverse()
-            return sol
+            out = sol
     except Exception:
         pass
-    return shell
+    if merge:                                              # ayni duzlemdeki / ayni yuzeydeki parcalari birlestir
+        try:
+            r = out.removeSplitter()
+            if r.isValid() and abs(getattr(r, "Volume", 0.0) - getattr(out, "Volume", 0.0)) < 1e-6 * (abs(getattr(out, "Volume", 0.0)) + 1.0):
+                out = r
+        except Exception:
+            pass
+    return out
 
 
 class SubDCageSolid:
@@ -2802,16 +2810,18 @@ class SubDCageSolid:
         obj.addProperty("App::PropertyLink", "Source", "SubD", "Source SubD object").Source = source
         obj.addProperty("App::PropertyFloat", "PlanarTolerance", "SubD",
                         "Polygons flatter than this (mm) stay one face, others are split into triangles").PlanarTolerance = 0.001
+        obj.addProperty("App::PropertyBool", "MergeFlatFaces", "SubD",
+                        "Merge neighbouring faces that lie in the same plane (cleaner B-rep)").MergeFlatFaces = True
         obj.Proxy = self
 
     def execute(self, obj):
         if is_subd(obj.Source):
-            key = (cage_key(obj.Source), obj.PlanarTolerance)
+            key = (cage_key(obj.Source), obj.PlanarTolerance, obj.MergeFlatFaces)
             if getattr(self, "_key", None) != key or obj.Shape.isNull():
                 cage = cage_from_obj(obj.Source)
                 if not cage.F:
                     return
-                obj.Shape = cage_brep(cage, max(float(obj.PlanarTolerance), 1e-9))
+                obj.Shape = cage_brep(cage, max(float(obj.PlanarTolerance), 1e-9), bool(obj.MergeFlatFaces))
                 self._key = key
             if not obj.Placement.isSame(obj.Source.Placement, 1e-12):
                 obj.Placement = obj.Source.Placement

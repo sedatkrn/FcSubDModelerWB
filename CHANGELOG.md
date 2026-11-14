@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **New: Sphere and Topo sphere (Create tab).** *Sphere* is the classic UV sphere (poles on Z, triangle fans at the
+  poles; panel: Diameter, Segments, Rings). *Topo sphere* is a cube-sphere made only of quads (panel: Diameter,
+  Segments 2-16), which gives an even SubD surface without pole pinching.
+- **New: Torus (Create tab).** Ring / tube diameters and both segment counts in the panel; all quads.
+- **New: Cage B-rep (File tab).** Adds the control cage itself to the document as a parametric B-rep with flat
+  faces (a Solid when the cage is closed, otherwise a Shell). Polygons that are not flat are split into triangles
+  (`PlanarTolerance`), neighbouring coplanar faces are merged (`MergeFlatFaces`). Meant for sending a hand-built cage
+  straight into FreeCAD, e.g. for jewellery or mechanical parts. Updates when the cage changes.
+
 ## 0.5.0 (2026-11-14)
 
 - **Changed: parametric groups no longer use FreeCAD datum planes.** Existing groups keep their points and colour;
