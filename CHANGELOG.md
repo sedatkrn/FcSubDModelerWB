@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-11-14)
 
 - **Changed: parametric groups no longer use FreeCAD datum planes.** Existing groups keep their points and colour;
   their datum is removed. A group can get a **reference point** (panel: *Set reference point*, select 1, 2 or 4
