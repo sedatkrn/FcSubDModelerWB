@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Twist / Array: axis from the part itself.** Twist now starts with the axis along the *main direction of the
+  selection* (its longest direction), so a part that is not aligned with the world axes twists along its own length
+  without drawing an axis first (it still snaps to a world or object axis when within 2 degrees). New buttons next to
+  Axis X / Y / Z: **Axis auto** (main direction of the selection; Twist also moves the axis point to the selection
+  centre) and **Axis normal** (average normal of the selected polygons). New **Local axes** option: Axis X / Y / Z use
+  the object's own axes instead of the world axes.
+
 ## 0.6.0 (2026-11-14)
 
 - **New: Sphere and Topo sphere (Create tab).** *Sphere* is the classic UV sphere (poles on Z, triangle fans at the
