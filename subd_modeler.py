@@ -10169,6 +10169,7 @@ class SubDSession:
         out = []
         if self.mode == "object" or self.armed != "pd":     # olculer yalniz PD acikken gorunur
             return out
+        na = 0
         for i, d in enumerate(self.cage.pdims):
             P, v = self._pd_pts(d), self.pd_value(d)
             if P is None or v is None:
@@ -10180,7 +10181,8 @@ class SubDSession:
                 ra, rc = float(np.linalg.norm(ua)), float(np.linalg.norm(uc))
                 bis = ua / max(ra, 1e-9) + uc / max(rc, 1e-9)
                 nb = float(np.linalg.norm(bis))
-                mid = B + bis / nb * 0.35 * min(ra, rc) if nb > 1e-9 else B
+                mid = B + bis / nb * (0.35 + 0.14 * na) * min(ra, rc) if nb > 1e-9 else B   # ust uste binmesin: her aci biraz disarida
+                na += 1
                 out.append(dict(P=A, Q=C, kind="pd", idx=None, hd="pd:%d" % i, val=v, txt="%.2f°" % v,
                                 poly=[A, B, C], mid=mid, noline=True))
                 continue
@@ -10492,7 +10494,7 @@ class SubDSession:
         for it, (ck, name, val) in zip(items, meta):
             kind, P, Q = it["kind"], it["P"], it["Q"]
             O = None
-            if kind == "handle" and Q is not None:         # grup olcusu: olcu cizgisi merkezden yana kayik, uzanti cizgili
+            if kind in ("handle", "pd") and Q is not None and not it.get("poly"):   # grup / PD olcusu: olcu cizgisi yana kayik, uzanti cizgili
                 u = Q - P
                 ln = float(np.linalg.norm(u))
                 if ln > 1e-9:
