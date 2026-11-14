@@ -10688,7 +10688,29 @@ class SubDSession:
             rows.append(dict(obj=h.SubDGroup, idx="h:" + it["hd"], name="%s > %s" % (h.Label, ref.Label if ref is not None else ""),
                              hide=False, target=None, tol=DIM_TOL, dist=float(it["val"]), d3=v,
                              editable=self.mode != "object", handle=True, hd=it["hd"]))
+        if self.mode != "object":                          # PD olculeri (parametrik, turuncu): Distance sutunundan degistirilir
+            for i, d in enumerate(self.cage.pdims):
+                P, v = self._pd_pts(d), self.pd_value(d)
+                if P is None or v is None:
+                    continue
+                k = d["kind"]
+                if k == "a":
+                    lab, d3 = "\u2220", None
+                else:
+                    d3 = np.array(d["axis"], float) * v if k in ("h", "v") else P[1] - P[0]
+                    lab = "D" + "XYZ"[int(np.argmax(np.abs(d["axis"])))] if k in ("h", "v") else "D"
+                rows.append(dict(obj="PD", idx="pd:%d" % i, name="PD %s  %s" % (lab, " > ".join(
+                    d["g"] if k != "d" or d["g"][0] != d["g"][1] else d["g"][:1] + ["(" + T("stretch") + ")"])),
+                                 hide=False, target=None, tol=DIM_TOL, dist=float(v), d3=d3, editable=True, pd=True))
         return rows
+
+    def pd_delete(self, i):
+        if 0 <= i < len(self.cage.pdims):
+            self.push()
+            del self.cage.pdims[i]
+            self.dirty = True
+            self.dim_sig = None
+            self.refresh()
 
     def handle_dim_set(self, name, v):
         """Listeden bir grup olcusunun mesafesi yazildi: tutamagin Distance ozelligi degisir (geri alinabilir)."""
@@ -10782,7 +10804,7 @@ class SubDSession:
                     status = "" if dev is None else "OK" if abs(dev) <= r["tol"] else "OUT"
                     f4 = lambda x: "" if x is None else "%.4f" % x
                     w.writerow([r["obj"], r["name"] or T("Distance %d") % (r["idx"] + 1), f4(r["dist"]),
-                                *(f4(r["d3"][i]) if ok else "" for i in range(3)), f4(tgt),
+                                *(f4(r["d3"][i]) if ok and r["d3"] is not None else "" for i in range(3)), f4(tgt),
                                 f4(r["tol"]) if tgt is not None else "", f4(dev), status])
             self.info = T("Distances exported: %s") % path
         except OSError as e:
@@ -13191,6 +13213,7 @@ class _DimList(QtWidgets.QDockWidget):
     """Distances penceresi: olculerin adi, mesafesi, hedefi; goster / gizle, sil, CSV. Edit modunda duzenlenir
     (geri alinabilir), Object modunda butun SubD nesnelerinin olculeri salt okunur gosterilir."""
     HEAD = ("", "Name", "Distance", "dX", "dY", "dZ", "Target", "Tol.", "Dev.", "")
+    PD_COL = QtGui.QColor(255, 140, 40)                   # PD (parametrik) olculerin rengi: 3B gorunumdekiyle ayni
 
     def __init__(self, session):
         super().__init__(T("Distances"), Gui.getMainWindow())
@@ -13263,17 +13286,21 @@ class _DimList(QtWidgets.QDockWidget):
             on.setCheckState(QtCore.Qt.Unchecked if r["hide"] else QtCore.Qt.Checked)
             on.setToolTip(T("Show / hide this distance in the 3D view"))
             t.setItem(i, 0, on)
-            hd = r.get("handle")
+            pd = bool(r.get("pd"))
+            hd = r.get("handle") or pd
             name = QtWidgets.QTableWidgetItem(r["name"] or (self._ph(r["idx"]) if not hd else ""))
             if not r["name"] and not hd:
                 name.setForeground(QtGui.QBrush(QtGui.QColor(150, 150, 150)))
+            if pd:
+                name.setForeground(QtGui.QBrush(self.PD_COL))
             if not edit:
                 name.setText("%s > %s" % (r["obj"], r["name"] or self._ph(r["idx"])))
             name.setFlags(ro if hd or not edit else rw)
             t.setItem(i, 1, name)
             if hd:
                 on.setFlags(ro)
-                name.setToolTip(T("Group distance: the Distance value can be edited here"))
+                name.setToolTip(T("Parametric dimension (PD): the value can be edited here, the green group moves")
+                                if pd else T("Group distance: the Distance value can be edited here"))
             for c in (2, 3, 4, 5, 8):
                 it = QtWidgets.QTableWidgetItem()
                 it.setFlags(rw if hd and edit and c == 2 else ro)
@@ -13284,6 +13311,12 @@ class _DimList(QtWidgets.QDockWidget):
                 it.setFlags(rw if edit and not hd else ro)
                 it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 t.setItem(i, c, it)
+            if edit and pd:
+                b = QtWidgets.QPushButton("\u00d7")
+                b.setFixedWidth(26)
+                b.setToolTip(T("Delete dimension"))
+                b.clicked.connect(lambda checked=False, k=int(r["idx"][3:]): _later(lambda: self.s.pd_delete(k)))
+                t.setCellWidget(i, 9, b)
             if edit and not hd:
                 b = QtWidgets.QPushButton("\u00d7")
                 b.setFixedWidth(26)
@@ -13305,7 +13338,7 @@ class _DimList(QtWidgets.QDockWidget):
             ok = r["dist"] is not None
             vals = {2: "%.3f" % r["dist"] if ok else "-"}
             for c, k in ((3, 0), (4, 1), (5, 2)):
-                vals[c] = "%.3f" % r["d3"][k] if ok else "-"
+                vals[c] = "%.3f" % r["d3"][k] if ok and r["d3"] is not None else "-"
             dev = r["dist"] - r["target"] if ok and r["target"] is not None else None
             vals[8] = "" if dev is None else "%+.3f" % dev
             for c, text in vals.items():
@@ -13319,6 +13352,9 @@ class _DimList(QtWidgets.QDockWidget):
             else:
                 for c in (2, 8):
                     t.item(i, c).setForeground(plain)
+            if r.get("pd"):                                # PD satiri: Distance ve dX / dY / dZ de turuncu
+                for c in (2, 3, 4, 5):
+                    t.item(i, c).setForeground(QtGui.QBrush(self.PD_COL))
         self._busy = False
 
     def _changed(self, it):
@@ -13328,6 +13364,15 @@ class _DimList(QtWidgets.QDockWidget):
         if not 0 <= row < len(self.map):
             return
         idx, s = self.map[row], self.s
+        if isinstance(idx, str) and idx.startswith("pd:"):   # PD olcusu: Distance yazilinca grup hareket eder
+            if col == 2:
+                try:
+                    num = float(it.text().strip().replace(",", "."))
+                except ValueError:
+                    _later(lambda: self.refresh(s._dim_rows(), force=True))
+                    return
+                _later(lambda: s.pd_apply(int(idx[3:]), num))
+            return
         if isinstance(idx, str):                           # grup olcusu: yalniz Distance yazilabilir
             if col == 2:
                 try:

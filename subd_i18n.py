@@ -794,4 +794,6 @@ TR = {
     "Group %s: reference point set (%d)": "Grup %s: referans noktası belirlendi (%d)",
     "Group %s: reference sphere placed at the centre": "Grup %s: referans küresi merkeze konuldu",
     "Group: these points already belong to one group": "Grup: bu noktalar zaten tek bir grubun içinde",
+    "stretch": "esnetme",
+    "Parametric dimension (PD): the value can be edited here, the green group moves": "Parametrik ölçü (PD): değer burada değiştirilebilir, yeşil grup hareket eder",
 }
