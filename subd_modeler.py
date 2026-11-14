@@ -318,6 +318,48 @@ class Cage:
             F += faces if top else [f[::-1] for f in faces]
         return Cage(np.array(V, float), F)
 
+    @staticmethod
+    def sphere(diameter=100.0, segs=16, rings=8):
+        """Klasik (UV) kure: Z ekseni kutuplari; segs boylam dilimi, rings enlem bandi. Kutuplarda ucgen yelpaze,
+        aradaki bantlar dortgen; merkez orijinde, yuzler disari bakar."""
+        R = diameter / 2.0
+        V = [[0.0, 0.0, -R]]
+        for r in range(1, rings):
+            lat = -math.pi / 2 + math.pi * r / rings
+            V += [[R * math.cos(lat) * math.cos(2 * math.pi * i / segs), R * math.cos(lat) * math.sin(2 * math.pi * i / segs),
+                   R * math.sin(lat)] for i in range(segs)]
+        V.append([0.0, 0.0, R])
+        ring = lambda r: [1 + (r - 1) * segs + i for i in range(segs)]     # r = 1 .. rings - 1
+        F = [[0, ring(1)[(i + 1) % segs], ring(1)[i]] for i in range(segs)]
+        for r in range(1, rings - 1):
+            lo, hi = ring(r), ring(r + 1)
+            F += [[lo[i], lo[(i + 1) % segs], hi[(i + 1) % segs], hi[i]] for i in range(segs)]
+        top = len(V) - 1
+        F += [[top, ring(rings - 1)[i], ring(rings - 1)[(i + 1) % segs]] for i in range(segs)]
+        return Cage(np.array(V, float), F)
+
+    @staticmethod
+    def topo_sphere(diameter=100.0, n=4):
+        """Topolojik kure (kup-kure, tamamen dortgen): n x n x n bolunmus kup, noktalar kureye tasinir; kutup
+        sivrilmesi yok, SubD'de duzgun yuzey verir."""
+        c = Cage.box([2.0, 2.0, 2.0], [n, n, n])
+        x, y, z = c.V[:, 0], c.V[:, 1], c.V[:, 2]
+        k = lambda a, b: np.sqrt(np.maximum(1.0 - a * a / 2.0 - b * b / 2.0 + a * a * b * b / 3.0, 0.0))
+        c.V = np.stack([x * k(y, z), y * k(x, z), z * k(x, y)], 1) * (diameter / 2.0)
+        return c
+
+    @staticmethod
+    def torus(major=100.0, minor=30.0, segs=16, tsegs=8):
+        """Torus: Z ekseni etrafinda; major = halka merkez cizgisinin capi, minor = tup capi; segs halka, tsegs tup
+        bolumu. Tamamen dortgen, yuzler disari bakar."""
+        R, r = major / 2.0, minor / 2.0
+        V = [[(R + r * math.cos(2 * math.pi * j / tsegs)) * math.cos(2 * math.pi * i / segs),
+              (R + r * math.cos(2 * math.pi * j / tsegs)) * math.sin(2 * math.pi * i / segs),
+              r * math.sin(2 * math.pi * j / tsegs)] for i in range(segs) for j in range(tsegs)]
+        g = lambda i, j: (i % segs) * tsegs + (j % tsegs)
+        F = [[g(i, j), g(i + 1, j), g(i + 1, j + 1), g(i, j + 1)] for i in range(segs) for j in range(tsegs)]
+        return Cage(np.array(V, float), F)
+
     def copy(self):
         c = Cage(self.V.copy(), [list(f) for f in self.F], dict(self.C), set(self.W))
         c.rails = copy.deepcopy(self.rails)
@@ -2695,6 +2737,112 @@ class SubDSolid:
         return None
 
 
+def _poly_planar(P, tol):
+    """Noktalar bir duzlemde mi (en uzak sapma <= tol)?"""
+    if len(P) <= 3:
+        return True
+    c = P.mean(0)
+    n = np.linalg.svd(P - c)[2][-1]
+    return float(np.abs((P - c) @ n).max()) <= tol
+
+
+def cage_brep(cage, tol=0.001, merge=True):
+    """Kafesi dogrudan B-rep yap: her cokgen duz bir yuz; duz olmayanlar ucgenlere bolunur (dortgen: kisa kosegen,
+    daha cok kenarli: merkezden yelpaze). Yuzler dikilir; kapaliysa Solid, degilse Shell dondurur."""
+    import Part
+    V = cage.V
+    faces = []
+
+    def add(poly, pts):
+        try:
+            w = Part.makePolygon([App.Vector(*map(float, q)) for q in list(pts) + [pts[0]]])
+            faces.append(Part.Face(w))
+            return True
+        except Exception:
+            return False
+
+    for f in cage.F:
+        P = V[list(f)]
+        if len(f) < 3:
+            continue
+        if _poly_planar(P, tol) and add(f, P):
+            continue
+        if len(f) == 4:                                    # duz olmayan dortgen: kisa kosegenden iki ucgen
+            d02, d13 = np.linalg.norm(P[0] - P[2]), np.linalg.norm(P[1] - P[3])
+            tris = [(0, 1, 2), (0, 2, 3)] if d02 <= d13 else [(0, 1, 3), (1, 2, 3)]
+            for t in tris:
+                add(None, P[list(t)])
+        else:                                              # n-gen: merkezden yelpaze
+            c = P.mean(0)
+            for i in range(len(f)):
+                add(None, np.array([c, P[i], P[(i + 1) % len(f)]]))
+    if not faces:
+        return Part.Shape()
+    shell = Part.makeShell(faces)
+    try:
+        shell.sewShape()
+    except Exception:
+        pass
+    out = shell
+    try:
+        if shell.isClosed():
+            sol = Part.Solid(shell)
+            if sol.Volume < 0:
+                sol.reverse()
+            out = sol
+    except Exception:
+        pass
+    if merge:                                              # ayni duzlemdeki / ayni yuzeydeki parcalari birlestir
+        try:
+            r = out.removeSplitter()
+            if r.isValid() and abs(getattr(r, "Volume", 0.0) - getattr(out, "Volume", 0.0)) < 1e-6 * (abs(getattr(out, "Volume", 0.0)) + 1.0):
+                out = r
+        except Exception:
+            pass
+    return out
+
+
+class SubDCageSolid:
+    """SubD kafesinin kendisi (yumusatma yok) parametrik B-rep olarak: kafes degisince yeniden hesaplanir. Mucevher
+    / mekanik tasarimda kafesi dogrudan FreeCAD'e dogrusal yuzlerle aktarmak icindir."""
+
+    def __init__(self, obj, source):
+        obj.addProperty("App::PropertyLink", "Source", "SubD", "Source SubD object").Source = source
+        obj.addProperty("App::PropertyFloat", "PlanarTolerance", "SubD",
+                        "Polygons flatter than this (mm) stay one face, others are split into triangles").PlanarTolerance = 0.001
+        obj.addProperty("App::PropertyBool", "MergeFlatFaces", "SubD",
+                        "Merge neighbouring faces that lie in the same plane (cleaner B-rep)").MergeFlatFaces = True
+        obj.Proxy = self
+
+    def execute(self, obj):
+        if is_subd(obj.Source):
+            key = (cage_key(obj.Source), obj.PlanarTolerance, obj.MergeFlatFaces)
+            if getattr(self, "_key", None) != key or obj.Shape.isNull():
+                cage = cage_from_obj(obj.Source)
+                if not cage.F:
+                    return
+                obj.Shape = cage_brep(cage, max(float(obj.PlanarTolerance), 1e-9), bool(obj.MergeFlatFaces))
+                self._key = key
+            if not obj.Placement.isSame(obj.Source.Placement, 1e-12):
+                obj.Placement = obj.Source.Placement
+
+    def dumps(self):
+        return None
+
+    def loads(self, state):
+        return None
+
+
+def make_cage_solid(subd_obj):
+    doc = subd_obj.Document
+    o = doc.addObject("Part::FeaturePython", subd_obj.Name + "_CageSolid")
+    SubDCageSolid(o, subd_obj)
+    if App.GuiUp:
+        o.ViewObject.Proxy = 0
+    doc.recompute()
+    return o
+
+
 def repair_proxies(doc):
     """Python baglantisi (Proxy) kopmus SubD nesnelerini ve katilarini onarir, yeniden hesaplar. Belge acilirken
     FreeCAD modulu ice aktaramazsa (or. FreeCAD 26.3 'module not permitted': Mod klasoru disindaki eklenti)
@@ -2702,7 +2850,8 @@ def repair_proxies(doc):
     fixed = []
     for o in (doc.Objects if doc is not None else []):
         props = getattr(o, "PropertiesList", [])
-        cls = SubDObject if "CageFaces" in props else SubDSolid if "Samples" in props and "Source" in props else None
+        cls = (SubDObject if "CageFaces" in props else SubDSolid if "Samples" in props and "Source" in props
+               else SubDCageSolid if "PlanarTolerance" in props and "Source" in props else None)
         if cls is None or type(getattr(o, "Proxy", None)).__name__ == cls.__name__:
             continue
         o.Proxy = cls.__new__(cls)                         # __init__ ozellik ekler; onlar zaten var
@@ -4204,6 +4353,9 @@ _last_reduce = {"Degrees": 5.0, "Delete points": 1.0}   # Reduce points paneli
 _last_merge = {"Fixed": 0.0, "Distance": 1.0}   # Merge points paneli
 MERGE_AUTO = 1e-3       # Merge points, Automatic: bu kadar mm yakin noktalar "ayni yerde" sayilir
 _last_cyl = {"Diameter": 100.0, "Height": 100.0, "Segments": 16.0, "Height Segments": 1.0}   # Cylinder paneli
+_last_sph = {"Diameter": 100.0, "Segments": 16.0, "Rings": 8.0}                              # Sphere paneli
+_last_tsph = {"Diameter": 100.0, "Segments": 4.0}                                            # Topo sphere paneli
+_last_tor = {"Major diameter": 100.0, "Minor diameter": 30.0, "Major segments": 16.0, "Minor segments": 8.0}   # Torus
 _clipboard = None                       # kopyalanan cokgenler (Cage, dunya koordinati); bkz. copy_faces
 PLANE_EDGE = 0.2        # duzlem normali ile bakis arasindaki |cos| bundan kucukse kare yandan gorunuyor sayilir
 
@@ -4927,6 +5079,7 @@ class SubDSession:
         self._last_click = None      # cift tiklama (kilavuzu yeniden duzenleme)
         self.box_vals = dict(_last_box)  # Box paneli: son kullanilan degerler (modelleyici kapansa da)
         self.cyl_vals = dict(_last_cyl)  # Cylinder paneli (iki topoloji ortak)
+        self.sph_vals, self.tsph_vals, self.tor_vals = dict(_last_sph), dict(_last_tsph), dict(_last_tor)
         self.bridge_vals = {"Number of Cuts": 0.0, "Twist": 0.0, "Smoothness": 0.0, "Profile Factor": 0.0,
                             "Auto direction": 1.0}
         self.last_op = None  # biten son islem (panelden degerle yeniden uygulanabilir)
@@ -5198,6 +5351,55 @@ class SubDSession:
         _last_cyl.update(v)
         return Cage.cylinder(v["Diameter"], v["Height"], segs, int(v["Height Segments"]), topo)
 
+    def add_sphere(self, topo=False):
+        """Create > Sphere / Topo sphere: YENI bir SubD nesnesi. Sphere: Z kutuplu klasik kure (kutuplarda ucgen
+        yelpaze); Topo sphere: tamamen dortgen kup-kure. Panelde cap ve bolum sayilari."""
+        if self.drag or self.grab:
+            return
+        if self.mode != "object":
+            self.enter_object_mode()
+        vals = dict(self.tsph_vals if topo else self.sph_vals)
+        self._new_cage_object("SubD sphere", self._sph_cage(vals, topo))
+        self.last_op = self.new_op("sphere", vals, topo=topo)
+        self.op = None
+        self.info = T("Sphere: size / segments in the panel")
+        self.refresh()
+
+    def _sph_cage(self, v, topo):
+        v["Diameter"] = max(float(v["Diameter"]), 0.001)
+        if topo:
+            v["Segments"] = float(min(max(int(round(v["Segments"])), 2), 16))
+            self.tsph_vals = dict(v)
+            _last_tsph.update(v)
+            return Cage.topo_sphere(v["Diameter"], int(v["Segments"]))
+        v["Segments"] = float(min(max(int(round(v["Segments"])), 3), 64))
+        v["Rings"] = float(min(max(int(round(v["Rings"])), 2), 32))
+        self.sph_vals = dict(v)
+        _last_sph.update(v)
+        return Cage.sphere(v["Diameter"], int(v["Segments"]), int(v["Rings"]))
+
+    def add_torus(self):
+        """Create > Torus: YENI bir SubD nesnesi, Z ekseni etrafinda; panelde halka / tup capi ve bolum sayilari."""
+        if self.drag or self.grab:
+            return
+        if self.mode != "object":
+            self.enter_object_mode()
+        vals = dict(self.tor_vals)
+        self._new_cage_object("SubD torus", self._tor_cage(vals))
+        self.last_op = self.new_op("torus", vals)
+        self.op = None
+        self.info = T("Torus: size / segments in the panel")
+        self.refresh()
+
+    def _tor_cage(self, v):
+        v["Major diameter"] = max(float(v["Major diameter"]), 0.002)
+        v["Minor diameter"] = min(max(float(v["Minor diameter"]), 0.001), v["Major diameter"] * 0.98)
+        v["Major segments"] = float(min(max(int(round(v["Major segments"])), 3), 128))
+        v["Minor segments"] = float(min(max(int(round(v["Minor segments"])), 3), 64))
+        self.tor_vals = dict(v)
+        _last_tor.update(v)
+        return Cage.torus(v["Major diameter"], v["Minor diameter"], int(v["Major segments"]), int(v["Minor segments"]))
+
     def _box_cage(self, v):
         """Box degerlerini sinirla (olcu > 0, segment 1-64) ve kafesi kur; degerler sonraki kutular icin hatirlanir."""
         for n in self.BOX_SIZE:
@@ -5277,6 +5479,39 @@ class SubDSession:
         doc.commitTransaction()
         self.refresh()
 
+    def object_cage_solids(self):
+        """Object modunda: secili her SubD nesnesinin kafesini dogrudan B-rep olarak ekle (varsa guncelle)."""
+        objs = self.selected_objects()
+        if not objs:
+            return
+        doc = objs[0].Document
+        doc.openTransaction("SubD cage B-rep")
+        for o in objs:
+            if not any("PlanarTolerance" in x.PropertiesList for x in o.InList):
+                make_cage_solid(o)
+        doc.recompute()
+        doc.commitTransaction()
+        self.refresh()
+
+    def make_cage_solid(self):
+        """Edit modunda: kafesi kaydeder ve dogrudan B-rep (duz yuzlu Solid / Shell) olarak belgeye ekler."""
+        if not self.cage.F:
+            return
+        obj = self.save(full=False)
+        cs = next((o for o in obj.InList if "PlanarTolerance" in o.PropertiesList and o.Source == obj), None)
+        if cs is None:
+            obj.Document.openTransaction("SubD cage B-rep")
+            cs = make_cage_solid(obj)
+            obj.Document.commitTransaction()
+        else:
+            cs.touch()
+            cs.recompute()
+        sh = cs.Shape
+        self.info = T("Cage B-rep: %s (%d faces%s)") % (cs.Label, len(sh.Faces),
+                                                       "" if sh.ShapeType == "Solid" else T(", open shell"))
+        self.refresh()
+        return cs
+
     def object_delete(self):
         objs = self.selected_objects()
         if not objs:
@@ -5290,7 +5525,7 @@ class SubDSession:
         doc = objs[0].Document
         doc.openTransaction("SubD delete")
         for o in objs:
-            for s in [x for x in o.InList if "Samples" in x.PropertiesList]:
+            for s in [x for x in o.InList if "Samples" in x.PropertiesList or "PlanarTolerance" in x.PropertiesList]:
                 doc.removeObject(s.Name)
             if o is self.obj:
                 self.obj = None
@@ -6402,6 +6637,12 @@ class SubDSession:
         elif k == "cylinder":
             self.cage = self._cyl_cage(v, a["topo"])
             self.sel, self.sel_v, self.sel_e = set(), set(), set()
+        elif k == "sphere":
+            self.cage = self._sph_cage(v, a["topo"])
+            self.sel, self.sel_v, self.sel_e = set(), set(), set()
+        elif k == "torus":
+            self.cage = self._tor_cage(v)
+            self.sel, self.sel_v, self.sel_e = set(), set(), set()
         elif k == "move":
             self.apply_move(self.move_state(a["verts"]), self.w2l_dir(np.array([v["X"], v["Y"], v["Z"]])))
         elif k == "rotate":
@@ -6597,6 +6838,16 @@ class SubDSession:
                 return T("Topo cylinder" if a["topo"] else "Cylinder"), [mm("Diameter"), mm("Height"), segs,
                                                                          ("Height Segments", v["Height Segments"], "", 0,
                                                                           r("Height Segments"))], self.drag is None
+            if k == "sphere":
+                if a["topo"]:
+                    return T("Topo sphere"), [mm("Diameter"), ("Segments", v["Segments"], "", 0, r("Segments"), (1, 2, 16))], \
+                        self.drag is None
+                return T("Sphere"), [mm("Diameter"), ("Segments", v["Segments"], "", 0, r("Segments")),
+                                     ("Rings", v["Rings"], "", 0, r("Rings"))], self.drag is None
+            if k == "torus":
+                return T("Torus"), [mm("Major diameter"), mm("Minor diameter"),
+                                    ("Major segments", v["Major segments"], "", 0, r("Major segments")),
+                                    ("Minor segments", v["Minor segments"], "", 0, r("Minor segments"))], self.drag is None
             if k == "plane":
                 return T("Knife (plane: N.p = Offset)"), [("Normal X", v["Nx"], "", 4, r("Nx")),
                                                        ("Normal Y", v["Ny"], "", 4, r("Ny")),
@@ -13134,6 +13385,11 @@ TOOL_TIPS = {
     "Close": "Write the cage to the document and close the modeler",
     "Box": "Add a box; set its size and segments in the panel",
     "Cylinder": "Add a new cylinder object along Z",
+    "Cage B-rep": "Add the control cage itself as a B-rep (flat faces, solid when closed) to the document, e.g. for jewellery or mechanical design",
+    "Sphere": "Add a sphere: classic (poles) or Topo sphere (all quads)",
+    "Sphere>Sphere": "Classic sphere with poles on Z (triangle fans at the poles)",
+    "Sphere>Topo sphere": "Cube-sphere made only of quads, no pole pinching",
+    "Torus": "Add a torus around Z; ring / tube diameters and segments in the panel",
     "Cylinder>Cylinder": "Cylinder with triangle-fan caps",
     "Cylinder>Topo cylinder": "Cylinder with all-quad caps (segments are a multiple of 4)",
     "From face": "Make a cage from selected Part / PartDesign elements",
@@ -14045,10 +14301,13 @@ class _Overlay(object):
         head("File")
         btn("Save", "F", s.save, mode="edit")
         btn("Solid (STEP)", "", lambda: s.object_solids() if obj() else s.make_solid())
+        btn("Cage B-rep", "", lambda: s.object_cage_solids() if obj() else s.make_cage_solid())
         btn("Close", "", lambda: _later(s.close))
         head("Create")
         btn("Box", "", s.add_box)
         menu_btn("Cylinder", [("Cylinder", lambda: s.add_cylinder()), ("Topo cylinder", lambda: s.add_cylinder(True))])
+        menu_btn("Sphere", [("Sphere", lambda: s.add_sphere()), ("Topo sphere", lambda: s.add_sphere(True))])
+        btn("Torus", "", s.add_torus)
         menu_btn("From face", [("Face", s.from_face), ("Edge", s.from_edges),   # FreeCAD'de secili Part /
                                ("Point", s.from_points)])                     # PartDesign elemanlarindan
         btn("Make polygon", "P", s.make_polygon, sel=True, mode="edit")
