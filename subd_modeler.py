@@ -9560,7 +9560,7 @@ class SubDSession:
         off = [float(s) if s > 1e-6 else big * 0.1 for s in size]
         return dict(Mode=float(mode), Count=6.0, Start=0.0, End=360.0, Offset=0.0, Rotate=1.0,
                     NX=3.0, NY=1.0, NZ=1.0, OX=off[0], OY=off[1], OZ=off[2], OffMode=0.0, Factor=1.2,
-                    Px=0.0, Py=0.0, Pz=0.0, Dx=0.0, Dy=0.0, Dz=1.0)
+                    Px=0.0, Py=0.0, Pz=0.0, Dx=0.0, Dy=0.0, Dz=1.0, Join=0.0)
 
     @staticmethod
     def _array_steps(n, off, kind, factor):
@@ -9622,14 +9622,168 @@ class SubDSession:
                             copies.append(W + t)
         if not copies:
             return T("Array: nothing to add (raise Count or set an Offset)")
-        new = []
+        new, parts = [], []
+        n0, nf0, nsub = len(cage.V), len(cage.F), len(sub.V)
         for Wn in copies:
             part = sub.copy()
             part.V = self.w2l(Wn)
-            new += cage.append(part)
+            fl = cage.append(part)
+            parts.append(fl)
+            new += fl
+        extra = ""
+        if v.get("Join", 0.0) >= 0.5:
+            joined, cut, skipped = self._array_join(faces, n0, nf0, nsub, parts)
+            nt = len(new)
+            new = list(range(max(len(cage.F) - nt, 0), len(cage.F)))
+            extra = ", " + T("%d joined to the surface (%d polygons removed)") % (joined, cut)
+            if skipped:
+                extra += "; " + T("%d do not line up with the surface and stay separate "
+                                  "(the base needs points where the copy touches it; for a radial array give it a segment count that is a multiple of the copy count)") % skipped
         self.sel, self.sel_v, self.sel_e = set(new) if self.mode == "face" else set(), set(), set()
-        self.info = T("Array: %d copies, %d polygons") % (len(copies), len(new))
+        self.info = T("Array: %d copies, %d polygons") % (len(copies), len(new)) + extra
         return None
+
+    def _array_join(self, S, n0, nf0, nsub, parts):
+        """Array 'Join': kopyalarin tabana degen noktalari tabandaki ayni yerdeki noktalarla birlesir; kopyanin kapladigi
+        taban cokgenleri silinir. Tabana degen nokta: ilk secimin, secilmeyen bir cokgenle de paylastigi noktalar.
+        Bir kopyanin degen noktalarinin HEPSI tabanda bir noktaya oturmuyorsa (hizali degil) o kopya ayri kalir.
+        Dondurur: (birlesen kopya, silinen taban cokgeni, birlesmeyen kopya)."""
+        cage = self.cage
+        S = set(S)
+        used = sorted({x for fi in S for x in cage.F[fi]})
+        pos = {x: i for i, x in enumerate(used)}
+        base_f = [fi for fi in range(nf0) if fi not in S]
+        B = sorted({x for fi in base_f for x in cage.F[fi]})
+        K = [x for x in used if x in set(B)]
+        if not K or not B:
+            return 0, 0, len(parts)
+        size = float(np.ptp(cage.V[:n0], 0).max()) if n0 else 1.0
+        tol = 1e-4 * max(size, 1e-6)
+        Vb = cage.V[B]
+        ef = cage.edge_faces()
+        to, covered, joined, skipped = {}, set(), 0, 0
+        for ci, fl in enumerate(parts):
+            ids = [n0 + ci * nsub + pos[x] for x in K]
+            d = np.linalg.norm(cage.V[ids][:, None, :] - Vb[None, :, :], axis=2)
+            j = d.argmin(1)
+            if not np.all(d[np.arange(len(ids)), j] < tol):
+                skipped += 1                               # hizali degil
+                continue
+            m = {c: B[k] for c, k in zip(ids, j)}          # kopya noktasi -> taban noktasi
+            cut = self._array_covered(fl, m, base_f, S, ef)
+            if cut is None:
+                skipped += 1                               # kapladigi cokgenler guvenle bulunamadi
+                continue
+            to.update(m)
+            covered |= cut
+            joined += 1
+        if not joined:
+            return 0, 0, skipped
+        gone = {x for fi in covered for x in cage.F[fi]}
+        cage.F = [f for fi, f in enumerate(cage.F) if fi not in covered]   # numaralar bu adimda kaymaz (sikistirma yok)
+        cage.merge_map(to)
+        used_now = {x for f in cage.F for x in f}
+        orphan = gone - used_now
+        if orphan:
+            cage._compact([x for x in range(len(cage.V)) if x not in orphan])
+        return joined, len(covered), skipped
+
+    def _array_covered(self, fl, m, base_f, S, ef):
+        """Bir kopyanin tabana degen halkasinin (taban nokta numaralariyla) icinde kalan taban cokgenleri (kume); halka
+        kapali degilse ya da tasma olursa None. Taban zaten bos ise bos kume."""
+        cage = self.cage
+        cnt = {}
+        for fi in fl:
+            f = cage.F[fi]
+            for i in range(len(f)):
+                e = _edge(f[i], f[(i + 1) % len(f)])
+                cnt[e] = cnt.get(e, 0) + 1
+        loop = {_edge(m[a], m[b]) for (a, b), c in cnt.items() if c == 1 and a in m and b in m}
+        if not loop:
+            return set()
+        adj = {}
+        for a, b in (tuple(e) for e in loop):
+            adj.setdefault(a, []).append(b)
+            adj.setdefault(b, []).append(a)
+        if any(len(x) != 2 for x in adj.values()):
+            return None
+        cycles, seen = [], set()
+        for a0 in adj:
+            if a0 in seen:
+                continue
+            cyc, prev, cur = [a0], None, a0
+            seen.add(a0)
+            while True:
+                nxt = [x for x in adj[cur] if x != prev][0]
+                if nxt == a0:
+                    break
+                if nxt in seen:
+                    return None
+                cyc.append(nxt)
+                seen.add(nxt)
+                prev, cur = cur, nxt
+            cycles.append(cyc)
+        P = [cage.V[c] for c in cycles]
+        nrm = [np.cross(q, np.roll(q, -1, 0)).sum(0) for q in P]
+        n = nrm[int(np.argmax([np.linalg.norm(x) for x in nrm]))]
+        ln = np.linalg.norm(n)
+        if ln < 1e-12:
+            return None
+        n = n / ln
+        u = np.cross(n, [1.0, 0.0, 0.0] if abs(n[0]) < 0.9 else [0.0, 1.0, 0.0])
+        u /= np.linalg.norm(u)
+        w = np.cross(n, u)
+        polys = [np.c_[q @ u, q @ w] for q in P]
+
+        def inside(pt):
+            x, y = float(pt @ u), float(pt @ w)
+            c = False
+            for q in polys:
+                a = q
+                b = np.roll(q, -1, 0)
+                for (x1, y1), (x2, y2) in zip(a, b):
+                    if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+                        c = not c
+            return c
+        baseset = set(base_f)
+        cen = lambda fi: cage.V[cage.F[fi]].mean(0)
+        size = max(float(np.ptp(cage.V, 0).max()), 1e-6)
+        seeds = set()
+        for e in loop:
+            a, b = tuple(e)
+            mid = (cage.V[a] + cage.V[b]) * 0.5
+            t = cage.V[b] - cage.V[a]
+            t2 = np.array([t @ u, t @ w])
+            ln2 = np.linalg.norm(t2)
+            if ln2 < 1e-12:
+                continue
+            nv = np.array([-t2[1], t2[0]]) / ln2             # kenara dik (2B); halkanin iceri bakan yani bulunur
+            for sg in (1.0, -1.0):
+                if inside(mid + (sg * nv[0] * u + sg * nv[1] * w) * 1e-3 * size):
+                    nv = sg * nv
+                    break
+            else:
+                continue
+            for fi in ef.get(e, ()):
+                if fi in baseset:
+                    d2 = np.array([(cen(fi) - mid) @ u, (cen(fi) - mid) @ w])
+                    if d2 @ nv > 1e-6 * size:                # cokgen kenarin ic tarafinda (kapak gibi yan duranlar degil)
+                        seeds.add(fi)
+        out, todo = set(seeds), list(seeds)
+        while todo:
+            fi = todo.pop()
+            f = cage.F[fi]
+            for i in range(len(f)):
+                e = _edge(f[i], f[(i + 1) % len(f)])
+                if e in loop:
+                    continue
+                for g in ef.get(e, ()):
+                    if g in baseset and g not in out:
+                        if not inside(cen(g)):
+                            return None                    # halkanin disina tasti
+                        out.add(g)
+                        todo.append(g)
+        return out
 
     def _array_panel(self, v):
         rect = int(v["Mode"]) == 1
@@ -9653,7 +9807,8 @@ class SubDSession:
                   ("Rectangular", rect, lambda on: self.redo_last("Mode", 1.0)),
                   ("Between", kind == 0, lambda on: self.redo_last("OffMode", 0.0)),
                   ("Total", kind == 1, lambda on: self.redo_last("OffMode", 1.0)),
-                  ("Multiply", kind == 2, lambda on: self.redo_last("OffMode", 2.0))]
+                  ("Multiply", kind == 2, lambda on: self.redo_last("OffMode", 2.0)),
+                  ("Join", v.get("Join", 0.0) >= 0.5, lambda on: self.redo_last("Join", float(bool(on))))]
         buttons, side = [], []
         if not rect:
             checks.append(("Rotate copies", v["Rotate"] >= 0.5, lambda on: self.redo_last("Rotate", float(bool(on)))))
@@ -13499,6 +13654,7 @@ TOOL_TIPS = {
     "Axis auto": "Axis along the main direction of the selection (its longest direction), however the part is turned; Twist also moves the axis point to the centre of the selection",
     "Axis normal": "Axis along the average normal of the selected polygons; Twist also moves the axis point to the centre of the selection",
     "Local axes": "Axis X / Y / Z use the object's own axes instead of the world axes",
+    "Join": "Weld each copy to the surface it touches: the copy's contact points join the points of the base at the same place and the base polygons under the copy are removed. Copies that do not line up with the base polygons stay separate",
     "Bridge": "Connect two open edge loops or two face regions",
     "Bridge>Bridge": "Connect two open edge loops / chains or two face regions with a strip",
     "Bridge>Rail bridge": "Pipe with an editable guide curve, between two regions or growing out of one",

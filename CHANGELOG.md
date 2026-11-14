@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Array: Join option.** Welds each copy to the surface it touches: the copy's contact points join the base points at
+  the same place and the base polygons under the copy are removed, so the result is one closed surface instead of
+  overlapping parts. It works when the copies line up with the base polygons (e.g. 5 copies on a cylinder with 20
+  segments); copies that do not line up stay separate and the info line says so.
 - **Twist / Array: axis from the part itself.** Twist now starts with the axis along the *main direction of the
   selection* (its longest direction), so a part that is not aligned with the world axes twists along its own length
   without drawing an axis first (it still snaps to a world or object axis when within 2 degrees). New buttons next to
