@@ -12,6 +12,9 @@
 - **PD: stretch.** A group can have several reference spheres (each *Set reference point* adds one). A dimension
   between two spheres of the *same* group stretches the group along the measured direction from the first (red)
   sphere, so a width can be changed; between different groups the second group still moves.
+- **PD dimensions:** the second sphere's extension line goes straight to the dimension line; drag a dimension's text
+  to move the dimension line sideways (undoable); double click the text to type a new value. PD dimensions also
+  appear, in orange, in the Distances list.
 - **Fix: Undo right after adding a Box / Cylinder removes the new object.**
 - Topo cylinder segments: 8 to 32 in steps of 4.
 - **New: Circle (Modify tab).** Arranges the selected points, an edge loop / chain, or the boundary of a polygon

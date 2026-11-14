@@ -4950,6 +4950,8 @@ class SubDSession:
         self.pd_root = self.pd_group = None     # referans kurelerinin sahne dugumu (_pd_spheres)
         self._pd_sig = None
         self._pd_live = {}                                  # surukleme sirasinda referans kurelerinin gecici yeri
+        self.pd_lbl = None                                  # PD yazisi surukleniyor (olcunun yerini degistirir)
+        self._pd_last = (None, 0.0)                         # son tiklanan PD yazisi: cift tik icin
         self.dim_sel = None       # listede secili olcu (kafes sirasi)
         self.dim_hits = []        # kalici olculerin x dugmeleri (tiklayinca silinir)
         self._dim_imgs = {}       # olcu yazisi goruntuleri onbellegi
@@ -10193,7 +10195,7 @@ class SubDSession:
             a = np.array(d["axis"], float) if k in ("h", "v") else None
             Q = P[0] + a * v if a is not None else P[1]
             label = "D" + "XYZ"[int(np.argmax(np.abs(a)))] if a is not None else "D"
-            it = dict(P=P[0], Q=Q, kind="pd", idx=None, hd="pd:%d" % i, val=v, txt="%s  %.3f mm" % (label, v))
+            it = dict(P=P[0], Q=Q, kind="pd", idx=None, hd="pd:%d" % i, val=v, txt="%s  %.3f mm" % (label, v), i=i)
             u = Q - P[0]
             ln = float(np.linalg.norm(u))
             if ln > 1e-9:
@@ -10207,9 +10209,12 @@ class SubDSession:
                 n = np.array(d["n"], float)
                 n = n - uh * float(n @ uh)
                 n = n / np.linalg.norm(n) if np.linalg.norm(n) > 1e-9 else np.cross(uh, np.array([0.0, 0.0, 1.0]))
-                side = 1.0 if nl % 2 == 0 else -1.0          # art arda gelen olculer karsi yanlara, giderek uzaga
-                it["O"] = n * side * 0.05 * diag * (nl // 2 + 1)
-                nl += 1
+                if d.get("off") is not None:                 # kullanici yazidan surukleyip yerini degistirdi
+                    it["O"] = n * float(d["off"])
+                else:
+                    side = 1.0 if nl % 2 == 0 else -1.0      # art arda gelen olculer karsi yanlara, giderek uzaga
+                    it["O"] = n * side * 0.05 * diag * (nl // 2 + 1)
+                    nl += 1
                 al = min(0.022 * diag, 0.3 * ln)             # ok boyu her olcude ayni (kisa olcuyle sinirli)
                 it.update(aw=n / np.linalg.norm(n), al=al, aww=al * 0.4)
             if k in ("h", "v") and float(np.linalg.norm(Q - P[1])) > 1e-6:
@@ -10370,6 +10375,50 @@ class SubDSession:
             for n in (bc, tr, sp):
                 sep.addChild(n)
             g.addChild(sep)
+
+    def pd_lbl_start(self, hd, pos):
+        i = int(str(hd)[3:])
+        it = next((x for x in self._pd_items() if x.get("i") == i), None)
+        self.pd_lbl = dict(i=i, p0=pos, moved=False, it=it)
+        if it is not None and it.get("aw") is not None:
+            n, L = it["aw"], 0.05 * max(float(np.linalg.norm(np.ptp(self.l2w(self.cage.V), axis=0))), 1.0)
+            B = (it["P"] + it["Q"]) / 2
+            sB, sB2 = self._proj_np(B)[0], self._proj_np(B + n * L)[0]
+            self.pd_lbl.update(n=n, L=L, s=sB2 - sB, off0=float(it["O"] @ n))
+
+    def pd_lbl_move(self, pos):
+        b = self.pd_lbl
+        if b is None or b.get("s") is None:
+            return
+        if not b["moved"] and abs(pos[0] - b["p0"][0]) + abs(pos[1] - b["p0"][1]) <= 4:
+            return
+        s2 = float(b["s"] @ b["s"])
+        if s2 < 1e-6:
+            return                                         # kayma yonu bakisa dik: ekrandan ayarlanamaz
+        if not b["moved"]:
+            b["moved"] = True
+            self.push()
+        d = self.cage.pdims[b["i"]]
+        d["off"] = b["off0"] + float((np.array(pos[:2], float) - np.array(b["p0"][:2], float)) @ b["s"]) / s2 * b["L"]
+        self.dirty = True
+        self.dim_sig = None
+        self._dim_tick()
+
+    def pd_lbl_end(self):
+        """Yazi birakildi: surukleme olmadiysa tik; ust uste iki tik (cift tik) degeri degistirme penceresini acar."""
+        b, self.pd_lbl = self.pd_lbl, None
+        if b is None:
+            return
+        if b["moved"]:
+            self.refresh()
+            return
+        now = time.monotonic()
+        last_i, last_t = self._pd_last
+        if last_i == b["i"] and now - last_t < 0.5:
+            self._pd_last = (None, 0.0)
+            self.pd_dim_edit(b["i"])
+        else:
+            self._pd_last = (b["i"], now)
 
     def _dim_hit_label(self, pos):
         """Grup olcusunun yazisi imlecin altindaysa tutamagin adi, yoksa None."""
@@ -10542,16 +10591,20 @@ class SubDSession:
                 ds.linePattern = 0xF0F0
             pts = [tuple(float(x) for x in P)] + ([tuple(float(x) for x in Q)] if Q is not None else [])
             if O is not None:                              # P -> P+O -> Q+O -> Q (PD: ardindan ikinci kureye uzanti)
-                pts = [tuple(float(x) for x in e) for e in (P, P + O, Q + O, Q)]
-                if it.get("R") is not None:
-                    pts.append(tuple(float(x) for x in it["R"]))
+                if it.get("R") is not None:                # PD yatay / dikey: ikinci kureden olcu cizgisinin ucuna dogrudan
+                    pts = [tuple(float(x) for x in e) for e in (P, P + O, Q + O, it["R"], Q + O)]
+                else:
+                    pts = [tuple(float(x) for x in e) for e in (P, P + O, Q + O, Q)]
             co = coin.SoCoordinate3()
             co.point.setValues(0, len(pts), pts)
             for n in (bc, ds, co):
                 grp.addChild(n)
             if Q is not None and not it.get("noline"):
                 ls = coin.SoLineSet()
-                ls.numVertices = len(pts) if O is not None else 2
+                if O is not None and it.get("R") is not None:
+                    ls.numVertices.setValues(0, 2, [3, 2])
+                else:
+                    ls.numVertices = len(pts) if O is not None else 2
                 grp.addChild(ls)
             if it.get("poly") is not None:                 # aci olcusu: A - B - C kollari
                 cop = coin.SoCoordinate3()
@@ -12007,6 +12060,11 @@ class SubDSession:
         self.mouse = pos
         down = ev.getState() == coin.SoButtonEvent.DOWN
         left = ev.getButton() == coin.SoMouseButtonEvent.BUTTON1
+        if self.pd_lbl is not None:                        # PD yazisi suruklenirken
+            if left and not down:
+                cb.setHandled()
+                _later(self.pd_lbl_end)
+            return
         if self.drag is not None:
             if left and not down:
                 cb.setHandled()
@@ -12038,6 +12096,10 @@ class SubDSession:
             return
         if self.dim_hits and self.dim_p0 is None and self.mode != "object":
             hd = self._dim_hit_label(pos)
+            if hd is not None and str(hd).startswith("pd:"):   # PD yazisi: surukle = yer degistir, cift tik = deger
+                cb.setHandled()
+                self.pd_lbl_start(hd, pos)
+                return
             if hd is not None:                             # grup olcusunun degeri: tiklayinca degistirilir
                 cb.setHandled()
                 _later(lambda: self.handle_dim_edit(hd))
@@ -12105,7 +12167,13 @@ class SubDSession:
     def _on_motion(self, cb):
         pos = cb.getEvent().getPosition().getValue()
         self.mouse = pos
-        if self.magnet_size is not None:
+        if self.pd_lbl is not None:
+            if not _left_held():
+                _later(self.pd_lbl_end)
+                return
+            cb.setHandled()
+            self._schedule(lambda: self.pd_lbl_move(pos))
+        elif self.magnet_size is not None:
             cb.setHandled()
             if QtWidgets.QApplication.mouseButtons() & QtCore.Qt.RightButton:
                 self._schedule(self.magnet_size_move)
