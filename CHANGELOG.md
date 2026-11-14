@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Parametric groups keep what Knife, Bevel, Inset and Extrude create.** New points made on the group's own edges
+  (Knife line, Knife loop) or from the group's own points (Bevel, Inset, Extrude, every layer) now join the locked
+  group, so cuts and bevels inside a group move with it. Points made from edges or polygons only partly in the group
+  stay outside. Edge bevel, Subdivide, Add points and Connect are not covered yet.
 - **New: PG List (next to PD).** A list of the parametric groups of the open object: click a row to select the group's
   points, double click the name to rename it, lock / unlock with the check box, delete one, several (Ctrl / Shift) or
   all groups. Deleting keeps the points in the cage and also deletes the PD dimensions that use the group (undo brings

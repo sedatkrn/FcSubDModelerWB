@@ -1307,6 +1307,7 @@ class Cage:
                 a, b = tuple(k)
                 self.C[_edge(a, m)] = sh
                 self.C[_edge(m, b)] = sh
+        self.born = {m: tuple(k) for k, m in mids.items()}   # yeni nokta -> bolunen kenarin uclari (gruplar icin)
         return list(mids.values())
 
     def split_plane(self, n, d, verts=None):
@@ -5096,6 +5097,7 @@ class SubDSession:
         self.dim_list = None      # Distances liste penceresi (_DimList)
         self.dim_list_was_open = False
         self.pg_list = None       # PG List penceresi (_GroupList): parametrik gruplarin listesi
+        self._adopt = {}          # son Knife (loop) kesiminde yeni noktalarin katilacagi gruplar (_adopt_plan)
         self.pg_list_was_open = False
         self._hd_key, self._hd_names = None, []   # grup tutamaklarinin olculeri (_handle_dim_items)
         self._grp_sets = {}                       # grup adi -> uye indeksleri (_group_faces)
@@ -8169,8 +8171,9 @@ class SubDSession:
             dirs = dirs.copy()
             dirs[plane, 0] = 0.0
         base = cage.V[verts].copy()
+        born = {int(r): (v,) for v, row in zip(verts, rows) for r in row}   # her kat noktasi: kaynak noktasi
         return dict(kind="extrude", before=before, segs=segs, axes=axes, verts=verts, base=base,
-                    idx=np.array(rows).T, dirs=dirs, side=side, plane=plane,
+                    idx=np.array(rows).T, dirs=dirs, side=side, plane=plane, adopt=self._adopt_plan(born),
                     m_axis=m_axis, c=base[side > 0].mean(0) if (side > 0).any() else base.mean(0))
 
     def _extrude_anchor(self, st):
@@ -8233,6 +8236,7 @@ class SubDSession:
         s = len(st["idx"])
         for k, row in enumerate(st["idx"], 1):
             V[row] = st["base"] + D * (k / s)
+        self._adopt_apply(st.get("adopt") or {})
         o = st["side"] > 0
         st["op"]["args"]["dw"] = self.l2w_dir(D[o].mean(0)) if o.any() else np.zeros(3)   # dunya, asil taraf
         st["op"]["args"]["m"] = self.l2w_dir(st["m_axis"]) if st["m_axis"] is not None else None
@@ -8417,14 +8421,17 @@ class SubDSession:
         yalniz kendisinden hesaplanir (komsu secili yuzlerle ortak kenarda da kendi yan duvari olur)."""
         region = self.mirror_faces(self.sel, self.mirror_map()) if self.sym else set(self.sel)
         groups = [{fi} for fi in sorted(region)] if each else [region]
-        new, N, O = [], [], []
+        new, N, O, born = [], [], [], {}
         for g in groups:
             Nv, Ov = self.cage.bevel_dirs(g)
-            new += self.cage.extrude(g)
+            vs = sorted({v for fi in g for v in self.cage.F[fi]})   # extrude'un dondurdugu sirayla ayni
+            top = self.cage.extrude(g)
+            born.update({t: (v,) for t, v in zip(top, vs)})
+            new += top
             N.append(Nv)
             O.append(Ov)
         return dict(kind="bevel", new=new, base=self.cage.V[new].copy(), n=np.vstack(N), o=np.vstack(O),
-                    inset_only=inset_only)
+                    inset_only=inset_only, adopt=self._adopt_plan(born))
 
     def bevel_individual(self, on):
         """Bevel panelindeki "Individual": surerken ya da son bevel'de hemen uygulanir, sonrakiler icin hatirlanir."""
@@ -8449,6 +8456,7 @@ class SubDSession:
 
     def bevel_set(self, st, inset, shift):
         self.cage.V[st["new"]] = st["base"] + st["n"] * shift + st["o"] * inset
+        self._adopt_apply(st.get("adopt") or {})
         p = st.get("param")
         self.info = "%sInset %.3f mm   %sShift %.3f mm%s" % (
             "▸ " if p == "inset" else "", inset, "▸ " if p == "shift" else "", shift,
@@ -8499,6 +8507,7 @@ class SubDSession:
         (bir yanin yuzleri, ayrildi mi) sonucunu dondurur (yoksa None)."""
         verts = None if verts is None else set(verts)
         new = self.cage.plane_cut(n, d, verts)
+        self._adopt_apply(self._adopt_plan(self.cage.born))
         if verts is not None:
             verts |= set(new)
         nm = n * MIRROR
@@ -8507,6 +8516,7 @@ class SubDSession:
                 M = self.mirror_map()
                 verts |= {M[v] for v in list(verts) if M.get(v) is not None}
             new = self.cage.plane_cut(nm, d, verts)
+            self._adopt_apply(self._adopt_plan(self.cage.born))
             if verts is not None:
                 verts |= set(new)
         return self.cage.split_plane(n, d, verts) if split else None
@@ -9233,6 +9243,11 @@ class SubDSession:
 
     def _knife_cut(self, fi, u, v):
         """Loop cut + simetride aynadaki halka. Kaydirma icin ([(yeni nokta, a, b)], en buyuk t) dondurur."""
+        items, maxt = self._knife_cut_raw(fi, u, v)
+        self._adopt = self._adopt_plan({m: (a, b) for m, a, b in items})   # kesit, kenarlari gruptaysa grupta kalir
+        return items, maxt
+
+    def _knife_cut_raw(self, fi, u, v):
         M = self.mirror_map() if self.sym else {}
         items = self.cage.loop_cut(fi, u, v)
         if not items:
@@ -9289,6 +9304,7 @@ class SubDSession:
         m, a, b = (list(x) for x in zip(*items))
         V = self.cage.V
         V[m] = V[a] + t * (V[b] - V[a])
+        self._adopt_apply(self._adopt)
         if self.op is not None and self.op["kind"] == "knife":
             self.op["values"]["t"] = t
             self.info = "Knife  %.1f %%   %.3f mm" % (t * 100, t * self.op["args"]["L"])
@@ -11333,6 +11349,43 @@ class SubDSession:
         self.dirty = True
         self.dim_sig = None
         self._dim_tick()
+
+    # --- Gruplar ve topoloji: Knife / Bevel / Inset / Extrude ile olusan yeni noktalar grupta kalir ---
+    # Kilitli grubun uyeligi konuma bakar; yeni noktanin kaydi olmadigi icin gruba girmezdi (grup tasininca kesit
+    # arkada kalirdi). Yeni noktanin "ana" noktalari (bolunen kenarin uclari, extrude / bevel'in kaynak noktasi) hep
+    # bir grubun uyesiyse yeni nokta da o gruba katilir. Plan islem kurulurken yapilir, yerlestirme her konum
+    # degisiminde (fare / panel) yeniden uygulanir: kayit yeni noktanin o anki yerini bilir.
+
+    def _adopt_plan(self, born):
+        """born: {yeni nokta: ana noktalari}. Dondurur: {grup adi: dict(base=kayit sayisi, verts=[yeni noktalar])}."""
+        gs = [g for g in self.cage.groups if g.get("locked", True)]
+        if not gs or not born:
+            return {}
+        sets = group_member_sets(self.cage.V, gs)
+        plan = {}
+        for m, ps in born.items():
+            for g in gs:
+                if ps and all(p in sets[g["name"]] for p in ps):
+                    e = plan.setdefault(g["name"], dict(base=len(g["pts"]), verts=[]))
+                    e["verts"].append(m)
+        return plan
+
+    def _adopt_apply(self, plan):
+        """Plandaki yeni noktalarin simdiki yerlerini grup kaydina yazar (onceki yerlestirmeyi degistirir)."""
+        for name, e in plan.items():
+            g = self._grp(name)
+            if g is None:
+                continue
+            P = self.cage.V[e["verts"]]
+            b = e["base"]
+            if g.get("nh"):
+                loc = P
+            else:                                          # tutamakli eski grup: tutamagin yereli
+                H = np.array(g["H"], float).reshape(4, 4)
+                loc = (self.l2w(P) - H[:3, 3]) @ H[:3, :3]
+            g["pts"] = g["pts"][:b] + P.tolist()
+            g["loc"] = g["loc"][:b] + loc.tolist()
+            g["w"] = g["w"][:b] + [1.0] * len(P)
 
     # --- PG List: acik nesnenin parametrik gruplari (sec, kilitle, adlandir, sil) ---
 
