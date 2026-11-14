@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-11-14)
 
 - **New: Sphere and Topo sphere (Create tab).** *Sphere* is the classic UV sphere (poles on Z, triangle fans at the
   poles; panel: Diameter, Segments, Rings). *Topo sphere* is a cube-sphere made only of quads (panel: Diameter,
