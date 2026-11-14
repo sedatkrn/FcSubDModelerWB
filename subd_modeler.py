@@ -10387,6 +10387,7 @@ class SubDSession:
             self.pd_lbl.update(n=n, L=L, s=sB2 - sB, off0=float(it["O"] @ n))
 
     def pd_lbl_move(self, pos):
+        self._pending = False                              # _schedule birlesik: bir sonraki hareket yeniden planlanabilsin
         b = self.pd_lbl
         if b is None or b.get("s") is None:
             return
