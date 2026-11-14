@@ -9456,6 +9456,80 @@ class SubDSession:
     # ekranda cizgi cekerek verilir (yakalama acik; kisa tiklama = bakis yonunde eksen).
     ARRAY_MAX = 1000                                       # en cok kopya sayisi (donmayi onler)
     ARRAY_AXIS = ("Px", "Py", "Pz", "Dx", "Dy", "Dz")
+    axis_local = False                                     # Axis X / Y / Z dugmeleri: nesnenin kendi eksenleri (Local axes)
+
+    def set_axis_local(self, on):
+        self.axis_local = bool(on)
+        self.refresh()
+
+    def _axis_side(self):
+        """Array / Twist panelinin sag dugmeleri: Axis X / Y / Z (Local axes aciksa nesnenin kendi eksenleri),
+        Axis auto (secimin asil yonu), Axis normal (secili cokgenlerin ortalama normali)."""
+        E = [self.l2w_dir(e) if self.axis_local else e for e in np.eye(3)]
+        side = [("Axis " + n, lambda d=tuple(float(x) for x in e): self.array_axis_dir(d))
+                for n, e in zip("XYZ", E)]
+        return side + [("Axis auto", self.axis_from_selection), ("Axis normal", self.axis_from_normal)]
+
+    def _sel_axis(self, cage, verts):
+        """Secili noktalarin asil ekseni (dunya): (agirlik merkezi, birim yon). Yon, noktalarin en uzun dogrultusudur
+        (temel bilesen). Dunya ya da nesne eksenine 2 dereceden yakinsa tam eksene oturur; secim hemen hemen
+        yuvarlaksa (belirgin bir uzun yon yoksa) secimin en uzun oldugu dunya ekseni alinir."""
+        W = self.l2w(cage.V[sorted(verts)])
+        c = W.mean(0)
+        D = None
+        if len(W) >= 3:
+            w, U = np.linalg.eigh(np.cov((W - c).T))
+            if w[2] > 1e-12 and w[1] < 0.9 * w[2]:
+                D = U[:, 2]
+        if D is None:
+            return c, np.eye(3)[int(np.argmax(np.ptp(W, 0)))]
+        cands = list(np.eye(3)) + [self.l2w_dir(e) / max(np.linalg.norm(self.l2w_dir(e)), 1e-12) for e in np.eye(3)]
+        for e in cands:
+            if abs(D.dot(e)) > math.cos(math.radians(2.0)):
+                D = e * (1.0 if D.dot(e) >= 0 else -1.0)
+                break
+        if D[int(np.argmax(np.abs(D)))] < 0:
+            D = -D
+        return c, D / np.linalg.norm(D)
+
+    def _axis_apply(self, op, P, D):
+        v = op["values"]
+        if P is not None:
+            v.update(Px=float(P[0]), Py=float(P[1]), Pz=float(P[2]))
+        v.update(Dx=float(D[0]), Dy=float(D[1]), Dz=float(D[2]))
+        self._reapply(op)
+
+    def axis_from_selection(self):
+        """Axis auto: eksen secimin asil yonunde (Twist'te nokta da secimin merkezine gelir)."""
+        op = self._axis_op()
+        if op is None or self.drag or self.grab:
+            return
+        cb = op["before"][0]
+        used = {x for fi in op["args"].get("faces", ()) for x in cb.F[fi]}
+        if not used:
+            return
+        c, D = self._sel_axis(cb, used)
+        self._axis_apply(op, c if op["kind"] == "twist" else None, D)
+
+    def axis_from_normal(self):
+        """Axis normal: eksen secili cokgenlerin ortalama normali yonunde (Twist'te nokta secimin merkezinde)."""
+        op = self._axis_op()
+        if op is None or self.drag or self.grab:
+            return
+        cb = op["before"][0]
+        faces = list(op["args"].get("faces", ()))
+        if not faces:
+            return
+        n = sum((cb.normal(fi) for fi in faces), np.zeros(3))
+        n = self.l2w_dir(n)
+        ln = float(np.linalg.norm(n))
+        if ln < 1e-9:
+            self.info = T("Axis normal: the selected polygons have no common direction")
+            self.refresh()
+            return
+        used = {x for fi in faces for x in cb.F[fi]}
+        c = self.l2w(cb.V[sorted(used)]).mean(0)
+        self._axis_apply(op, c if op["kind"] == "twist" else None, n / ln)
 
     def array(self, mode=0):
         """Polygon > Array: mode 0 = Radial, 1 = Rectangular. Secili cokgenler (yoksa uyari) kopyalanir."""
@@ -9584,9 +9658,8 @@ class SubDSession:
         if not rect:
             checks.append(("Rotate copies", v["Rotate"] >= 0.5, lambda on: self.redo_last("Rotate", float(bool(on)))))
             buttons = [("Draw axis", self.array_pick)]
-            side = [("Axis X", lambda: self.array_axis_dir((1.0, 0.0, 0.0))),   # kutucuklarin saginda alt alta
-                    ("Axis Y", lambda: self.array_axis_dir((0.0, 1.0, 0.0))),
-                    ("Axis Z", lambda: self.array_axis_dir((0.0, 0.0, 1.0)))]
+            checks.append(("Local axes", self.axis_local, self.set_axis_local))
+            side = self._axis_side()                       # kutucuklarin saginda alt alta
         return T("Array"), fields, self.drag is None, checks, None, buttons, side
 
     def array_axis_dir(self, d):
@@ -9699,12 +9772,11 @@ class SubDSession:
         self.refresh()
 
     def _twist_defaults(self, faces):
-        """Baslangic: eksen secimin merkezinden, secimin en uzun oldugu dunya ekseni yonunde; aci 0."""
+        """Baslangic: eksen secimin merkezinden, secimin asil (en uzun) yonunde; aci 0."""
         cage = self.cage
         used = sorted({v for fi in faces for v in cage.F[fi]})
         W = self.l2w(cage.V[used])
-        c = W.mean(0)
-        D = np.eye(3)[int(np.argmax(np.ptp(W, 0)))]
+        c, D = self._sel_axis(cage, used)
         s = (W - c) @ D
         return dict(Angle=0.0, Start=float(s.min()), End=float(s.max()), Falloff=0.0, Reverse=0.0, Auto=1.0,
                     Cuts=0.0, Px=float(c[0]), Py=float(c[1]), Pz=float(c[2]),
@@ -9804,9 +9876,8 @@ class SubDSession:
                   for i, n in enumerate(TWIST_FALLOFFS)]
         checks += [("Reverse", v["Reverse"] >= 0.5, lambda on: self.twist_set("Reverse", float(bool(on)))),
                    ("Auto range", v["Auto"] >= 0.5, lambda on: self.twist_set("Auto", float(bool(on))))]
-        side = [("Axis X", lambda: self.array_axis_dir((1.0, 0.0, 0.0))),
-                ("Axis Y", lambda: self.array_axis_dir((0.0, 1.0, 0.0))),
-                ("Axis Z", lambda: self.array_axis_dir((0.0, 0.0, 1.0)))]
+        checks.append(("Local axes", self.axis_local, self.set_axis_local))
+        side = self._axis_side()
         return T("Twist"), fields, self.drag is None, checks, None, [("Draw axis", self.array_pick)], side
 
     # --- Circle (Blender LoopTools Circle): secili nokta / kenar halkasi / cokgen bolgesi daire olur ---
@@ -13422,9 +13493,12 @@ TOOL_TIPS = {
     "Clear all": "Delete all distances (undo brings the fixed ones back)",
     "Distances": "List of the distances: give each a name and a target, show / hide, delete, export as CSV. The list stays with the object between sessions",
     "Draw axis": "Drag a line in the view to set the axis (snaps like Mirror (line)); a click gives an axis along the view",
-    "Axis X": "Axis direction along world X (the axis point stays)",
-    "Axis Y": "Axis direction along world Y (the axis point stays)",
-    "Axis Z": "Axis direction along world Z (the axis point stays)",
+    "Axis X": "Axis direction along X: world X, or the object's own X when Local axes is on (the axis point stays)",
+    "Axis Y": "Axis direction along Y: world Y, or the object's own Y when Local axes is on (the axis point stays)",
+    "Axis Z": "Axis direction along Z: world Z, or the object's own Z when Local axes is on (the axis point stays)",
+    "Axis auto": "Axis along the main direction of the selection (its longest direction), however the part is turned; Twist also moves the axis point to the centre of the selection",
+    "Axis normal": "Axis along the average normal of the selected polygons; Twist also moves the axis point to the centre of the selection",
+    "Local axes": "Axis X / Y / Z use the object's own axes instead of the world axes",
     "Bridge": "Connect two open edge loops or two face regions",
     "Bridge>Bridge": "Connect two open edge loops / chains or two face regions with a strip",
     "Bridge>Rail bridge": "Pipe with an editable guide curve, between two regions or growing out of one",
