@@ -7749,16 +7749,16 @@ class SubDSession:
     def _circ_items(self):
         """PD acikken dairesel gruplarin cap olculeri: merkezden gecen cizgi, iki ucta ok, yazida ⌀ deger."""
         out = []
+        vd = np.array(tuple(self.view.getViewDirection()), float)
         for g in self.cage.groups:
             v = self.circ_diam(g)
             if v is None or v < 1e-9:
                 continue
             ci = g["circ"]
             c, n = np.array(ci["c"], float), np.array(ci["n"], float)
-            u = np.cross(n, np.array([0.0, 0.0, 1.0]))     # duzlemde sabit bir yon (bakisa bagli degil: titremesin)
-            if np.linalg.norm(u) < 1e-6:
-                u = np.cross(n, np.array([0.0, 1.0, 0.0]))
-            u = np.cross(u, n)                             # yatay duvarda yukari, tavanda / tabanda nesnenin X'i
+            nw = self.l2w(np.array([c + n])) - self.l2w(np.array([c]))
+            u = self.w2l_dir(_visible_axis(nw[0] / np.linalg.norm(nw[0]), vd))   # cap cizgisi: duzlemde, bakistan en
+            u = u - n * float(u @ n)                                             # rahat gorunen dunya eksenine yakin
             u /= np.linalg.norm(u)
             P, Q = self.l2w(np.array([c - u * v / 2, c + u * v / 2]))
             out.append(dict(P=P, Q=Q, kind="pd", idx=None, hd="pc:" + g["name"], val=v,
@@ -10831,6 +10831,9 @@ class SubDSession:
         na = nl = 0
         Wv = self.l2w(self.cage.V) if len(self.cage.V) else np.zeros((1, 3))
         diag = max(float(np.linalg.norm(np.ptp(Wv, axis=0))), 1.0)       # sahne boyutu: kayma / ok boyu buna gore
+        ctr = (Wv.min(0) + Wv.max(0)) / 2                    # kafesin ortasi: olculer disariya kayar
+        vd = np.array(tuple(self.view.getViewDirection()), float)
+        stack = {}
         for i, d in enumerate(self.cage.pdims):
             P, v = self._pd_pts(d), self.pd_value(d)
             if P is None or v is None:
@@ -10855,21 +10858,15 @@ class SubDSession:
             ln = float(np.linalg.norm(u))
             if ln > 1e-9:
                 uh = u / ln
-                n = d.get("n")
-                if n is None:                                # ilk cizimde kayma yonu bakisa gore secilir ve olcuyle saklanir
-                    n = np.cross(uh, np.array(tuple(self.view.getViewDirection())))
-                    if np.linalg.norm(n) < 1e-9:
-                        n = np.cross(uh, np.array([1.0, 0.0, 0.0]) if abs(uh[0]) < 0.9 else np.array([0.0, 1.0, 0.0]))
-                    d["n"] = (n / np.linalg.norm(n)).tolist()
-                n = np.array(d["n"], float)
-                n = n - uh * float(n @ uh)
-                n = n / np.linalg.norm(n) if np.linalg.norm(n) > 1e-9 else np.cross(uh, np.array([0.0, 0.0, 1.0]))
+                # kayma yonu: o anki bakistan en rahat gorunen dunya ekseni (X / Y / Z), olcu cizgisine dik olani;
+                # modelin disina dogru. Kamera donunce eksen degisebilir (olcu her bakista okunur kalsin).
+                n = _visible_axis(uh, vd, (P[0] + Q) / 2 - ctr)
                 if d.get("off") is not None:                 # kullanici yazidan surukleyip yerini degistirdi
-                    it["O"] = n * float(d["off"])
-                else:
-                    side = 1.0 if nl % 2 == 0 else -1.0      # art arda gelen olculer karsi yanlara, giderek uzaga
-                    it["O"] = n * side * 0.05 * diag * (nl // 2 + 1)
-                    nl += 1
+                    it["O"] = n * abs(float(d["off"]))
+                else:                                        # ayni eksene kayan olculer giderek uzaga (ust uste binmesin)
+                    key = tuple(np.round(n, 3))
+                    stack[key] = stack.get(key, 0) + 1
+                    it["O"] = n * 0.05 * diag * stack[key]
                 al = min(0.022 * diag, 0.3 * ln)             # ok boyu her olcude ayni (kisa olcuyle sinirli)
                 it.update(aw=n / np.linalg.norm(n), al=al, aww=al * 0.4)
             if k in ("h", "v") and float(np.linalg.norm(Q - P[1])) > 1e-6:
@@ -11056,7 +11053,7 @@ class SubDSession:
             b["moved"] = True
             self.push()
         d = self.cage.pdims[b["i"]]
-        d["off"] = b["off0"] + float((np.array(pos[:2], float) - np.array(b["p0"][:2], float)) @ b["s"]) / s2 * b["L"]
+        d["off"] = max(0.0, b["off0"] + float((np.array(pos[:2], float) - np.array(b["p0"][:2], float)) @ b["s"]) / s2 * b["L"])
         self.dirty = True
         self.dim_sig = None
         self._dim_tick()
@@ -11218,7 +11215,8 @@ class SubDSession:
         vd = np.array(tuple(self.view.getViewDirection()))
         hv = any(it["kind"] == "handle" for it in items)   # gorunum yonu yalniz eski grup olculerinde cizimi etkiler
         sig = (k, self.dim_hot, tuple(np.round(vd, 1)) if hv else None, tuple((it["kind"], it["idx"], tuple(np.round(it["P"], 3)),
-                                       None if it["Q"] is None else tuple(np.round(it["Q"], 3)), m)
+                                       None if it["Q"] is None else tuple(np.round(it["Q"], 3)),
+                                       None if it.get("O") is None else tuple(np.round(it["O"], 3)), m)
                                       for it, m in zip(items, meta)))
         if sig == self.dim_sig:
             return
@@ -14868,6 +14866,29 @@ def _mode_icon(kind):
     p.end()
     _mode_icons[kind] = QtGui.QIcon(pm)
     return _mode_icons[kind]
+def _visible_axis(u, vd, out=None):
+    """Olcu cizgisinin (birim u) kayma yonu: dunya eksenlerinden (X, Y, Z) cizgiye dik olup bakis yonune (vd) en dik
+    duran, yani ekranda en uzun gorunen; out verilirse o yone bakacak isaretle. Eksen yoksa bakisa dik yon."""
+    best, score = None, -1.0
+    for a in np.eye(3):
+        p = a - u * float(a @ u)                           # cizgiye dik bileseni
+        lp = float(np.linalg.norm(p))
+        if lp < 0.5:                                       # eksen cizgiye neredeyse paralel
+            continue
+        p = p / lp
+        sc = lp * (1.0 - float(p @ vd) ** 2)               # bakisa dik ve eksene yakin olan
+        if sc > score + 1e-6:
+            best, score = p, sc
+    if best is None or score < 0.05:                       # hicbir eksen gorunmuyor: bakisa dik yon
+        best = np.cross(u, vd)
+        if np.linalg.norm(best) < 1e-9:
+            best = np.cross(u, np.array([1.0, 0.0, 0.0]) if abs(u[0]) < 0.9 else np.array([0.0, 1.0, 0.0]))
+        best = best / np.linalg.norm(best)
+    if out is not None and float(best @ out) < 0:
+        best = -best
+    return best
+
+
 _last_tab = ["create"]   # son secilen sekme (create / modify / multiply / construct); modelleyici yeniden acilinca (or. dil degisince) ayni sekme
 
 TAB_CSS = """
