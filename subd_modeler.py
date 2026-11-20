@@ -4148,6 +4148,11 @@ def _graphics_view(view):
     return gv
 
 
+SHADOW_LIGHT = (0.35, 0.25, -1.0)      # zemin golgesinin isik yonu (dunya): ustten, hafif egik
+SHADOW_COLOR = (0.20, 0.20, 0.22)      # golge (opak: ust uste binen ucgenler koyulasmasin, tek gecis, hizli)
+GROUND_COLOR = (0.46, 0.46, 0.48)      # sanal zemin
+
+
 def _scene_parent(view):
     # Bu FreeCAD surumunde yalnizca SoFCUnifiedSelection > ObjectGroup altindaki
     # dugumler ciziliyor; sahne kokune eklenenler gorunmuyor.
@@ -5036,6 +5041,7 @@ class SubDSession:
         self.sel_order_key = None   # sel_order'in gecerli oldugu (nokta, yuz) sayisi: numaralar degisince silinir
         self.sym = False     # X=0 duzlemine gore simetri
         self.ghost = False   # hayalet modu: arkadakiler gorunur / secilebilir
+        self.shadow = _param().GetBool("Shadow", False)    # zemin golgesi (sanal duzlem; hatirlanir)
         self.snap = False    # serbest tasimada Part / PartDesign kose ve kenarlarina yakalama
         self.zebra = False   # zebra seritleri (yuzey surekliligi analizi)
         self.matcap = _param().GetString("Matcap", "")     # yuzey gorunumu (MATCAPS adi; bos = kapali)
@@ -5817,6 +5823,33 @@ class SubDSession:
                   lines((0.85, 0.20, 0.85), 3.0, self.crease_lines),
                   lines((1.0, 0.45, 0.0), 3.0, self.sel_lines)):
             geo.addChild(n)
+        # Zemin golgesi: ayni yuzey agi (Subpatch kapaliyken kafes) ikinci kez, isik yonunde modelin altindaki sanal
+        # duzleme yassilastiran bir matrisle cizilir. Hesap tamamen ekran kartinda; yuzey degisince golge de aninda.
+        # Dunya koordinatinda yassilasma icin: once donusum sifirlanir, sonra golge matrisi, sonra nesnenin Placement'i.
+        self.shadow_switch = coin.SoSwitch()
+        self.shadow_m = coin.SoMatrixTransform()
+        self.shadow_src = coin.SoSwitch()                  # 0: puruzsuz yuzey, 1: kafes
+        self.shadow_src.addChild(_sep(self.s_coord, self.s_faces))
+        self.shadow_src.addChild(_sep(self.c_coord, self.c_faces))
+        lm = coin.SoLightModel()
+        lm.model = coin.SoLightModel.BASE_COLOR
+        nb0 = coin.SoNormalBinding()
+        nb0.value = coin.SoNormalBinding.OVERALL
+        sh0 = coin.SoShapeHints()
+        sh0.vertexOrdering = coin.SoShapeHints.UNKNOWN_ORDERING   # arka yuzler de: golge delik kalmasin
+        sbc = coin.SoBaseColor()
+        sbc.rgb = SHADOW_COLOR
+        self.ground_coord = coin.SoCoordinate3()
+        gbc = coin.SoBaseColor()
+        gbc.rgb = GROUND_COLOR
+        gfs = coin.SoFaceSet()
+        gfs.numVertices = 4
+        self.shadow_switch.addChild(_sep(
+            coin.SoResetTransform(), lm, nb0, sh0,
+            _sep(gbc, self.ground_coord, gfs),             # sanal zemin (golgenin hemen altinda)
+            _sep(self.shadow_m, self.xform, sbc, self.shadow_src)))
+        self.shadow_switch.whichChild = -1
+        geo.addChild(self.shadow_switch)
         # Rail bridge kilavuzlari: egri borunun icinden gecer, ustte cizilir (SoAnnotation). Soluk: duzenlenmeyen
         # kilavuzlar (cift tiklayinca duzenlenir); parlak: duzenlenen, ara noktalari tutamak, secili parca turuncu.
         self.rail_dcoord, self.rail_dlines = coin.SoCoordinate3(), coin.SoIndexedLineSet()
@@ -6434,6 +6467,7 @@ class SubDSession:
             self.env_rad.value = float(max(np.linalg.norm(hi - lo), 1e-6)) * ENV_RADIUS
         self.s_switch.whichChild = 0 if self.smooth else -1
         self.c_switch.whichChild = -1 if self.smooth else 0
+        self._shadow_update(V)
         verts = self.selected_verts() if not self.grab and self.armed != "magnet" and not self.suspended else []
         self.gizmo.place(App.Vector(*self.l2w(V[verts].mean(0))) if verts else None)
         self._rail_draw()
@@ -8014,6 +8048,45 @@ class SubDSession:
         for m, t in ((self.smooth_mat, 0.7), (self.cage_mat, 0.75)):
             m.transparency = t if self.ghost else 0.0
         self.refresh()
+
+    def toggle_shadow(self):
+        """Zemin golgesi: modelin altinda sanal bir duzlem ve ustten hafif egik isikla tam golge (hatirlanir)."""
+        self.shadow = not self.shadow
+        _param().SetBool("Shadow", self.shadow)
+        self._shadow_key = None
+        self.refresh()
+
+    def _shadow_update(self, V):
+        """Golge matrisi ve zemin: duzlem kafesin en alt noktasinda (dunya Z), isik SHADOW_LIGHT yonunde. Yalniz
+        kafesin alt / kenar olculeri degisince yeniden kurulur."""
+        on = self.shadow and self.mode != "object" and len(V) > 0
+        self.shadow_switch.whichChild = 0 if on else -1
+        if not on:
+            return
+        self.shadow_src.whichChild = 0 if self.smooth else 1
+        W = self.l2w(V)
+        lo, hi = W.min(0), W.max(0)
+        key = tuple(np.round(np.r_[lo, hi], 4))
+        if key == getattr(self, "_shadow_key", None):
+            return
+        self._shadow_key = key
+        L = np.asarray(SHADOW_LIGHT, float)
+        L = L / np.linalg.norm(L)
+        size = float(np.linalg.norm(hi - lo)) or 1.0
+        z0 = float(lo[2])
+        zs = z0 + 1e-3 * size                              # golge zeminin hemen ustunde (z-kavgasi olmasin)
+        ax, ay = L[0] / L[2], L[1] / L[2]
+        # Coin satir vektoru: p' = p * M -> x' = x - ax (z - zs), y' = y - ay (z - zs), z' = zs
+        self.shadow_m.matrix = coin.SbMatrix(1.0, 0.0, 0.0, 0.0,
+                                             0.0, 1.0, 0.0, 0.0,
+                                             -ax, -ay, 0.0, 0.0,
+                                             ax * zs, ay * zs, zs, 1.0)
+        c = (lo + hi) / 2                                   # zemin: golgeyi de kapsayan kare (isik yonune kaymis)
+        top = hi[2] - z0
+        cx, cy = c[0] - ax * top / 2, c[1] - ay * top / 2
+        r = 0.5 * float(np.hypot(*(hi - lo)[:2])) + abs(top) * float(np.hypot(ax, ay)) / 2 + 0.6 * size
+        _set_coords(self.ground_coord, np.array([[cx - r, cy - r, z0], [cx + r, cy - r, z0],
+                                                 [cx + r, cy + r, z0], [cx - r, cy + r, z0]]))
 
     def _ghost_tick(self):
         """Zamanlayicidan: hayalet modunda kamera ya da surukleme hareket ederken hizli harmanlama, 200 ms durunca
@@ -14021,6 +14094,8 @@ TOOL_TIPS = {
     "Merge polygons": "Merge the selected adjacent polygons into one",
     "Parametric group": "Make the selected points a group with a datum plane handle (SubD_PG_0001) in the FreeCAD tree: "
                         "move the datum or attach it (Attachment, offset, expressions) and the points follow",
+    "Shadow": "Ground shadow: a virtual floor under the model with its full shadow (light from above, slightly "
+              "tilted); drawn by the graphics card, follows every edit",
     "Circular group": "Make the selected flat polygons, edge loop or points a circular group: its sphere sits at the "
                       "circle centre (PD dimensions to other groups) and its Diameter (group panel, PD, Distances list) "
                       "sizes the points around the centre in the circle's plane",
@@ -15261,6 +15336,7 @@ class _Overlay(object):
         tog("Symmetry", "Y", s.toggle_sym, lambda: s.sym)
         tog("Subpatch", "Tab", s.toggle_smooth, lambda: s.smooth)
         tog("Ghost", "X", s.toggle_ghost, lambda: s.ghost)
+        tog("Shadow", "", s.toggle_shadow, lambda: s.shadow)
         tog("Snap", "Q", s.toggle_snap, lambda: s.snap)
         mc = _lw_button(T("Matcap"), "▴")
         mc.setCheckable(True)

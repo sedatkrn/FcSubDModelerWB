@@ -210,6 +210,9 @@ TR = {
     "Merge polygons": "Çokgenleri birleştir",
     "Parametric group": "Parametrik grup",
     "Circular group": "Dairesel grup",
+    "Shadow": "Gölge",
+    "Ground shadow: a virtual floor under the model with its full shadow (light from above, slightly tilted); drawn by the graphics card, follows every edit":
+        "Zemin gölgesi: modelin altında sanal bir zemin ve üstüne düşen tam gölge (ışık üstten, hafif eğik); ekran kartı çizer, her düzenlemeyi anında izler",
     "Make the selected flat polygons, edge loop or points a circular group: its sphere sits at the circle centre (PD dimensions to other groups) and its Diameter (group panel, PD, Distances list) sizes the points around the centre in the circle's plane":
         "Seçili düz çokgenleri, kenar halkasını ya da noktaları dairesel gruba çevirir: küresi dairenin merkezindedir (diğer gruplara PD ölçüsü) ve Çap değeri (grup paneli, PD, Distances listesi) noktaları merkez etrafında dairenin düzleminde büyütür / küçültür",
     "Circular group: select polygons, an edge loop or points that lie on a plane":

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **New: Shadow (bottom bar).** A virtual floor under the model with the model's full shadow, light from above and
+  slightly tilted. The shadow is the same surface drawn a second time, flattened onto the floor by the graphics card,
+  so it costs no extra computing and follows every edit live (the cage when Subpatch is off). Remembered between
+  sessions.
 - **Tool menus reorganised into LightWave Modeler tabs: Create / Modify / Multiply / Construct.** Create: File,
   Primitives (Box, Cylinder, Sphere, Torus), From geometry (From face, Make polygon), Clipboard. Modify: Transform
   (Move, Rotate, Stretch / Size, Magnet, Twist), Shape (Circle, Crease, Flip), Mirror. Multiply: Extend (Extrude,
