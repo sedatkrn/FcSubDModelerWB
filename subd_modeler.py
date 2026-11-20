@@ -5864,6 +5864,8 @@ class SubDSession:
                                            (HANDLE_COLOR, 13, self.h_kcoord, self.h_knobs, True),
                                            (HANDLE_INSET_COLOR, 13, self.h_icoord, self.h_iknobs, True)):
             h_ann.addChild(draw(col, size, coord, node, pt))
+        self.h_lbl = coin.SoSeparator()                    # tutamaclarin deger yazilari (tiklayinca deger girilir)
+        h_ann.addChild(self.h_lbl)
         self.h_switch.addChild(h_ann)
         self.h_switch.whichChild = -1
         self.root.addChild(self.h_switch)
@@ -12760,14 +12762,26 @@ class SubDSession:
             return hs
         vv, W, H = _vv(self.view)
         L, K, I, idx = [], [], [], []
+        self.h_lbl.removeAllChildren()
+        ks = min(max(self.gizmo.px / GIZMO_PX, 0.7), 3.0)   # yazi boyu olcu yazilariyla ayni
         for h in hs:
             wpp = vv.getWorldToScreenScale(coin.SbVec3f(*h["base"]), 1.0 / float(H))
             cur = h["base"] + h["u"] * (h["val"] * h["scale"])   # degerin su anki yeri (yuzeyde)
             tip = cur + h["u"] * HANDLE_PX * wpp                 # ok hep ayni yone uzar (atlamaz)
             idx += [len(L), len(L) + 1, -1]
-            L += [cur.tolist(), tip.tolist()]                    # cizgi yalniz yuzeyden topuza (modelin icinden gecmez)
+            L += [h["base"].tolist(), tip.tolist()]              # cizgi sifirdan (islemin basladigi yer) topuza
             (I if h["key"] == "Inset" else K).append(tip.tolist())
-            self._hdrawn.append(dict(h, tip=tip, cur=cur))
+            text = ("%.3f mm" if h["key"] == "Distance" else h["key"] + "  %.3f mm") % h["val"]
+            data, w, hh, _ = self._dim_label(text, "handle", False, False, ks)
+            mid = (h["base"] + cur) / 2 if abs(h["val"] * h["scale"]) > 2 * HANDLE_PX * wpp else (h["base"] + tip) / 2
+            tr = coin.SoTranslation()
+            tr.translation = tuple(float(x) for x in mid)
+            im = coin.SoImage()
+            im.image.setValue(coin.SbVec2s(w, hh), 4, data)
+            im.horAlignment = coin.SoImage.CENTER
+            im.vertAlignment = coin.SoImage.HALF
+            self.h_lbl.addChild(_sep(tr, im))
+            self._hdrawn.append(dict(h, tip=tip, cur=cur, mid=mid, lw=w, lh=hh))
         _set_coords(self.h_lcoord, np.array(L))
         _set_index(self.h_lines, idx)
         self.h_lines.coordIndex.setNum(len(idx))
@@ -12786,11 +12800,58 @@ class SubDSession:
         best, bd = None, 12.0
         for h in self._hdrawn:
             tip = _to_screen(vv, W, H, App.Vector(*h["tip"]))
-            mid = _to_screen(vv, W, H, App.Vector(*h["cur"]))
+            mid = _to_screen(vv, W, H, App.Vector(*h["cur"]))   # yalniz yuzeyden topuza kadar (yazi ayri)
             d = min(math.hypot(pos[0] - tip[0], pos[1] - tip[1]) * 0.8, _seg_dist(pos[0], pos[1], mid, tip) + 4)
             if d < bd:
                 best, bd = h, d
         return best
+
+    def handle_label_pick(self, pos):
+        """Imlec bir tutamacin deger yazisinin uzerindeyse o tutamac, yoksa None."""
+        for h in self._hdrawn:
+            c = self._proj_np(h["mid"])[0]
+            if abs(pos[0] - c[0]) <= h["lw"] / 2 and abs(pos[1] - c[1]) <= h["lh"] / 2:
+                return h
+        return None
+
+    def handle_edit(self, h):
+        """Tutamacin yazisina tiklandi: degeri yazdir; surukleme ile ayni yoldan uygulanir."""
+        op = self.last_op
+        if op is None or self.drag or self.grab:
+            return
+        name = {"Distance": T("Extrude distance"), "Shift": "Shift", "Inset": "Inset"}.get(h["key"], h["key"])
+        val, ok = QtWidgets.QInputDialog.getDouble(Gui.getMainWindow(), name, T("%s (mm)") % name, float(h["val"]),
+                                                   -1e7, 1e7, 3)
+        if self.overlay is not None:                       # kisayollar gorunumde kalsin
+            self.overlay.refocus()
+        if not ok or self.last_op is not op:
+            self.refresh()
+            return
+        st = self._handle_build(op)
+        if st is None:
+            return
+        op["values"][h["key"]] = val
+        if op["kind"] == "extrude":
+            self.extrude_set(st, op["values"])
+        else:
+            self.bevel_set(st, op["values"]["Inset"], op["values"]["Shift"])
+        self.hdrag = dict(op=op)                           # handle_end ile ayni bitis
+        self.handle_end()
+
+    def _handle_build(self, op):
+        """Islem oncesine don, islemi ayni topolojiyle yeniden kur (degerler sonra verilir); self.op = op."""
+        v = op["values"]
+        if op["kind"] == "extrude":
+            st = self._extrude_build(op["before"], int(v["Segments"]), op["args"]["axes"], bool(v.get("Each normal")))
+            if st is None:
+                return None
+            st["op"] = op
+        else:
+            c, a, b, e = op["before"]
+            self.cage, self.sel, self.sel_v, self.sel_e = c.copy(), set(a), set(b), set(e)
+            st = self._bevel_build(op["args"].get("inset_only"), bool(v.get("Individual")))
+        self.op, self.last_op = op, None
+        return st
 
     def handle_begin(self, h, pos):
         """Tutamac tutuldu: islem oncesine donulur, islem ayni topolojiyle yeniden kurulur, degerler canli."""
@@ -12803,17 +12864,9 @@ class SubDSession:
             self.info = T("Turn the view: this handle points at you")
             self.refresh()
             return
-        v = op["values"]
-        if op["kind"] == "extrude":
-            st = self._extrude_build(op["before"], int(v["Segments"]), op["args"]["axes"], bool(v.get("Each normal")))
-            if st is None:
-                return
-            st["op"] = op
-        else:
-            c, a, b, e = op["before"]
-            self.cage, self.sel, self.sel_v, self.sel_e = c.copy(), set(a), set(b), set(e)
-            st = self._bevel_build(op["args"].get("inset_only"), bool(v.get("Individual")))
-        self.op, self.last_op = op, None
+        st = self._handle_build(op)
+        if st is None:
+            return
         self.hdrag = dict(op=op, st=st, key=h["key"], base=h["base"], u=h["u"], scale=h["scale"], v0=h["val"], t0=t0)
         self.handle_move(pos)
 
@@ -13138,6 +13191,11 @@ class SubDSession:
         if self.armed == "magnet":
             cb.setHandled()
             _later(lambda: self.magnet_start(pos))
+            return
+        hl = self.handle_label_pick(pos) if self.mode != "object" else None
+        if hl is not None:                                 # tutamacin deger yazisi: deger gir
+            cb.setHandled()
+            _later(lambda: self.handle_edit(hl))
             return
         h = self.handle_pick(pos) if self.mode != "object" else None
         if h is not None:                                  # Extrude / Bevel tutamaci: sahne olaydan sonra degisir

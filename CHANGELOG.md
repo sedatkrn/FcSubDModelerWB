@@ -6,7 +6,8 @@
   arrow along the normal (or one per locked X / Y / Z axis), Bevel a yellow Shift arrow and a cyan Inset knob. Dragging
   a handle changes the value live (Ctrl: step snap); the value comes from where the mouse is along the handle's axis,
   so it no longer stalls at the viewport edge, and grabbing the handle again continues from the current value. The
-  free mouse drag of E / B stays. The handles go away when the selection changes, another tool runs, or Move / Rotate /
+  free mouse drag of E / B stays. Each handle's line starts at zero (where the operation began) and shows its value
+  live; click the value to type it. The handles go away when the selection changes, another tool runs, or Move / Rotate /
   Size is chosen (the move gizmo comes back).
 - **Tool menus reorganised into LightWave Modeler tabs: Create / Modify / Multiply / Construct.** Create: File,
   Primitives (Box, Cylinder, Sphere, Torus), From geometry (From face, Make polygon), Clipboard. Modify: Transform
