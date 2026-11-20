@@ -10871,14 +10871,16 @@ class SubDSession:
                 if n is None or np.abs(n).max() < 0.999 or abs(float(n @ uh)) > 0.5:   # yok / eski surumun egik yonu
                     n = _visible_axis(uh, vd, (P[0] + Q) / 2 - ctr)
                     d["n"] = n.tolist()
+                    d.pop("off", None)                       # eski yondeki surukleme uzakligi yeni eksende anlamsiz
                 n = n - uh * float(n @ uh)
                 n = n / np.linalg.norm(n)
                 if d.get("off") is not None:                 # kullanici yazidan surukleyip yerini degistirdi
                     it["O"] = n * float(d["off"])
-                else:                                        # ayni eksene kayan olculer giderek uzaga (ust uste binmesin)
-                    key = tuple(np.round(n, 3))
+                else:                                        # modelin o eksendeki dis sinirinin otesinde; ayni eksene
+                    key = tuple(np.round(n, 3))              # kayan olculer giderek uzaga (ust uste binmesin)
                     stack[key] = stack.get(key, 0) + 1
-                    it["O"] = n * 0.05 * diag * stack[key]
+                    edge = float((Wv @ n).max())             # kafesin o yondeki en dis noktasi
+                    it["O"] = n * (edge - float(P[0] @ n) + 0.05 * diag * stack[key])
                 al = min(0.022 * diag, 0.3 * ln)             # ok boyu her olcude ayni (kisa olcuyle sinirli)
                 it.update(aw=n / np.linalg.norm(n), al=al, aww=al * 0.4)
             if k in ("h", "v") and float(np.linalg.norm(Q - P[1])) > 1e-6:
