@@ -14,9 +14,11 @@
   like any group. Its **Diameter** (outer edge) can be typed in the group panel, by clicking the ⌀ dimension in PD mode
   or in the Distances list: the points are sized around the centre in the circle's plane (a 2D Size), the centre and
   the other groups stay. The circle moves with the group (gizmo, PD) and is fitted again when the group is locked.
-- **PD dimension lines follow the view.** The dimension line is offset along the world axis (X, Y or Z) that is easiest
-  to see from the current view, pointing away from the model; when the camera turns, the axis changes so every
-  dimension stays readable. The ⌀ line of a circular group lies on the in-plane axis that is easiest to see.
+- **PD dimension lines on world axes.** When a dimension is first drawn, its line is offset along the world axis
+  (X, Y or Z) that is easiest to see from that view, away from the model, and it stays there when the camera or the
+  object turns. The ⌀ line of a circular group likewise lies on the in-plane axis easiest to see and turns with the
+  group. Dragging a dimension text moves its line in 2 mm steps of the world coordinate, so dimensions on the same
+  axis line up exactly.
 
 ## 0.6.1 (2026-11-14)
 

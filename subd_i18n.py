@@ -219,6 +219,7 @@ TR = {
     "Circular group: the diameter must be above zero": "Dairesel grup: çap sıfırdan büyük olmalı",
     "Circular group %s: diameter %.3f mm": "Dairesel grup %s: çap %.3f mm",
     "Diameter of %s (mm)": "%s çapı (mm)",
+    "PD: dimension line at %s = %g mm (%g mm steps)": "PD: ölçü çizgisi %s = %g mm (%g mm adım)",
     "Make the selected points a group with a datum plane handle (SubD_PG_0001) in the FreeCAD tree: move the datum or attach it (Attachment, offset, expressions) and the points follow":
         "Seçili noktaları FreeCAD ağacında bir datum plane tutamağı (SubD_PG_0001) olan gruba çevirir: datum'u taşıyınca ya da bağlayınca (Attachment, ofset, ifadeler) noktalar onu izler",
     "Group handle %s is gone: the group is released": "Grup tutamağı %s yok: grup serbest bırakıldı",

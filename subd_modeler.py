@@ -7683,12 +7683,15 @@ class SubDSession:
         if not ci:
             return
         c, n = np.array(ci["c"], float), np.array(ci["n"], float)
-        c2, e = tf(np.array([c, c + n]))
+        u = np.array(ci["u"], float) if ci.get("u") is not None else None
+        c2, e, f = tf(np.array([c, c + n, c + (u if u is not None else n)]))
         n2 = e - c2
         ln = float(np.linalg.norm(n2))
         ci["c"] = c2.tolist()
         if ln > 1e-12:
             ci["n"] = (n2 / ln).tolist()
+        if u is not None and np.linalg.norm(f - c2) > 1e-12:   # cap cizgisinin yonu grupla birlikte doner
+            ci["u"] = ((f - c2) / np.linalg.norm(f - c2)).tolist()
 
     def circ_apply(self, name, new):
         """Dairesel grubun capi new olsun: noktalar (ve referans kureleri) merkez etrafinda, duzlemde olceklenir."""
@@ -7756,10 +7759,13 @@ class SubDSession:
                 continue
             ci = g["circ"]
             c, n = np.array(ci["c"], float), np.array(ci["n"], float)
-            nw = self.l2w(np.array([c + n])) - self.l2w(np.array([c]))
-            u = self.w2l_dir(_visible_axis(nw[0] / np.linalg.norm(nw[0]), vd))   # cap cizgisi: duzlemde, bakistan en
-            u = u - n * float(u @ n)                                             # rahat gorunen dunya eksenine yakin
+            u = np.array(ci["u"], float) if ci.get("u") is not None else None
+            if u is None or abs(float(u @ n)) > 0.5:       # ilk cizim: duzlemde, o bakistan en rahat gorunen dunya
+                nw = self.l2w(np.array([c + n])) - self.l2w(np.array([c]))       # eksenine yakin; saklanir, kamera
+                u = self.w2l_dir(_visible_axis(nw[0] / np.linalg.norm(nw[0]), vd))   # donse de yerinde kalir
+            u = u - n * float(u @ n)
             u /= np.linalg.norm(u)
+            ci["u"] = u.tolist()
             P, Q = self.l2w(np.array([c - u * v / 2, c + u * v / 2]))
             out.append(dict(P=P, Q=Q, kind="pd", idx=None, hd="pc:" + g["name"], val=v,
                             txt="\u2300 %.3f mm" % v, mid=self.l2w(np.array([c + u * v * 0.25]))[0]))
@@ -10685,6 +10691,7 @@ class SubDSession:
     # olcusunde ilk ikisi sabit, ucuncu doner). Olcunun yazisina tiklayinca deger degistirilir / olcu silinir.
 
     PD_KINDS = ("h", "v", "d", "a")
+    PD_STEP = 2.0                                          # olcu yazisi surukleme adimi (mm, dunya koordinati)
     PD_RED, PD_GREEN, PD_BLUE = (0.92, 0.2, 0.2), (0.2, 0.8, 0.3), (0.2, 0.45, 1.0)
 
     def pd_toggle(self):
@@ -10858,11 +10865,16 @@ class SubDSession:
             ln = float(np.linalg.norm(u))
             if ln > 1e-9:
                 uh = u / ln
-                # kayma yonu: o anki bakistan en rahat gorunen dunya ekseni (X / Y / Z), olcu cizgisine dik olani;
-                # modelin disina dogru. Kamera donunce eksen degisebilir (olcu her bakista okunur kalsin).
-                n = _visible_axis(uh, vd, (P[0] + Q) / 2 - ctr)
+                # kayma yonu: olcu ilk cizildiginde o bakistan en rahat gorunen dunya ekseni (X / Y / Z), cizgiye dik
+                # olani, modelin disina dogru; olcuyle saklanir, kamera / nesne donse de olcu oldugu yerde kalir.
+                n = np.array(d["n"], float) if d.get("n") is not None else None
+                if n is None or np.abs(n).max() < 0.999 or abs(float(n @ uh)) > 0.5:   # yok / eski surumun egik yonu
+                    n = _visible_axis(uh, vd, (P[0] + Q) / 2 - ctr)
+                    d["n"] = n.tolist()
+                n = n - uh * float(n @ uh)
+                n = n / np.linalg.norm(n)
                 if d.get("off") is not None:                 # kullanici yazidan surukleyip yerini degistirdi
-                    it["O"] = n * abs(float(d["off"]))
+                    it["O"] = n * float(d["off"])
                 else:                                        # ayni eksene kayan olculer giderek uzaga (ust uste binmesin)
                     key = tuple(np.round(n, 3))
                     stack[key] = stack.get(key, 0) + 1
@@ -11037,7 +11049,7 @@ class SubDSession:
             n, L = it["aw"], 0.05 * max(float(np.linalg.norm(np.ptp(self.l2w(self.cage.V), axis=0))), 1.0)
             B = (it["P"] + it["Q"]) / 2
             sB, sB2 = self._proj_np(B)[0], self._proj_np(B + n * L)[0]
-            self.pd_lbl.update(n=n, L=L, s=sB2 - sB, off0=float(it["O"] @ n))
+            self.pd_lbl.update(n=n, L=L, s=sB2 - sB, off0=float(it["O"] @ n), base=float(it["P"] @ n))
 
     def pd_lbl_move(self, pos):
         self._pending = False                              # _schedule birlesik: bir sonraki hareket yeniden planlanabilsin
@@ -11053,7 +11065,13 @@ class SubDSession:
             b["moved"] = True
             self.push()
         d = self.cage.pdims[b["i"]]
-        d["off"] = max(0.0, b["off0"] + float((np.array(pos[:2], float) - np.array(b["p0"][:2], float)) @ b["s"]) / s2 * b["L"])
+        off = b["off0"] + float((np.array(pos[:2], float) - np.array(b["p0"][:2], float)) @ b["s"]) / s2 * b["L"]
+        # olcu cizgisi dunya ekseni boyunca PD_STEP mm adimlarla: ayni eksendeki olculer ayni koordinatta hizalanir
+        at = round((b["base"] + off) / self.PD_STEP) * self.PD_STEP
+        d["off"] = at - b["base"]
+        j = int(np.argmax(np.abs(b["n"])))                 # eksi yone bakan eksende koordinatin isareti doner
+        self.info = T("PD: dimension line at %s = %g mm (%g mm steps)") % ("XYZ"[j], at * np.sign(b["n"][j]) + 0.0,
+                                                                          self.PD_STEP)
         self.dirty = True
         self.dim_sig = None
         self._dim_tick()
