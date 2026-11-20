@@ -4148,6 +4148,11 @@ def _graphics_view(view):
     return gv
 
 
+HANDLE_COLOR = (1.0, 0.80, 0.10)       # Extrude mesafe / Bevel Shift tutamaci
+HANDLE_INSET_COLOR = (0.15, 0.85, 0.95) # Bevel Inset tutamaci
+HANDLE_PX = 45                         # tutamac ucunun degerin otesinde kalan ekran boyu (piksel)
+
+
 def _scene_parent(view):
     # Bu FreeCAD surumunde yalnizca SoFCUnifiedSelection > ObjectGroup altindaki
     # dugumler ciziliyor; sahne kokune eklenenler gorunmuyor.
@@ -5062,6 +5067,9 @@ class SubDSession:
         self.splits = []     # Knife "Split into two objects": (geri alma derinligi, yeni nesnenin adi)
         self.grab = None     # klavyeyle tasima (G, extrude)
         self.drag = None     # gizmo tutamagiyla tasima
+        self.hdrag = None    # Extrude / Bevel tutamagi suruklenirken
+        self._hoff = None    # tutamaclari kapatilmis islem (Move / Rotate / Size secilince)
+        self._hdrawn = []    # cizilen tutamaclar (ekranda tiklama icin)
         self.armed = None    # kalici arac ("knife" / "line" / "loop" / "magnet"): kapatilana kadar her tiklamada uygulanir
         self.magnet_radius = None    # Magnet yaricapi (mm); ilk acilista kafesin boyuna gore
         self.magnet_mode = 0         # Magnet azalma egrisi (FALLOFFS sirasi)
@@ -5845,6 +5853,20 @@ class SubDSession:
             ann.addChild(n)
         geo.addChild(ann)
         self.root.addChild(self.geo_switch)
+        # Extrude / Bevel tutamaclari (dunya koordinatinda, ustte): cizgi + uc topuzu; sari = mesafe / Shift,
+        # camgobegi = Inset. Deger farenin tutamac ekseni uzerindeki yerinden gelir (gorunum kenarinda takilmaz).
+        self.h_lcoord, self.h_lines = coin.SoCoordinate3(), coin.SoIndexedLineSet()
+        self.h_kcoord, self.h_knobs = coin.SoCoordinate3(), coin.SoPointSet()
+        self.h_icoord, self.h_iknobs = coin.SoCoordinate3(), coin.SoPointSet()
+        self.h_switch = coin.SoSwitch()
+        h_ann = coin.SoAnnotation()
+        for col, size, coord, node, pt in ((HANDLE_COLOR, 2.5, self.h_lcoord, self.h_lines, False),
+                                           (HANDLE_COLOR, 13, self.h_kcoord, self.h_knobs, True),
+                                           (HANDLE_INSET_COLOR, 13, self.h_icoord, self.h_iknobs, True)):
+            h_ann.addChild(draw(col, size, coord, node, pt))
+        self.h_switch.addChild(h_ann)
+        self.h_switch.whichChild = -1
+        self.root.addChild(self.h_switch)
         self.root.addChild(self.gizmo.root)
         self.parent = _scene_parent(self.view)
         self.parent.addChild(self.root)
@@ -6435,7 +6457,8 @@ class SubDSession:
         self.s_switch.whichChild = 0 if self.smooth else -1
         self.c_switch.whichChild = -1 if self.smooth else 0
         verts = self.selected_verts() if not self.grab and self.armed != "magnet" and not self.suspended else []
-        self.gizmo.place(App.Vector(*self.l2w(V[verts].mean(0))) if verts else None)
+        hs = self._handles_draw()                          # Extrude / Bevel tutamaclari varken tasima gizmosu gizli
+        self.gizmo.place(App.Vector(*self.l2w(V[verts].mean(0))) if verts and not hs else None)
         self._rail_draw()
         self._update_measure(fast)
         self._dim_tick()
@@ -8175,6 +8198,7 @@ class SubDSession:
         self.refresh()
 
     def set_gizmo(self, mode):
+        self._hoff = self.last_op                          # Move / Rotate / Size: son islemin tutamaclari kalkar
         self.drop_tool()
         self.gizmo.set_hover(None)
         self.gizmo.set_mode(mode)
@@ -8404,6 +8428,7 @@ class SubDSession:
         o = st["side"] > 0
         st["op"]["args"]["dw"] = self.l2w_dir(D[o].mean(0)) if o.any() else np.zeros(3)   # dunya, asil taraf
         st["op"]["args"]["m"] = self.l2w_dir(st["m_axis"]) if st["m_axis"] is not None else None
+        st["op"]["args"]["c0"] = self.l2w(st["c"])         # tutamacin dibi: extrude edilen secimin eski merkezi
         if not axes:
             self.info = T("Extrude  %.3f mm   %d segments") % (v["Distance"], s)
         else:
@@ -8627,6 +8652,11 @@ class SubDSession:
             "" if st.get("inset_only") or self.grab is not st else "   " + T("(B: switch)"))
         if self.op is not None and self.op["kind"] == "bevel":
             self.op["values"].update(Inset=inset, Shift=shift)
+            nm = st["n"].mean(0)                           # tutamaclar: Shift merkezde ortalama normal boyunca,
+            k = int(np.argmax(np.linalg.norm(st["o"], axis=1)))   # Inset bir yeni noktanin iceri yonunde
+            self.op["args"]["hb"] = dict(c=self.l2w(st["base"].mean(0)), nm=self.l2w_dir(nm),
+                                         bk=self.l2w(st["base"][k]), nk=self.l2w_dir(st["n"][k]),
+                                         ok=self.l2w_dir(st["o"][k]))
         for b, val in ((self.inset_box, inset), (self.shift_box, shift)):
             b.blockSignals(True)
             b.setValue(val)
@@ -12676,6 +12706,144 @@ class SubDSession:
         vals.update(X=float(dw[0]), Y=float(dw[1]), Z=float(dw[2]))
         self.apply_move(g["state"], d)
 
+    # --- Extrude / Bevel tutamaclari ---
+    # Islem bitince (E / B ile serbest surukleme de kaldi) secimin uzerinde tutamaclar cikar: Extrude'da normal
+    # (ya da kilitli X / Y / Z) boyunca ok, Bevel'de Shift oku ve Inset topuzu. Tutamac surukleyince deger, fare
+    # isininin tutamac ekseni uzerindeki yerinden gelir: fare gorunumun kenarina gelince deger orada kalir, tutamac
+    # yeniden tutulunca kaldigi yerden devam eder. Secim degisince, baska islem yapilinca ya da Move / Rotate / Size
+    # secilince tutamaclar kalkar ve tasima gizmosu geri gelir.
+
+    def _hsel_key(self):
+        return (self.mode, frozenset(self.sel), frozenset(self.sel_e))
+
+    def _op_handles(self):
+        """Gorunecek tutamaclar: [dict(key, base, u, val, scale)] (dunya; u birim). Yoksa []."""
+        op = self.hdrag["op"] if self.hdrag is not None else self.last_op
+        if (op is None or op["kind"] not in ("extrude", "bevel") or self.mode == "object" or self.grab
+                or self.drag or op is self._hoff):
+            return []
+        if self.hdrag is None and op.get("hsel") != self._hsel_key():
+            return []
+        a, v, out = op["args"], op["values"], []
+        if op["kind"] == "extrude":
+            c0 = a.get("c0")
+            if c0 is None:
+                return []
+            if a["axes"]:
+                for j, ax in enumerate("XYZ"):
+                    if ax in a["axes"]:
+                        out.append(dict(key=ax, base=np.asarray(c0, float), u=np.eye(3)[j], val=v[ax], scale=1.0))
+            elif a.get("m") is not None:
+                out.append(dict(key="Distance", base=np.asarray(c0, float), u=np.asarray(a["m"], float),
+                                val=v["Distance"], scale=1.0))
+            return out
+        hb = a.get("hb")
+        if hb is None:
+            return []
+        nm = np.asarray(hb["nm"], float)
+        ln = float(np.linalg.norm(nm))
+        if not a.get("inset_only") and ln > 1e-9:
+            out.append(dict(key="Shift", base=np.asarray(hb["c"], float), u=nm / ln, val=v["Shift"], scale=ln))
+        ok = np.asarray(hb["ok"], float)
+        lo = float(np.linalg.norm(ok))
+        if lo > 1e-9:
+            out.append(dict(key="Inset", base=np.asarray(hb["bk"], float) + np.asarray(hb["nk"], float) * v["Shift"],
+                            u=ok / lo, val=v["Inset"], scale=lo))
+        return out
+
+    def _handles_draw(self):
+        """Tutamaclari ciz; ucu degerin otesinde sabit bir ekran boyu (HANDLE_PX) kadar disarida."""
+        hs = self._op_handles()
+        self._hdrawn = []
+        if not hs:
+            self.h_switch.whichChild = -1
+            return hs
+        vv, W, H = _vv(self.view)
+        L, K, I, idx = [], [], [], []
+        for h in hs:
+            wpp = vv.getWorldToScreenScale(coin.SbVec3f(*h["base"]), 1.0 / float(H))
+            tip = h["base"] + h["u"] * (h["val"] * h["scale"] + HANDLE_PX * wpp)   # ok hep ayni yone uzar (atlamaz)
+            idx += [len(L), len(L) + 1, -1]
+            L += [h["base"].tolist(), tip.tolist()]
+            (I if h["key"] == "Inset" else K).append(tip.tolist())
+            self._hdrawn.append(dict(h, tip=tip))
+        _set_coords(self.h_lcoord, np.array(L))
+        _set_index(self.h_lines, idx)
+        self.h_lines.coordIndex.setNum(len(idx))
+        for coord, pts in ((self.h_kcoord, K), (self.h_icoord, I)):
+            _set_coords(coord, np.array(pts).reshape(-1, 3))
+        self.h_knobs.numPoints = len(K)
+        self.h_iknobs.numPoints = len(I)
+        self.h_switch.whichChild = 0
+        return hs
+
+    def handle_pick(self, pos):
+        """Ekranda topuza (ya da tutamac cizgisinin uc yarisina) en yakin tutamac; yoksa None."""
+        if not self._hdrawn:
+            return None
+        vv, W, H = _vv(self.view)
+        best, bd = None, 12.0
+        for h in self._hdrawn:
+            tip = _to_screen(vv, W, H, App.Vector(*h["tip"]))
+            mid = _to_screen(vv, W, H, App.Vector(*((h["base"] + h["tip"]) / 2)))
+            d = min(math.hypot(pos[0] - tip[0], pos[1] - tip[1]) * 0.8, _seg_dist(pos[0], pos[1], mid, tip) + 4)
+            if d < bd:
+                best, bd = h, d
+        return best
+
+    def handle_begin(self, h, pos):
+        """Tutamac tutuldu: islem oncesine donulur, islem ayni topolojiyle yeniden kurulur, degerler canli."""
+        op = self.last_op
+        if op is None or self.drag or self.grab:
+            return
+        o, d = _ray(self.view, pos)
+        t0 = _line_param(o, d, App.Vector(*h["base"]), App.Vector(*h["u"]))
+        if t0 is None:                                     # tutamac tam bakis yonunde: ekrandan surulemez
+            self.info = T("Turn the view: this handle points at you")
+            self.refresh()
+            return
+        v = op["values"]
+        if op["kind"] == "extrude":
+            st = self._extrude_build(op["before"], int(v["Segments"]), op["args"]["axes"], bool(v.get("Each normal")))
+            if st is None:
+                return
+            st["op"] = op
+        else:
+            c, a, b, e = op["before"]
+            self.cage, self.sel, self.sel_v, self.sel_e = c.copy(), set(a), set(b), set(e)
+            st = self._bevel_build(op["args"].get("inset_only"), bool(v.get("Individual")))
+        self.op, self.last_op = op, None
+        self.hdrag = dict(op=op, st=st, key=h["key"], base=h["base"], u=h["u"], scale=h["scale"], v0=h["val"], t0=t0)
+        self.handle_move(pos)
+
+    def handle_move(self, pos=None):
+        g = self.hdrag
+        if g is None:
+            return
+        o, d = _ray(self.view, self.mouse if pos is None else pos)
+        t = _line_param(o, d, App.Vector(*g["base"]), App.Vector(*g["u"]))
+        if t is None:
+            return
+        step = self.step_box.value() if _ctrl_held() else 0.0
+        val = _snap(g["v0"] + (t - g["t0"]) / g["scale"], step)
+        v, st = g["op"]["values"], g["st"]
+        if g["op"]["kind"] == "extrude":
+            v[g["key"]] = val
+            self.extrude_set(st, v)
+        else:
+            v[g["key"]] = val
+            self.bevel_set(st, v["Inset"], v["Shift"])
+
+    def handle_end(self):
+        g, self.hdrag = self.hdrag, None
+        if g is None:
+            return
+        self.last_op, self.op = g["op"], None
+        self.last_op["hsel"] = self._hsel_key()
+        self._group_follow((self.last_op.get("args") or {}).get("grp"))
+        self.dirty = True
+        self.refresh()
+
     def end_grab(self, ok):
         g, self.grab = self.grab, None
         if g is not None and g.get("kind") == "slide":
@@ -12684,6 +12852,8 @@ class SubDSession:
             ok = True
         if ok:
             self.last_op, self.op = self.op, None
+            if self.last_op is not None and self.last_op["kind"] in ("extrude", "bevel"):
+                self.last_op["hsel"] = self._hsel_key()    # tutamaclar bu secim durdukca gorunur
             self._group_follow(((self.last_op or {}).get("args") or {}).get("grp"))
             self.refresh()
         else:
@@ -12893,6 +13063,11 @@ class SubDSession:
                 cb.setHandled()
                 _later(self.drag_end)
             return
+        if self.hdrag is not None:
+            if left and not down:
+                cb.setHandled()
+                _later(self.handle_end)
+            return
         if self.box is not None and left and not down:
             cb.setHandled()
             self.finish_box(pos)
@@ -12962,6 +13137,11 @@ class SubDSession:
             cb.setHandled()
             _later(lambda: self.magnet_start(pos))
             return
+        h = self.handle_pick(pos) if self.mode != "object" else None
+        if h is not None:                                  # Extrude / Bevel tutamaci
+            cb.setHandled()
+            self.handle_begin(h, pos)
+            return
         key = self.gizmo.pick(pos)
         if key is not None:
             cb.setHandled()                                # secime ve gezinmeye gitmesin
@@ -13006,6 +13186,12 @@ class SubDSession:
                 self._schedule(self.magnet_size_move)
             else:                                          # sag tus gorunum disinda birakildi
                 _later(self.magnet_size_end)
+        elif self.hdrag is not None:
+            if not _left_held():                           # tus gorunum disinda birakildi
+                _later(self.handle_end)
+                return
+            cb.setHandled()
+            self._schedule(self.handle_move)
         elif self.drag is not None:
             if not _left_held():
                 _later(self.drag_end)                      # sol tus gorunum disinda birakildi
