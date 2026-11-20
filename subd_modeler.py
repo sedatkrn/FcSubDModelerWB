@@ -12823,6 +12823,7 @@ class SubDSession:
         self.handle_move(pos)
 
     def handle_move(self, pos=None):
+        self._pending = False                              # _schedule birlesik: bir sonraki hareket yeniden planlanabilsin
         g = self.hdrag
         if g is None:
             return
