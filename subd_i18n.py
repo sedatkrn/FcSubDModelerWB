@@ -81,7 +81,7 @@ TR = {
     "Subdivide: %d polygons -> %d": "Böl: %d çokgen -> %d",
     "Delete": "Sil",
     "Modify": "Değiştir",
-    "tab:Multiply": "Çoğalt",
+    "tab:Multiply": "Üret",
     "tab:Construct": "İnşa",
     "Primitives": "Temel cisimler",
     "From geometry": "Geometriden",

@@ -14687,7 +14687,7 @@ _last_tab = ["create"]   # son secilen sekme (create / modify / multiply / const
 
 TAB_CSS = """
 QToolButton { background: #5a5a5a; color: #ececec; border: 1px solid #2b2b2b; border-radius: 2px;
-              padding: 3px 6px; }
+              padding: 3px 3px; }   /* 2 x 2 dizilisi eski 2 sekmeli cubuktan genis olmasin */
 QToolButton:hover { background: #6b6b6b; }
 QToolButton:checked { background: #3f6fb0; border-color: #24426b; }
 """
