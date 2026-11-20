@@ -117,8 +117,8 @@ or improve the quality of the B-rep are very welcome.
   faces are removed), with number of cuts, twist, smoothness (tangent to the surfaces) and profile factor
 - Mirror X / Y / Z (LightWave Mirror): mirrors the selected polygons (or the whole cage) across a world axis
   plane (exact center in the panel) and welds the points on the plane, so a half model becomes one piece
-- The tools are in the **SubD tools** panel, a FreeCAD panel you can dock or float; its LightWave-style **Create /
-  Modify** tabs choose which tool menu it shows
+- The tools are in the **SubD tools** panel, a FreeCAD panel you can dock or float; its LightWave Modeler-style
+  **Create / Modify / Multiply / Construct** tabs choose which tool menu it shows (Select stays on top in every tab)
 - X symmetry for every tool
 - Move / rotate / stretch / size gizmo (ported from FC YBT Raytracer), Ctrl = mm / degree steps
 - Exact numeric input for every operation, plus selection center / size in mm

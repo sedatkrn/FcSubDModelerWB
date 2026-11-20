@@ -14683,41 +14683,62 @@ def _mode_icon(kind):
     p.end()
     _mode_icons[kind] = QtGui.QIcon(pm)
     return _mode_icons[kind]
-_last_tab = ["create"]   # son secilen sekme; modelleyici yeniden acilinca (or. dil degisince) ayni sekme
+_last_tab = ["create"]   # son secilen sekme (create / modify / multiply / construct); modelleyici yeniden acilinca (or. dil degisince) ayni sekme
 
 TAB_CSS = """
 QToolButton { background: #5a5a5a; color: #ececec; border: 1px solid #2b2b2b; border-radius: 2px;
-              padding: 3px 10px; min-width: 46px; }
+              padding: 3px 6px; }
 QToolButton:hover { background: #6b6b6b; }
 QToolButton:checked { background: #3f6fb0; border-color: #24426b; }
 """
 
 
 class _TabBar(object):
-    """Arac panelinin ustunde Create / Modify sekme dugmeleri (LightWave'in ust sekmeleri gibi): panelde hangi
-    menunun gorunecegini secer."""
-    TABS = (("create", "Create"), ("modify", "Modify"))
+    """Arac panelinin ustunde sekme dugmeleri (LightWave Modeler'in ust sekmeleri gibi): Create / Modify / Multiply /
+    Construct; panelde hangi menunun gorunecegini secer. Panel genisse tek satir, darsa 2 x 2 dizilir."""
+    TABS = (("create", "Create"), ("modify", "Modify"), ("multiply", "Multiply"), ("construct", "Construct"))
 
     def __init__(self, overlay):
         self.w = QtWidgets.QWidget()
         self.w.setStyleSheet(TAB_CSS)
-        lay = QtWidgets.QHBoxLayout(self.w)
-        lay.setContentsMargins(4, 4, 4, 3)
-        lay.setSpacing(3)
+        self.grid = QtWidgets.QGridLayout(self.w)
+        self.grid.setContentsMargins(4, 4, 4, 3)
+        self.grid.setSpacing(3)
         self.buttons = {}
+        self.order = []
+        self.per_row = None
         for key, text in self.TABS:
             b = QtWidgets.QToolButton()
-            b.setText(T(text))
+            b.setText(_tab_label(text))
             b.setCheckable(True)
             b.setFocusPolicy(QtCore.Qt.NoFocus)            # kisayollar gorunumde kalsin
+            b.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
             b.clicked.connect(lambda checked=False, k=key: (overlay.set_tab(k), overlay.refocus()))
-            lay.addWidget(b)
             self.buttons[key] = b
-        lay.addStretch(1)
+            self.order.append(b)
+        self.arrange(0)
+
+    def arrange(self, width):
+        """Sekmeler width piksele tek satirda sigiyorsa yan yana, sigmiyorsa iki satirda ikiser."""
+        need = sum(b.sizeHint().width() for b in self.order) + 3 * (len(self.order) - 1) + 8
+        per_row = len(self.order) if width >= need else 2
+        if per_row == self.per_row:
+            return
+        self.per_row = per_row
+        for b in self.order:
+            self.grid.removeWidget(b)
+        for i, b in enumerate(self.order):
+            self.grid.addWidget(b, i // per_row, i % per_row)
 
     def sync(self, tab):
         for k, b in self.buttons.items():
             b.setChecked(k == tab)
+
+
+def _tab_label(text):
+    """Sekme adi: ceviri tablosunda "tab:" onekiyle (or. "Multiply" baska yerde "Carpan" diye cevrili)."""
+    tr = T("tab:" + text)
+    return text if tr.startswith("tab:") else tr
 
 
 class _ToolDock(QtWidgets.QDockWidget):
@@ -14830,64 +14851,78 @@ class _Overlay(object):
             cur["lay"].addWidget(b)
 
         obj = lambda: s.mode == "object"
+        # LightWave Modeler sekmeleri: Create = yeni geometri ve dosya, Modify = mevcut noktalari tasiyan / bicimlendiren
+        # araclar, Multiply = yeni geometri ureten (uzatma, cogaltma, bolme), Construct = birlestiren / azaltan araclar.
+        # Select bolumu (tab=None) her sekmenin ustunde sabit durur.
+        head("Select", tab=None)
+        btn("Select all", "A", lambda: s.key("a"))
+        btn("Deselect", "Esc", lambda: s.key("escape"))
+        btn("Select loop", "L", lambda: s.toggle_tool("loop"), mode="edit", tool="loop")
+        # --- Create ---
         head("File")
         btn("Save", "F", s.save, mode="edit")
         btn("Solid (STEP)", "", lambda: s.object_solids() if obj() else s.make_solid())
         btn("Cage B-rep", "", lambda: s.object_cage_solids() if obj() else s.make_cage_solid())
         btn("Close", "", lambda: _later(s.close))
-        head("Create")
+        head("Primitives")
         btn("Box", "", s.add_box)
         menu_btn("Cylinder", [("Cylinder", lambda: s.add_cylinder()), ("Topo cylinder", lambda: s.add_cylinder(True))])
         menu_btn("Sphere", [("Sphere", lambda: s.add_sphere()), ("Topo sphere", lambda: s.add_sphere(True))])
         btn("Torus", "", s.add_torus)
+        head("From geometry")
         menu_btn("From face", [("Face", s.from_face), ("Edge", s.from_edges),   # FreeCAD'de secili Part /
                                ("Point", s.from_points)])                     # PartDesign elemanlarindan
         btn("Make polygon", "P", s.make_polygon, sel=True, mode="edit")
-        head("Object")
-        btn("Duplicate", "D", s.object_duplicate, sel=True, mode="object")
-        head("Select")
-        btn("Select all", "A", lambda: s.key("a"))
-        btn("Deselect", "Esc", lambda: s.key("escape"))
-        btn("Select loop", "L", lambda: s.toggle_tool("loop"), mode="edit", tool="loop")
-        head("Polygon")
-        btn("Extrude", "E", lambda: s.extrude(lazy=True), sel=True, mode="edit")
-        btn("Bevel", "B", lambda: s.edge_bevel(lazy=True) if s.mode == "edge" else s.bevel(lazy=True),
-            sel=True, mode="edit")
-        btn("Inset", "I", lambda: s.bevel(inset_only=True, lazy=True), sel=True, mode="edit")
-        btn("Knife (loop)", "K", lambda: s.toggle_tool("knife"), mode="edit", tool="knife")
-        btn("Knife (line)", "J", lambda: s.toggle_tool("line"), mode="edit", tool="line")
-        btn("Add points", "", s.add_points, mode="edit", tool="addpoint")
-        btn("Connect", "^L", s.connect, sel=True, mode="edit")
-        btn("Subdivide", "⇧D", s.subdivide, sel=True, mode="edit")
-        btn("Array", _key_label("array"), s.array, sel=True, mode="edit")   # Radial / Rectangular panelden secilir
-        menu_btn("Bridge", [("Bridge", s.bridge), ("Rail bridge", s.rail_bridge)])
-        btn("Hole", "", s.hole, sel=True, mode="edit")
-        btn("Circle on face", "", lambda: s.hole(cap=True), sel=True, mode="edit")
-        btn("Merge polygons", "⇧Z", s.merge_polygons, sel=True, mode="edit")
-        btn("Parametric group", "", s.make_group, sel=True, mode="edit")
-        btn("Delete", "Del", lambda: s.object_delete() if obj() else s.delete(), sel=True)
         head("Clipboard")
         btn("Copy", "^C", s.copy_faces, sel=True, mode="edit")
         btn("Cut", "^X", lambda: s.copy_faces(cut=True), sel=True, mode="edit")
         btn("Paste", "^V", s.paste_faces, mode="edit")
         btn("Paste as object", "", s.paste_as_object)
-        head("Modify", tab="modify")
+        # --- Modify ---
+        head("Transform", tab="modify")
         btn("Move", "T", lambda: s.set_gizmo("move"), toggle=lambda: s.gizmo.mode == "move")
         btn("Rotate", "R", lambda: s.set_gizmo("rotate"), toggle=lambda: s.gizmo.mode == "rotate")
         btn("Stretch / Size", "H", lambda: s.set_gizmo("scale"), toggle=lambda: s.gizmo.mode == "scale")
         btn("Magnet", "", lambda: s.toggle_tool("magnet"), mode="edit", tool="magnet")
         btn("Twist", _key_label("twist"), s.twist, sel=True, mode="edit")    # tus atanabilir (set_user_key)
+        head("Shape", tab="modify")
         btn("Circle", "", s.circle, sel=True, mode="edit")
         btn("Crease", "C", s.crease_selected, sel=True, mode="edit")
-        btn("Reduce points", "", s.reduce_points, mode="edit")   # secim yoksa butun kafes
-        btn("Merge points", "M", s.merge_points, mode="edit")    # secim yoksa butun kafes
-        btn("Weld", "^W", s.weld, sel=True, mode="edit")         # son tiklanan noktada birlesir
         btn("Flip", "⇧F", s.flip_faces, mode="edit")             # secim yoksa butun cokgenler
-        btn("Shell", "", s.shell)                     # Object: secili nesne; Edit: secili cokgenler (yoksa hepsi)
+        head("Mirror", tab="modify")
         # kafeste: secili cokgenler (secim yoksa hepsi) ayni kafese aynalanir; Object modunda: secili nesnelerin kopyasi
         menu_btn("Mirror", [("Mirror X", lambda: s.mirror_polygons(0)), ("Mirror Y", lambda: s.mirror_polygons(1)),
                             ("Mirror Z", lambda: s.mirror_polygons(2))])
         btn("Mirror (line)", "⇧V", lambda: s.toggle_tool("mline"), mode="edit", tool="mline")
+        # --- Multiply ---
+        head("Extend", tab="multiply")
+        btn("Extrude", "E", lambda: s.extrude(lazy=True), sel=True, mode="edit")
+        btn("Bevel", "B", lambda: s.edge_bevel(lazy=True) if s.mode == "edge" else s.bevel(lazy=True),
+            sel=True, mode="edit")
+        btn("Inset", "I", lambda: s.bevel(inset_only=True, lazy=True), sel=True, mode="edit")
+        btn("Shell", "", s.shell)                     # Object: secili nesne; Edit: secili cokgenler (yoksa hepsi)
+        head("Duplicate", tab="multiply")
+        btn("Array", _key_label("array"), s.array, sel=True, mode="edit")   # Radial / Rectangular panelden secilir
+        btn("Duplicate", "D", s.object_duplicate, sel=True, mode="object")
+        head("Subdivide", tab="multiply")
+        btn("Knife (loop)", "K", lambda: s.toggle_tool("knife"), mode="edit", tool="knife")
+        btn("Knife (line)", "J", lambda: s.toggle_tool("line"), mode="edit", tool="line")
+        btn("Subdivide", "⇧D", s.subdivide, sel=True, mode="edit")
+        btn("Add points", "", s.add_points, mode="edit", tool="addpoint")
+        # --- Construct ---
+        head("Combine", tab="construct")
+        menu_btn("Bridge", [("Bridge", s.bridge), ("Rail bridge", s.rail_bridge)])
+        btn("Connect", "^L", s.connect, sel=True, mode="edit")
+        btn("Merge polygons", "⇧Z", s.merge_polygons, sel=True, mode="edit")
+        btn("Hole", "", s.hole, sel=True, mode="edit")
+        btn("Circle on face", "", lambda: s.hole(cap=True), sel=True, mode="edit")
+        head("Reduce", tab="construct")
+        btn("Merge points", "M", s.merge_points, mode="edit")    # secim yoksa butun kafes
+        btn("Weld", "^W", s.weld, sel=True, mode="edit")         # son tiklanan noktada birlesir
+        btn("Reduce points", "", s.reduce_points, mode="edit")   # secim yoksa butun kafes
+        btn("Delete", "Del", lambda: s.object_delete() if obj() else s.delete(), sel=True)
+        head("Group", tab="construct")
+        btn("Parametric group", "", s.make_group, sel=True, mode="edit")
 
         self.bar = QtWidgets.QFrame(self.vp)
         self.bar.setObjectName("lwBar")
@@ -15177,6 +15212,8 @@ class _Overlay(object):
         self._flow_columns(avail if avail > 100 else 1 << 30)   # sekmesi arkada / henuz acilmamis panel: tek sutun
         bar = self.scroll.verticalScrollBar().sizeHint().width() if self.left.height() > avail > 92 else 0
         self.scroll.setMinimumWidth(self.left.width() + bar)
+        if getattr(self, "tabs", None) is not None:        # sekmeler: genis panelde tek satir, darda 2 x 2
+            self.tabs.arrange(self.left.width() + bar)
         # islem paneli: gorunumun solu ya da sagi (Options > Tool panel), alt cubugun hemen ustu
         py = h - self.bar.height() - max(0, bottom) - self.panel.height() - 8
         if self.panel_on_right():
@@ -15218,7 +15255,7 @@ class _Overlay(object):
         lab.raise_()
 
     def set_tab(self, tab):
-        """Create / Modify sekmesi: sol sutunda yalniz o sekmenin bolumleri (LightWave sekmeleri gibi)."""
+        """Create / Modify / Multiply / Construct sekmesi: sol sutunda yalniz o sekmenin bolumleri (LightWave sekmeleri gibi)."""
         self.tab = _last_tab[0] = tab
         self.relayout()
         if self.tabs is not None:
@@ -15229,7 +15266,7 @@ class _Overlay(object):
         bolum yeni sutuna. Oteki sekmelerin bolumleri gizlenir."""
         groups, used = [], None
         for tab, sec in self.sections:
-            if tab != self.tab:
+            if tab is not None and tab != self.tab:        # tab None: her sekmede (Select)
                 continue
             sec.ensurePolished()
             hs = sec.sizeHint().height()

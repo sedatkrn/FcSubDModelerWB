@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Tool menus reorganised into LightWave Modeler tabs: Create / Modify / Multiply / Construct.** Create: File,
+  Primitives (Box, Cylinder, Sphere, Torus), From geometry (From face, Make polygon), Clipboard. Modify: Transform
+  (Move, Rotate, Stretch / Size, Magnet, Twist), Shape (Circle, Crease, Flip), Mirror. Multiply: Extend (Extrude,
+  Bevel, Inset, Shell), Duplicate (Array, Duplicate), Subdivide (Knife loop / line, Subdivide, Add points). Construct:
+  Combine (Bridge, Connect, Merge polygons, Hole, Circle on face), Reduce (Merge points, Weld, Reduce points, Delete),
+  Group (Parametric group). The Select section stays on top in every tab; the tab buttons sit in one row when the
+  panel is wide and 2 x 2 when it is narrow. No tool or shortcut changed.
+
 ## 0.6.1 (2026-11-14)
 
 - **Parametric groups keep what Knife, Bevel, Inset and Extrude create.** New points made on the group's own edges
