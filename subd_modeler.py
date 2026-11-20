@@ -12763,11 +12763,12 @@ class SubDSession:
         L, K, I, idx = [], [], [], []
         for h in hs:
             wpp = vv.getWorldToScreenScale(coin.SbVec3f(*h["base"]), 1.0 / float(H))
-            tip = h["base"] + h["u"] * (h["val"] * h["scale"] + HANDLE_PX * wpp)   # ok hep ayni yone uzar (atlamaz)
+            cur = h["base"] + h["u"] * (h["val"] * h["scale"])   # degerin su anki yeri (yuzeyde)
+            tip = cur + h["u"] * HANDLE_PX * wpp                 # ok hep ayni yone uzar (atlamaz)
             idx += [len(L), len(L) + 1, -1]
-            L += [h["base"].tolist(), tip.tolist()]
+            L += [cur.tolist(), tip.tolist()]                    # cizgi yalniz yuzeyden topuza (modelin icinden gecmez)
             (I if h["key"] == "Inset" else K).append(tip.tolist())
-            self._hdrawn.append(dict(h, tip=tip))
+            self._hdrawn.append(dict(h, tip=tip, cur=cur))
         _set_coords(self.h_lcoord, np.array(L))
         _set_index(self.h_lines, idx)
         self.h_lines.coordIndex.setNum(len(idx))
@@ -12786,7 +12787,7 @@ class SubDSession:
         best, bd = None, 12.0
         for h in self._hdrawn:
             tip = _to_screen(vv, W, H, App.Vector(*h["tip"]))
-            mid = _to_screen(vv, W, H, App.Vector(*((h["base"] + h["tip"]) / 2)))
+            mid = _to_screen(vv, W, H, App.Vector(*h["cur"]))
             d = min(math.hypot(pos[0] - tip[0], pos[1] - tip[1]) * 0.8, _seg_dist(pos[0], pos[1], mid, tip) + 4)
             if d < bd:
                 best, bd = h, d
