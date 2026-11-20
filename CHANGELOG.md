@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Fix: polar Array Join skipped copies when the selection left out neighbouring polygons** (for example a blade
+  selected without its tip cap). The points shared with those polygons were counted as contact points, did not land on
+  the base and made every copy "not line up". Now only the contact points that land on the base are welded; a copy
+  still stays separate when those points do not close a ring.
 - **New: Extrude / Bevel handles.** When an Extrude or Bevel is finished, handles appear on the result: Extrude gets an
   arrow along the normal (or one per locked X / Y / Z axis), Bevel a yellow Shift arrow and a cyan Inset knob. Dragging
   a handle changes the value live (Ctrl: step snap); the value comes from where the mouse is along the handle's axis,

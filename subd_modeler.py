@@ -9858,7 +9858,8 @@ class SubDSession:
     def _array_join(self, S, n0, nf0, nsub, parts):
         """Array 'Join': kopyalarin tabana degen noktalari tabandaki ayni yerdeki noktalarla birlesir; kopyanin kapladigi
         taban cokgenleri silinir. Tabana degen nokta: ilk secimin, secilmeyen bir cokgenle de paylastigi noktalar.
-        Bir kopyanin degen noktalarinin HEPSI tabanda bir noktaya oturmuyorsa (hizali degil) o kopya ayri kalir.
+        Yalniz tabanda bir noktaya oturan degen noktalar kaynar; hicbiri oturmuyorsa ya da oturanlar kapali bir halka
+        kurmuyorsa (hizali degil) o kopya ayri kalir.
         Dondurur: (birlesen kopya, silinen taban cokgeni, birlesmeyen kopya)."""
         cage = self.cage
         S = set(S)
@@ -9878,10 +9879,13 @@ class SubDSession:
             ids = [n0 + ci * nsub + pos[x] for x in K]
             d = np.linalg.norm(cage.V[ids][:, None, :] - Vb[None, :, :], axis=2)
             j = d.argmin(1)
-            if not np.all(d[np.arange(len(ids)), j] < tol):
+            hit = d[np.arange(len(ids)), j] < tol
+            if not hit.any():
                 skipped += 1                               # hizali degil
                 continue
-            m = {c: B[k] for c, k in zip(ids, j)}          # kopya noktasi -> taban noktasi
+            # yalniz tabana oturan noktalar kaynar: secimin disinda kalan komsu cokgenlerle (or. secilmemis uc kapagi)
+            # paylasilan noktalar tabanda karsiligi olmasa da kopyayi engellemez; halka kapali degilse yine ayri kalir
+            m = {c: B[k] for c, k, ok in zip(ids, j, hit) if ok}   # kopya noktasi -> taban noktasi
             cut = self._array_covered(fl, m, base_f, S, ef)
             if cut is None:
                 skipped += 1                               # kapladigi cokgenler guvenle bulunamadi
