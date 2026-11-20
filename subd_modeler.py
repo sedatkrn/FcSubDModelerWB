@@ -5864,6 +5864,8 @@ class SubDSession:
                                            (HANDLE_COLOR, 13, self.h_kcoord, self.h_knobs, True),
                                            (HANDLE_INSET_COLOR, 13, self.h_icoord, self.h_iknobs, True)):
             h_ann.addChild(draw(col, size, coord, node, pt))
+        self.h_lbl = coin.SoSeparator()                    # tutamaclarin deger yazilari (tiklayinca deger girilir)
+        h_ann.addChild(self.h_lbl)
         self.h_switch.addChild(h_ann)
         self.h_switch.whichChild = -1
         self.root.addChild(self.h_switch)
@@ -12723,7 +12725,7 @@ class SubDSession:
     def _op_handles(self):
         """Gorunecek tutamaclar: [dict(key, base, u, val, scale)] (dunya; u birim). Yoksa []."""
         op = self.hdrag["op"] if self.hdrag is not None else self.last_op
-        if (op is None or op["kind"] not in ("extrude", "bevel") or self.mode == "object" or self.grab
+        if (op is None or op["kind"] not in ("extrude", "bevel", "ebevel", "twist") or self.mode == "object" or self.grab
                 or self.drag or op is self._hoff):
             return []
         if self.hdrag is None and op.get("hsel") != self._hsel_key():
@@ -12741,6 +12743,10 @@ class SubDSession:
                 out.append(dict(key="Distance", base=np.asarray(c0, float), u=np.asarray(a["m"], float),
                                 val=v["Distance"], scale=1.0))
             return out
+        if op["kind"] == "ebevel":
+            return self._ebevel_handle(op)
+        if op["kind"] == "twist":
+            return self._twist_handle(op)
         hb = a.get("hb")
         if hb is None:
             return []
@@ -12764,14 +12770,49 @@ class SubDSession:
             return hs
         vv, W, H = _vv(self.view)
         L, K, I, idx = [], [], [], []
+        self.h_lbl.removeAllChildren()
+        ks = min(max(self.gizmo.px / GIZMO_PX, 0.7), 3.0)   # yazi boyu olcu yazilariyla ayni
         for h in hs:
+            if h.get("kind") == "rot":                     # Twist kadrani: sifir cizgisi + yay + topuz
+                c, D, r0, R = h["center"], h["D"], h["r0"], h["R"]
+                r1 = np.cross(D, r0)
+                ang = math.radians(h["val"])
+                n = int(min(max(abs(h["val"]) / 5.0, 2), 300))
+                arc = [c + R * (r0 * math.cos(t) + r1 * math.sin(t)) for t in np.linspace(0.0, ang, n + 1)]
+                pts = [c] + arc
+                idx += list(range(len(L), len(L) + len(pts))) + [-1]
+                L += [p.tolist() for p in pts]
+                tip = arc[-1]
+                K.append(tip.tolist())
+                text = "Twist  %.2f\u00b0" % h["val"]
+                data, w, hh, _ = self._dim_label(text, "handle", False, False, ks)
+                mid = c + R * 0.55 * (r0 * math.cos(ang / 2) + r1 * math.sin(ang / 2))
+                tr = coin.SoTranslation()
+                tr.translation = tuple(float(x) for x in mid)
+                im = coin.SoImage()
+                im.image.setValue(coin.SbVec2s(w, hh), 4, data)
+                im.horAlignment = coin.SoImage.CENTER
+                im.vertAlignment = coin.SoImage.HALF
+                self.h_lbl.addChild(_sep(tr, im))
+                self._hdrawn.append(dict(h, tip=tip, cur=tip, mid=mid, lw=w, lh=hh))
+                continue
             wpp = vv.getWorldToScreenScale(coin.SbVec3f(*h["base"]), 1.0 / float(H))
             cur = h["base"] + h["u"] * (h["val"] * h["scale"])   # degerin su anki yeri (yuzeyde)
             tip = cur + h["u"] * HANDLE_PX * wpp                 # ok hep ayni yone uzar (atlamaz)
             idx += [len(L), len(L) + 1, -1]
-            L += [cur.tolist(), tip.tolist()]                    # cizgi yalniz yuzeyden topuza (modelin icinden gecmez)
+            L += [h["base"].tolist(), tip.tolist()]              # cizgi sifirdan (islemin basladigi yer) topuza
             (I if h["key"] == "Inset" else K).append(tip.tolist())
-            self._hdrawn.append(dict(h, tip=tip, cur=cur))
+            text = ("%.3f mm" if h["key"] in ("Distance", "Width") else h["key"] + "  %.3f mm") % h["val"]
+            data, w, hh, _ = self._dim_label(text, "handle", False, False, ks)
+            mid = (h["base"] + cur) / 2 if abs(h["val"] * h["scale"]) > 2 * HANDLE_PX * wpp else (h["base"] + tip) / 2
+            tr = coin.SoTranslation()
+            tr.translation = tuple(float(x) for x in mid)
+            im = coin.SoImage()
+            im.image.setValue(coin.SbVec2s(w, hh), 4, data)
+            im.horAlignment = coin.SoImage.CENTER
+            im.vertAlignment = coin.SoImage.HALF
+            self.h_lbl.addChild(_sep(tr, im))
+            self._hdrawn.append(dict(h, tip=tip, cur=cur, mid=mid, lw=w, lh=hh))
         _set_coords(self.h_lcoord, np.array(L))
         _set_index(self.h_lines, idx)
         self.h_lines.coordIndex.setNum(len(idx))
@@ -12782,6 +12823,57 @@ class SubDSession:
         self.h_switch.whichChild = 0
         return hs
 
+    def _ebevel_handle(self, op):
+        """Edge bevel: ilk secili kenarin ortasindan (sifir = eski kenar) bir komsu yuzun icine dogru Width oku."""
+        a = op["args"]
+        if "eh" not in a:                                  # islem oncesi kafesten bir kez hesaplanir
+            c0 = op["before"][0]
+            a["eh"] = None
+            for e in sorted(a["edges"], key=lambda e: tuple(sorted(e))):
+                p, q = sorted(e)
+                f = next((f for f in c0.F if p in f and q in f), None)
+                if f is None:
+                    continue
+                P, Q = c0.V[p], c0.V[q]
+                m = (P + Q) / 2
+                t = (Q - P) / max(np.linalg.norm(Q - P), 1e-12)
+                d = c0.V[list(f)].mean(0) - m
+                d = d - t * float(d @ t)
+                if np.linalg.norm(d) > 1e-9:
+                    a["eh"] = (self.l2w(m), self.l2w_dir(d / np.linalg.norm(d)))
+                    break
+        if a["eh"] is None:
+            return []
+        m, d = a["eh"]
+        return [dict(key="Width", base=np.asarray(m, float), u=np.asarray(d, float), val=op["values"]["Width"],
+                     scale=1.0)]
+
+    def _twist_handle(self, op):
+        """Twist kadrani: aci tam uygulandigi yerde (rampada bitis, canda orta) eksene dik duzlemde; sifir cizgisi
+        ve topuz o anki acida. Yaricap secimin eksenden uzakligindan biraz fazla."""
+        v, a = op["values"], op["args"]
+        D = np.array([v["Dx"], v["Dy"], v["Dz"]], float)
+        ln = float(np.linalg.norm(D))
+        if ln < 1e-9:
+            return []
+        D /= ln
+        P = np.array([v["Px"], v["Py"], v["Pz"]], float)
+        fo = int(v["Falloff"])
+        tf = 0.5 if fo >= 4 else (0.0 if v["Reverse"] >= 0.5 else 1.0)
+        c = P + D * (v["Start"] + (v["End"] - v["Start"]) * tf)
+        key = tuple(np.round(np.r_[P, D], 6))
+        if a.get("tw_key") != key:                         # eksen degisince sifir yonu / yaricap yeniden
+            c0 = op["before"][0]
+            used = sorted({x for fi in a["faces"] if fi < len(c0.F) for x in c0.F[fi]})
+            W = self.l2w(c0.V[used]) - P if used else np.zeros((1, 3))
+            perp = W - np.outer(W @ D, D)
+            R = float(np.linalg.norm(perp, axis=1).max()) if len(perp) else 0.0
+            vd = np.array(tuple(self.view.getViewDirection()), float)
+            r0 = _visible_axis(D, vd)
+            a.update(tw_key=key, tw_R=max(R * 1.25, 1.0), tw_r0=r0.tolist())
+        return [dict(key="Angle", kind="rot", center=c, D=D, r0=np.asarray(a["tw_r0"], float), R=a["tw_R"],
+                     val=v["Angle"], base=c, u=np.asarray(a["tw_r0"], float), scale=1.0)]
+
     def handle_pick(self, pos):
         """Ekranda topuza (ya da tutamac cizgisinin uc yarisina) en yakin tutamac; yoksa None."""
         if not self._hdrawn:
@@ -12790,55 +12882,140 @@ class SubDSession:
         best, bd = None, 12.0
         for h in self._hdrawn:
             tip = _to_screen(vv, W, H, App.Vector(*h["tip"]))
-            mid = _to_screen(vv, W, H, App.Vector(*h["cur"]))
+            mid = _to_screen(vv, W, H, App.Vector(*h["cur"]))   # yalniz yuzeyden topuza kadar (yazi ayri)
             d = min(math.hypot(pos[0] - tip[0], pos[1] - tip[1]) * 0.8, _seg_dist(pos[0], pos[1], mid, tip) + 4)
             if d < bd:
                 best, bd = h, d
         return best
 
-    def handle_begin(self, h, pos):
-        """Tutamac tutuldu: islem oncesine donulur, islem ayni topolojiyle yeniden kurulur, degerler canli."""
+    def handle_label_pick(self, pos):
+        """Imlec bir tutamacin deger yazisinin uzerindeyse o tutamac, yoksa None."""
+        for h in self._hdrawn:
+            c = self._proj_np(h["mid"])[0]
+            if abs(pos[0] - c[0]) <= h["lw"] / 2 and abs(pos[1] - c[1]) <= h["lh"] / 2:
+                return h
+        return None
+
+    def handle_edit(self, h):
+        """Tutamacin yazisina tiklandi: degeri yazdir; surukleme ile ayni yoldan uygulanir."""
         op = self.last_op
         if op is None or self.drag or self.grab:
             return
-        o, d = _ray(self.view, pos)
-        t0 = _line_param(o, d, App.Vector(*h["base"]), App.Vector(*h["u"]))
-        if t0 is None:                                     # tutamac tam bakis yonunde: ekrandan surulemez
-            self.info = T("Turn the view: this handle points at you")
+        name = {"Distance": T("Extrude distance"), "Width": T("Edge bevel width"),
+                "Angle": T("Twist angle")}.get(h["key"], h["key"])
+        unit = "°" if h["key"] == "Angle" else "mm"
+        val, ok = QtWidgets.QInputDialog.getDouble(Gui.getMainWindow(), name, "%s (%s)" % (name, unit),
+                                                   float(h["val"]), 0.0 if h["key"] == "Width" else -1e7, 1e7,
+                                                   2 if h["key"] == "Angle" else 3)
+        if self.overlay is not None:                       # kisayollar gorunumde kalsin
+            self.overlay.refocus()
+        if not ok or self.last_op is not op:
             self.refresh()
             return
+        st = self._handle_build(op)
+        if st is None:
+            return
+        self._handle_apply(op, st, h["key"], val)
+        self.hdrag = dict(op=op)                           # handle_end ile ayni bitis
+        self.handle_end()
+
+    def _handle_apply(self, op, st, key, val):
+        """Tutamacin degerini uygula (canli): islemin kendi yerlestirme yoluyla."""
         v = op["values"]
+        if op["kind"] == "extrude":
+            v[key] = val
+            self.extrude_set(st, v)
+        elif op["kind"] == "bevel":
+            v[key] = val
+            self.bevel_set(st, v["Inset"], v["Shift"])
+        elif op["kind"] == "ebevel":
+            self.ebevel_set(st, max(val, 0.0))
+        else:                                              # twist: islem oncesinden yeniden burulur
+            v[key] = val
+            c, a, b, e = op["before"]
+            self.cage, self.sel, self.sel_v, self.sel_e = c.copy(), set(a), set(b), set(e)
+            self._apply_op(op)
+            self.refresh(fast=True)
+
+    def _handle_build(self, op):
+        """Islem oncesine don, islemi ayni topolojiyle yeniden kur (degerler sonra verilir); self.op = op."""
+        v = op["values"]
+        if op["kind"] in ("ebevel", "twist"):              # bunlar her degerde islem oncesinden yeniden kurulur
+            st = (dict(kind="ebevel", edges=op["args"]["edges"], before=op["before"], op=op,
+                       segs=int(v["Segments"]), w=v["Width"]) if op["kind"] == "ebevel" else {})
+            self.op, self.last_op = op, None
+            return st
         if op["kind"] == "extrude":
             st = self._extrude_build(op["before"], int(v["Segments"]), op["args"]["axes"], bool(v.get("Each normal")))
             if st is None:
-                return
+                return None
             st["op"] = op
         else:
             c, a, b, e = op["before"]
             self.cage, self.sel, self.sel_v, self.sel_e = c.copy(), set(a), set(b), set(e)
             st = self._bevel_build(op["args"].get("inset_only"), bool(v.get("Individual")))
         self.op, self.last_op = op, None
-        self.hdrag = dict(op=op, st=st, key=h["key"], base=h["base"], u=h["u"], scale=h["scale"], v0=h["val"], t0=t0)
+        return st
+
+    def handle_begin(self, h, pos):
+        """Tutamac tutuldu: islem oncesine donulur, islem ayni topolojiyle yeniden kurulur, degerler canli."""
+        op = self.last_op
+        if op is None or self.drag or self.grab:
+            return
+        if h.get("kind") == "rot":
+            t0 = self._rot_angle(h, pos)                   # None: kadran yandan gorunuyor -> yatay surukleme
+        else:
+            o, d = _ray(self.view, pos)
+            t0 = _line_param(o, d, App.Vector(*h["base"]), App.Vector(*h["u"]))
+            if t0 is None:                                 # tutamac tam bakis yonunde: ekrandan surulemez
+                self.info = T("Turn the view: this handle points at you")
+                self.refresh()
+                return
+        st = self._handle_build(op)
+        if st is None:
+            return
+        self.hdrag = dict(op=op, st=st, key=h["key"], base=h["base"], u=h["u"], scale=h["scale"], v0=h["val"], t0=t0,
+                          h=h, x0=pos[0], prev=t0, acc=0.0)
         self.handle_move(pos)
+
+    def _rot_angle(self, h, pos):
+        """Kadranin duzleminde imlecin acisi (derece, sifir cizgisinden); duzlem yandan gorunuyorsa None."""
+        o, d = _ray(self.view, pos)
+        o, d = np.array(tuple(o), float), np.array(tuple(d), float)
+        D = h["D"]
+        den = float(d @ D)
+        if abs(den) < 0.25:
+            return None
+        p = o + d * (float((h["center"] - o) @ D) / den)
+        q = p - h["center"]
+        return math.degrees(math.atan2(float(q @ np.cross(D, h["r0"])), float(q @ h["r0"])))
 
     def handle_move(self, pos=None):
         self._pending = False                              # _schedule birlesik: bir sonraki hareket yeniden planlanabilsin
         g = self.hdrag
         if g is None:
             return
-        o, d = _ray(self.view, self.mouse if pos is None else pos)
-        t = _line_param(o, d, App.Vector(*g["base"]), App.Vector(*g["u"]))
-        if t is None:
-            return
-        step = self.step_box.value() if _ctrl_held() else 0.0
-        val = _snap(g["v0"] + (t - g["t0"]) / g["scale"], step)
-        v, st = g["op"]["values"], g["st"]
-        if g["op"]["kind"] == "extrude":
-            v[g["key"]] = val
-            self.extrude_set(st, v)
+        pos = self.mouse if pos is None else pos
+        if g["h"].get("kind") == "rot":                    # Twist: kadranda aci (tur sayisi da sayilir)
+            if g["t0"] is None:                            # kadran yandan: yatay hareket, eski Twist gibi
+                toward = float(g["h"]["D"].dot(np.array(tuple(self.view.getViewDirection()), float))) < 0.0
+                dv = (pos[0] - g["x0"]) * 0.5 * (_gain() / DRAG_GAIN) * (-1.0 if toward else 1.0)
+            else:
+                ang = self._rot_angle(g["h"], pos)
+                if ang is None:
+                    return
+                g["acc"] += (ang - g["prev"] + 180.0) % 360.0 - 180.0
+                g["prev"] = ang
+                dv = g["acc"]
+            val = _snap(g["v0"] + dv, self.angle_box.value() if _ctrl_held() else 0.0)
         else:
-            v[g["key"]] = val
-            self.bevel_set(st, v["Inset"], v["Shift"])
+            o, d = _ray(self.view, pos)
+            t = _line_param(o, d, App.Vector(*g["base"]), App.Vector(*g["u"]))
+            if t is None:
+                return
+            step = self.step_box.value() if _ctrl_held() else 0.0
+            val = _snap(g["v0"] + (t - g["t0"]) / g["scale"], step)
+        self._handle_apply(g["op"], g["st"], g["key"], val)
 
     def handle_end(self):
         g, self.hdrag = self.hdrag, None
@@ -12858,7 +13035,7 @@ class SubDSession:
             ok = True
         if ok:
             self.last_op, self.op = self.op, None
-            if self.last_op is not None and self.last_op["kind"] in ("extrude", "bevel"):
+            if self.last_op is not None and self.last_op["kind"] in ("extrude", "bevel", "ebevel", "twist"):
                 self.last_op["hsel"] = self._hsel_key()    # tutamaclar bu secim durdukca gorunur
             self._group_follow(((self.last_op or {}).get("args") or {}).get("grp"))
             self.refresh()
@@ -13142,6 +13319,11 @@ class SubDSession:
         if self.armed == "magnet":
             cb.setHandled()
             _later(lambda: self.magnet_start(pos))
+            return
+        hl = self.handle_label_pick(pos) if self.mode != "object" else None
+        if hl is not None:                                 # tutamacin deger yazisi: deger gir
+            cb.setHandled()
+            _later(lambda: self.handle_edit(hl))
             return
         h = self.handle_pick(pos) if self.mode != "object" else None
         if h is not None:                                  # Extrude / Bevel tutamaci: sahne olaydan sonra degisir

@@ -1,17 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-11-20)
 
-- **Fix: polar Array Join skipped copies when the selection left out neighbouring polygons** (for example a blade
-  selected without its tip cap). The points shared with those polygons were counted as contact points, did not land on
-  the base and made every copy "not line up". Now only the contact points that land on the base are welded; a copy
-  still stays separate when those points do not close a ring.
-- **New: Extrude / Bevel handles.** When an Extrude or Bevel is finished, handles appear on the result: Extrude gets an
+- **New: tool handles (Extrude, Bevel, Edge bevel, Twist).** When one of these is finished, handles appear on the result: Extrude gets an
   arrow along the normal (or one per locked X / Y / Z axis), Bevel a yellow Shift arrow and a cyan Inset knob. Dragging
   a handle changes the value live (Ctrl: step snap); the value comes from where the mouse is along the handle's axis,
   so it no longer stalls at the viewport edge, and grabbing the handle again continues from the current value. The
-  free mouse drag of E / B stays. The handles go away when the selection changes, another tool runs, or Move / Rotate /
-  Size is chosen (the move gizmo comes back).
+  free mouse drag of E / B stays. Each handle's line starts at zero (where the operation began) and shows its value
+  live; click the value to type it. Edge bevel gets a Width arrow from the old edge into the face, Twist a dial at the
+  fully twisted end of its range (zero line, arc and knob; full turns count; seen edge-on, drag sideways). The handles
+  go away when the selection changes, another tool runs, or Move / Rotate / Size is chosen (the move gizmo comes
+  back). This also fixes Extrude / Bevel stalling when the mouse reached the viewport edge.
 - **Tool menus reorganised into LightWave Modeler tabs: Create / Modify / Multiply / Construct.** Create: File,
   Primitives (Box, Cylinder, Sphere, Torus), From geometry (From face, Make polygon), Clipboard. Modify: Transform
   (Move, Rotate, Stretch / Size, Magnet, Twist), Shape (Circle, Crease, Flip), Mirror. Multiply: Extend (Extrude,
@@ -29,6 +28,10 @@
   object turns. The ⌀ line of a circular group likewise lies on the in-plane axis easiest to see and turns with the
   group. Dragging a dimension text moves its line in 2 mm steps of the world coordinate, so dimensions on the same
   axis line up exactly.
+- **Fix: polar Array Join skipped copies when the selection left out neighbouring polygons** (for example a blade
+  selected without its tip cap). The points shared with those polygons were counted as contact points, did not land on
+  the base and made every copy "not line up". Now only the contact points that land on the base are welded; a copy
+  still stays separate when those points do not close a ring.
 
 ## 0.6.1 (2026-11-14)
 

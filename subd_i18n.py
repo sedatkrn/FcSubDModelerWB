@@ -211,6 +211,9 @@ TR = {
     "Parametric group": "Parametrik grup",
     "Circular group": "Dairesel grup",
     "Turn the view: this handle points at you": "Görünümü çevirin: bu tutamaç size doğru bakıyor",
+    "Extrude distance": "Extrude mesafesi",
+    "Edge bevel width": "Kenar pahı genişliği",
+    "Twist angle": "Twist açısı",
     "Make the selected flat polygons, edge loop or points a circular group: its sphere sits at the circle centre (PD dimensions to other groups) and its Diameter (group panel, PD, Distances list) sizes the points around the centre in the circle's plane":
         "Seçili düz çokgenleri, kenar halkasını ya da noktaları dairesel gruba çevirir: küresi dairenin merkezindedir (diğer gruplara PD ölçüsü) ve Çap değeri (grup paneli, PD, Distances listesi) noktaları merkez etrafında dairenin düzleminde büyütür / küçültür",
     "Circular group: select polygons, an edge loop or points that lie on a plane":
