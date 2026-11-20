@@ -7400,6 +7400,7 @@ class SubDSession:
                 rf = group_refs(g)
                 if rf:
                     g["refs"] = (np.array(rf, float).reshape(-1, 3) @ R.T + t).tolist()
+                self._circ_move(g, lambda P, R=R, t=t: P @ R.T + t)   # dairesel grup: merkez ve normal de
                 done = True
                 continue
             if g is None or h is None or not pairs:
@@ -7467,11 +7468,15 @@ class SubDSession:
         n = len(self._grp_sets.get(g["name"], ())) if locked else len(g.get("idx") or [])
         title = "%s %s %s (%d)%s" % ("\U0001F512" if locked else "\U0001F513", g["name"], group_square(group_rgb(g)), n,
                                     " \u25CE" if group_refs(g) else "")
+        fields = []
+        dia = self.circ_diam(g)
+        if dia is not None:                                # dairesel grup: cap buradan yazilir
+            fields = [("Diameter", dia, " mm", 3, lambda val, name=g["name"]: self.circ_apply(name, val))]
         buttons = [("Unlock" if locked else "Lock", self.group_toggle_lock), ("Add to group", self.group_add),
                    ("Remove from group", self.group_remove),
                    ("Apply reference" if self.ref_armed == g["name"] else "Set reference point", self.group_ref),
                    ("Done", self.group_done)]
-        return title, [], True, [], None, buttons
+        return title, fields, True, [], None, buttons
 
     def group_done(self):
         g = self._grp()
@@ -7507,6 +7512,10 @@ class SubDSession:
                 g.update(pts=P.tolist(), loc=P.tolist(), w=[1.0] * len(idx), locked=True)
                 g.pop("idx", None)
                 g.pop("nv", None)
+                if g.get("circ"):                          # dairesel grup: noktalar elle degisti, daire yeniden
+                    ci = self._circ_fit(idx)
+                    if ci is not None:
+                        g["circ"] = ci
                 self.info = T("Group %s locked") % g["name"]
             elif (h is None and not g.get("nh")) or g.get("nv") != len(V) or not idx:
                 self.cage.groups = [x for x in self.cage.groups if x is not g]
@@ -7579,12 +7588,21 @@ class SubDSession:
         self.dirty = True
         self.refresh()
 
-    def make_group(self):
+    def make_group(self, circle=False):
         """Secili noktalar (cokgen / kenar secimi de olur) bir parametrik grup olur. Datum plane yok: grup kendi
-        referans noktasini (kure) paneldeki Set reference point ile alir; PD ile gruplar arasi olcu verilir."""
+        referans noktasini (kure) paneldeki Set reference point ile alir; PD ile gruplar arasi olcu verilir.
+        circle=True: dairesel grup -- secimin duzlemi ve merkezi saklanir, Diameter (cap) olcusu verilir; cap
+        degisince noktalar merkez etrafinda, dairenin duzleminde olceklenir (2B Size). Kuresi dairenin merkezinde."""
         verts = self.selected_verts()
         if self.mode == "object" or not verts or self.drag or self.grab:
             return
+        circ = None
+        if circle:
+            circ = self._circ_fit(verts)
+            if circ is None:
+                self.info = T("Circular group: select polygons, an edge loop or points that lie on a plane")
+                self.refresh()
+                return
         sets = group_member_sets(self.cage.V, self.cage.groups) if self.cage.groups else {}
         if any(set(verts) <= m for m in sets.values()):    # ortak nokta olabilir; ama tamami baska bir grubun icindeyse yeni grup olmaz
             self.info = T("Group: these points already belong to one group")
@@ -7602,10 +7620,150 @@ class SubDSession:
         ng = group_new(name, P, P, np.eye(4), group_color(n))
         ng["refs"] = [self._group_centroid(verts).tolist()]                   # kure hemen merkezde; Set reference ilk kureyi yerinden alir
         ng["auto"] = True
+        if circ is not None:
+            ng["circ"] = circ
+            ng["refs"] = [list(circ["c"])]                 # kure dairenin merkezinde: PD olculeri buradan baglanir
+            ng["auto"] = False                             # Set reference merkez kuresini degistirmez, yeni kure ekler
         self.cage.groups.append(ng)
         self.dirty = True
-        self.info = T("Group %s: %d points") % (name, len(verts))
+        if circ is not None:
+            self.info = T("Circular group %s: %d points, diameter %.3f mm (group panel / PD)") % (
+                name, len(verts), self.circ_diam(ng) or 0.0)
+        else:
+            self.info = T("Group %s: %d points") % (name, len(verts))
         self.refresh()
+
+    # --- dairesel grup: grubun capi (Diameter) ---
+    # g["circ"] = {"c": merkez, "n": duzlemin normali} (nesne yereli). Cap = noktalarin duzlemdeki merkeze en uzak
+    # olanin iki kati (dis kenar). Cap degisince noktalar merkez etrafinda yalniz duzlem icinde olceklenir (normal
+    # yonundeki konumlari kalir). Grup tasinir / doner ya da PD ile hareket ederse merkez ve normal de birlikte gider.
+
+    def circle_group(self):
+        self.make_group(circle=True)
+
+    def _circ_fit(self, verts):
+        """Secili noktalarin dairesi: {"c": merkez, "n": birim normal} ya da None (duzlem yok / tek dogru)."""
+        verts = sorted(set(verts))
+        if len(verts) < 3:
+            return None
+        V, S = self.cage.V, set(verts)
+        faces = [V[list(f)] for f in self.cage.F if len(f) >= 3 and all(v in S for v in f)]
+        ax = group_axes(V[verts], faces, V.mean(0))
+        if ax is None and faces:                           # cokgenlerin normalleri birbirini goturdu: noktalarin duzlemi
+            ax = group_axes(V[verts], [], V.mean(0))
+        if ax is None:
+            return None
+        n = ax[:, 2]
+        c = self._group_centroid(verts)
+        d = V[verts] - c
+        r = np.linalg.norm(d - np.outer(d @ n, n), axis=1).max()
+        if r < 1e-9 or np.abs(d @ n).max() > 0.25 * r:    # duzlemde degil (kubbe, silindir yuzeyi ...)
+            return None
+        return {"c": c.tolist(), "n": (n / np.linalg.norm(n)).tolist()}
+
+    def _circ_members(self, g):
+        if g.get("locked", True):
+            return sorted({j for js in group_index_all(self.cage, g) for j in js})
+        nv = len(self.cage.V)
+        return sorted({i for i in (g.get("idx") or []) if 0 <= i < nv}) if g.get("nv") == nv else []
+
+    def circ_diam(self, g):
+        """Dairesel grubun capi (mm) ya da None."""
+        ci = (g or {}).get("circ")
+        js = self._circ_members(g) if ci else []
+        if not js:
+            return None
+        c, n = np.array(ci["c"], float), np.array(ci["n"], float)
+        d = self.cage.V[js] - c
+        return 2.0 * float(np.linalg.norm(d - np.outer(d @ n, n), axis=1).max())
+
+    def _circ_move(self, g, tf):
+        """Grup tasindi / dondu: tf (nesne yereli nokta dizisi -> yeni yer) merkezi ve normali de tasir."""
+        ci = g.get("circ")
+        if not ci:
+            return
+        c, n = np.array(ci["c"], float), np.array(ci["n"], float)
+        c2, e = tf(np.array([c, c + n]))
+        n2 = e - c2
+        ln = float(np.linalg.norm(n2))
+        ci["c"] = c2.tolist()
+        if ln > 1e-12:
+            ci["n"] = (n2 / ln).tolist()
+
+    def circ_apply(self, name, new):
+        """Dairesel grubun capi new olsun: noktalar (ve referans kureleri) merkez etrafinda, duzlemde olceklenir."""
+        g = self._grp(name)
+        cur = self.circ_diam(g)
+        if g is None or cur is None or self.drag or self.grab:
+            return
+        if new <= 1e-9 or cur <= 1e-9:
+            self.info = T("Circular group: the diameter must be above zero")
+            self.refresh()
+            return
+        if abs(new - cur) < 1e-9:
+            return
+        k = new / cur
+        c, n = np.array(g["circ"]["c"], float), np.array(g["circ"]["n"], float)
+
+        def tf(P):
+            d = P - c
+            h = np.outer(d @ n, n)
+            return c + h + (d - h) * k
+        js = self._circ_members(g)
+        self.push()
+        V = self.cage.V.copy()
+        old = V[js].copy()
+        V[js] = tf(V[js])
+        self.cage.V = V
+        self._share_update(old, V[js], {g["name"]})
+        if g.get("locked", True):
+            allp = np.array(g["pts"], float).reshape(-1, 3)
+            g["pts"] = tf(allp).tolist()
+        else:
+            g["pts"] = V[g["idx"]].tolist()
+        if g.get("nh"):
+            g["loc"] = g["pts"]
+        rf = group_refs(g)
+        if rf:
+            g["refs"] = tf(np.array(rf, float).reshape(-1, 3)).tolist()
+        self.op = self.last_op = None
+        self.dirty = True
+        self.dim_sig = None
+        self._pd_sig = None
+        self.info = T("Circular group %s: diameter %.3f mm") % (g["name"], new)
+        self.refresh()
+
+    def circ_edit(self, name):
+        """PD'deki cap olcusunun yazisina tiklayinca: yeni capi yazdir."""
+        g = self._grp(name)
+        cur = self.circ_diam(g)
+        if cur is None:
+            return
+        v, ok = QtWidgets.QInputDialog.getDouble(Gui.getMainWindow(), T("Circular group"),
+                                                 T("Diameter of %s (mm)") % name, cur, 1e-6, 1e7, 3)
+        if ok:
+            self.circ_apply(name, v)
+        else:
+            self.refresh()
+
+    def _circ_items(self):
+        """PD acikken dairesel gruplarin cap olculeri: merkezden gecen cizgi, iki ucta ok, yazida ⌀ deger."""
+        out = []
+        for g in self.cage.groups:
+            v = self.circ_diam(g)
+            if v is None or v < 1e-9:
+                continue
+            ci = g["circ"]
+            c, n = np.array(ci["c"], float), np.array(ci["n"], float)
+            u = np.cross(n, np.array([0.0, 0.0, 1.0]))     # duzlemde sabit bir yon (bakisa bagli degil: titremesin)
+            if np.linalg.norm(u) < 1e-6:
+                u = np.cross(n, np.array([0.0, 1.0, 0.0]))
+            u = np.cross(u, n)                             # yatay duvarda yukari, tavanda / tabanda nesnenin X'i
+            u /= np.linalg.norm(u)
+            P, Q = self.l2w(np.array([c - u * v / 2, c + u * v / 2]))
+            out.append(dict(P=P, Q=Q, kind="pd", idx=None, hd="pc:" + g["name"], val=v,
+                            txt="\u2300 %.3f mm" % v, mid=self.l2w(np.array([c + u * v * 0.25]))[0]))
+        return out
 
     # --- referans noktasi (kure): grubun olcu noktasi ---
     # Panelde Set reference point: nokta moduna gecilir, grubun 1, 2 ya da 4 noktasi secilip Apply reference (ya da
@@ -10487,6 +10645,8 @@ class SubDSession:
                     out.append(dict(P=P, Q=Q, kind="keep", idx=None, d=d))
         out += self._handle_dim_items()
         out += self._pd_items()
+        if self.mode != "object" and self.armed == "pd":    # dairesel gruplarin cap olculeri (PD acikken)
+            out += self._circ_items()
         if self.dim_tmp is not None:
             pq = self._dim_resolve(self.dim_tmp)
             if pq is not None:
@@ -10772,6 +10932,7 @@ class SubDSession:
                 allp[kk] = V[js_[0]]
         mover["pts"] = allp.tolist()
         mover["refs"] = self.w2l(tf(self.l2w(np.array(group_refs(mover), float).reshape(-1, 3)))).tolist()
+        self._circ_move(mover, lambda Pl: self.w2l(tf(self.l2w(Pl))))   # dairesel grup: merkez / normal de
         self.op = self.last_op = None
         self.dirty = True
         self.dim_sig = None
@@ -10931,6 +11092,9 @@ class SubDSession:
         grubun noktalari kayar."""
         if str(name).startswith("pd:"):
             self.pd_dim_edit(int(str(name)[3:]))
+            return
+        if str(name).startswith("pc:"):
+            self.circ_edit(str(name)[3:])
             return
         doc = App.ActiveDocument
         h = doc.getObject(name) if doc is not None else None
@@ -11285,6 +11449,11 @@ class SubDSession:
                 rows.append(dict(obj="PD", idx="pd:%d" % i, name="PD %s  %s" % (lab, " > ".join(
                     d["g"] if k != "d" or d["g"][0] != d["g"][1] else d["g"][:1] + ["(" + T("stretch") + ")"])),
                                  hide=False, target=None, tol=DIM_TOL, dist=float(v), d3=d3, editable=True, pd=True))
+            for g in self.cage.groups:                     # dairesel gruplarin capi: Distance sutunundan yazilir
+                v = self.circ_diam(g)
+                if v is not None:
+                    rows.append(dict(obj="PD", idx="pc:" + g["name"], name="PD \u2300  " + g["name"], hide=False,
+                                     target=None, tol=DIM_TOL, dist=float(v), d3=None, editable=True, pd=True, circ=True))
         return rows
 
     def pd_delete(self, i):
@@ -12732,6 +12901,10 @@ class SubDSession:
             return
         if self.dim_hits and self.dim_p0 is None and self.mode != "object":
             hd = self._dim_hit_label(pos)
+            if hd is not None and str(hd).startswith("pc:"):   # dairesel grubun cap yazisi: yeni cap
+                cb.setHandled()
+                _later(lambda: self.circ_edit(str(hd)[3:]))
+                return
             if hd is not None and str(hd).startswith("pd:"):   # PD yazisi: surukle = yer degistir, cift tik = deger
                 cb.setHandled()
                 self.pd_lbl_start(hd, pos)
@@ -13830,6 +14003,9 @@ TOOL_TIPS = {
     "Merge polygons": "Merge the selected adjacent polygons into one",
     "Parametric group": "Make the selected points a group with a datum plane handle (SubD_PG_0001) in the FreeCAD tree: "
                         "move the datum or attach it (Attachment, offset, expressions) and the points follow",
+    "Circular group": "Make the selected flat polygons, edge loop or points a circular group: its sphere sits at the "
+                      "circle centre (PD dimensions to other groups) and its Diameter (group panel, PD, Distances list) "
+                      "sizes the points around the centre in the circle's plane",
     "Delete": "Delete the selected elements (object mode: the selected objects)",
     "Copy": "Copy the selected polygons with their creases; edges and points are copied as free edges / points",
     "Cut": "Copy the selected polygons, edges or points, then remove them",
@@ -14200,7 +14376,7 @@ class _DimList(QtWidgets.QDockWidget):
                 it.setFlags(rw if edit and not hd else ro)
                 it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 t.setItem(i, c, it)
-            if edit and pd:
+            if edit and pd and not r.get("circ"):          # cap olcusu grupla birlikte gider, ayrica silinmez
                 b = QtWidgets.QPushButton("\u00d7")
                 b.setFixedWidth(26)
                 b.setToolTip(T("Delete dimension"))
@@ -14253,6 +14429,15 @@ class _DimList(QtWidgets.QDockWidget):
         if not 0 <= row < len(self.map):
             return
         idx, s = self.map[row], self.s
+        if isinstance(idx, str) and idx.startswith("pc:"):   # dairesel grubun capi
+            if col == 2:
+                try:
+                    num = float(it.text().strip().replace(",", "."))
+                except ValueError:
+                    _later(lambda: self.refresh(s._dim_rows(), force=True))
+                    return
+                _later(lambda: s.circ_apply(idx[3:], num))
+            return
         if isinstance(idx, str) and idx.startswith("pd:"):   # PD olcusu: Distance yazilinca grup hareket eder
             if col == 2:
                 try:
@@ -14923,6 +15108,7 @@ class _Overlay(object):
         btn("Delete", "Del", lambda: s.object_delete() if obj() else s.delete(), sel=True)
         head("Group", tab="construct")
         btn("Parametric group", "", s.make_group, sel=True, mode="edit")
+        btn("Circular group", "", s.circle_group, sel=True, mode="edit")
 
         self.bar = QtWidgets.QFrame(self.vp)
         self.bar.setObjectName("lwBar")

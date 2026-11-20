@@ -9,6 +9,11 @@
   Combine (Bridge, Connect, Merge polygons, Hole, Circle on face), Reduce (Merge points, Weld, Reduce points, Delete),
   Group (Parametric group). The Select section stays on top in every tab; the tab buttons sit in one row when the
   panel is wide and 2 x 2 when it is narrow. No tool or shortcut changed.
+- **New: Circular group (Construct > Group).** Select flat polygons (a disc or a ring), an edge loop or points and
+  make them a circular group. Its reference sphere sits at the circle centre, so PD dimensions link it to other groups
+  like any group. Its **Diameter** (outer edge) can be typed in the group panel, by clicking the ⌀ dimension in PD mode
+  or in the Distances list: the points are sized around the centre in the circle's plane (a 2D Size), the centre and
+  the other groups stay. The circle moves with the group (gizmo, PD) and is fitted again when the group is locked.
 
 ## 0.6.1 (2026-11-14)
 

@@ -209,6 +209,16 @@ TR = {
     "Surface look of the smooth preview (Edit mode)": "Pürüzsüz önizlemenin yüzey görünümü (Edit modu)",
     "Merge polygons": "Çokgenleri birleştir",
     "Parametric group": "Parametrik grup",
+    "Circular group": "Dairesel grup",
+    "Make the selected flat polygons, edge loop or points a circular group: its sphere sits at the circle centre (PD dimensions to other groups) and its Diameter (group panel, PD, Distances list) sizes the points around the centre in the circle's plane":
+        "Seçili düz çokgenleri, kenar halkasını ya da noktaları dairesel gruba çevirir: küresi dairenin merkezindedir (diğer gruplara PD ölçüsü) ve Çap değeri (grup paneli, PD, Distances listesi) noktaları merkez etrafında dairenin düzleminde büyütür / küçültür",
+    "Circular group: select polygons, an edge loop or points that lie on a plane":
+        "Dairesel grup: bir düzlemde duran çokgenleri, kenar halkasını ya da noktaları seçin",
+    "Circular group %s: %d points, diameter %.3f mm (group panel / PD)":
+        "Dairesel grup %s: %d nokta, çap %.3f mm (grup paneli / PD)",
+    "Circular group: the diameter must be above zero": "Dairesel grup: çap sıfırdan büyük olmalı",
+    "Circular group %s: diameter %.3f mm": "Dairesel grup %s: çap %.3f mm",
+    "Diameter of %s (mm)": "%s çapı (mm)",
     "Make the selected points a group with a datum plane handle (SubD_PG_0001) in the FreeCAD tree: move the datum or attach it (Attachment, offset, expressions) and the points follow":
         "Seçili noktaları FreeCAD ağacında bir datum plane tutamağı (SubD_PG_0001) olan gruba çevirir: datum'u taşıyınca ya da bağlayınca (Attachment, ofset, ifadeler) noktalar onu izler",
     "Group handle %s is gone: the group is released": "Grup tutamağı %s yok: grup serbest bırakıldı",
