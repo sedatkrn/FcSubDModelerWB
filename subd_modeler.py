@@ -5070,7 +5070,6 @@ class SubDSession:
         self.hdrag = None    # Extrude / Bevel tutamagi suruklenirken
         self._hoff = None    # tutamaclari kapatilmis islem (Move / Rotate / Size secilince)
         self._hdrawn = []    # cizilen tutamaclar (ekranda tiklama icin)
-        self._hlog = []      # tutamac olaylarinin kisa izi (hata ayiklama; son 40)
         self.armed = None    # kalici arac ("knife" / "line" / "loop" / "magnet"): kapatilana kadar her tiklamada uygulanir
         self.magnet_radius = None    # Magnet yaricapi (mm); ilk acilista kafesin boyuna gore
         self.magnet_mode = 0         # Magnet azalma egrisi (FALLOFFS sirasi)
@@ -12793,18 +12792,13 @@ class SubDSession:
                 best, bd = h, d
         return best
 
-    def _hnote(self, *a):
-        self._hlog = (self._hlog + [(round(time.monotonic(), 2),) + a])[-40:]
-
     def handle_begin(self, h, pos):
         """Tutamac tutuldu: islem oncesine donulur, islem ayni topolojiyle yeniden kurulur, degerler canli."""
         op = self.last_op
-        self._hnote("begin", op and op["kind"], bool(self.drag), bool(self.grab), _left_held())
         if op is None or self.drag or self.grab:
             return
         o, d = _ray(self.view, pos)
         t0 = _line_param(o, d, App.Vector(*h["base"]), App.Vector(*h["u"]))
-        self._hnote("t0", t0)
         if t0 is None:                                     # tutamac tam bakis yonunde: ekrandan surulemez
             self.info = T("Turn the view: this handle points at you")
             self.refresh()
@@ -12843,7 +12837,6 @@ class SubDSession:
             self.bevel_set(st, v["Inset"], v["Shift"])
 
     def handle_end(self):
-        self._hnote("end", self.hdrag is not None, self.hdrag and self.hdrag["op"]["values"].get(self.hdrag["key"]))
         g, self.hdrag = self.hdrag, None
         if g is None:
             return
@@ -13147,7 +13140,6 @@ class SubDSession:
             _later(lambda: self.magnet_start(pos))
             return
         h = self.handle_pick(pos) if self.mode != "object" else None
-        self._hnote("press", pos, len(self._hdrawn), h and h["key"])
         if h is not None:                                  # Extrude / Bevel tutamaci: sahne olaydan sonra degisir
             cb.setHandled()
             _later(lambda: self.handle_begin(h, pos))
