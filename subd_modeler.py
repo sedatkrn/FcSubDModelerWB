@@ -14396,8 +14396,8 @@ TOOL_TIPS = {
     "Hole": "Cut a round hole in the middle of the selected faces and re-mesh around it",
     "Circle on face": "Like Hole, but the circle stays filled and selected, ready for Extrude or Bevel",
     "Merge polygons": "Merge the selected adjacent polygons into one",
-    "Parametric group": "Make the selected points a group with a datum plane handle (SubD_PG_0001) in the FreeCAD tree: "
-                        "move the datum or attach it (Attachment, offset, expressions) and the points follow",
+    "Parametric group": "Make the selected points a group (SubD_PG_0001) with its own colour; give it a reference "
+                        "point in the group panel and size / place it with PD dimensions (no FreeCAD datum plane)",
     "Circular group": "Make the selected flat polygons, edge loop or points a circular group: its sphere sits at the "
                       "circle centre (PD dimensions to other groups) and its Diameter (group panel, PD, Distances list) "
                       "sizes the points around the centre in the circle's plane",
