@@ -534,13 +534,21 @@ TR = {
     "Extrude  %.3f mm   %d segments": "Extrude  %.3f mm   %d segment",
     "Extrude  %s mm   %d segments": "Extrude  %s mm   %d segment",
     "Angle %s  %.2f°": "Açı %s  %.2f°",
+    "Lasso": "Kement",
+    "Drag selection draws a free lasso instead of a box (add / remove keys as in box select)":
+        "Sürükleyerek seçim kutu yerine serbest bir kement çizer (ekle / çıkar tuşları kutu seçimindeki gibi)",
+    "Selection": "Seçim",
+    "Add key": "Ekleme tuşu",
+    "Auto (Ctrl with Touchpad navigation)": "Otomatik (Touchpad gezinmesinde Ctrl)",
+    "Key held to add to the selection (click, box, lasso); the other key removes":
+        "Seçime eklemek için basılı tutulan tuş (tık, kutu, kement); öteki tuş çıkarır",
     # --- shortcut help ---
-    "1 / 2 / 3: point / edge / polygon mode\n"
+    "1 / 2 / 3 (Edit mode): point / edge / polygon mode\n"
     "Y: X symmetry on/off\n"
     "R: rotate gizmo  |  H: stretch / size gizmo\n"
     "C: crease selected edges\n"
-    "Click: select  |  Shift+click: add\n"
-    "Drag: box select (Shift add, Ctrl remove)\n"
+    "Click: select  |  Shift+click: add (Options: Ctrl)\n"
+    "Drag: box / lasso select (add key adds, the other removes)\n"
     "L: loop from the selection (or under the cursor)  |  X: ghost\n"
     "E: extrude  |  K: knife (loop cut)  |  J: knife (line / plane)  |  Shift+V: mirror (line)\n"
     "Knife / loop stay on (yellow) until K / J / Esc / right click\n"
@@ -554,12 +562,12 @@ TR = {
     "Ctrl+Z: undo  |  Ctrl+Y: redo  |  F: save to document\n"
     "Ctrl + gizmo / T: stepped (mm, degrees)\n"
     "Esc / right click: cancel":
-        "1 / 2 / 3: nokta / kenar / yüz modu\n"
+        "1 / 2 / 3 (Düzenleme modu): nokta / kenar / yüz modu\n"
         "Y: X simetrisi aç/kapa\n"
         "R: gizmo Döndür  |  H: gizmo Stretch / Size\n"
         "C: seçili kenarları keskinleştir (crease)\n"
-        "Tık: seç  |  Shift+Tık: ekle\n"
-        "Sürükle: kutu seçimi (Shift ekle, Ctrl çıkar)\n"
+        "Tık: seç  |  Shift+Tık: ekle (Options: Ctrl)\n"
+        "Sürükle: kutu / kement seçimi (ekleme tuşu ekler, öteki çıkarır)\n"
         "L: seçimden halka (ya da imlecin altındaki)  |  X: hayalet\n"
         "E: extrude  |  K: knife (loop cut)  |  J: knife (çizgi / düzlem)  |  Shift+V: ayna (çizgi)\n"
         "Knife / loop açık kalır (sarı): K / J / Esc / sağ tık kapatır\n"

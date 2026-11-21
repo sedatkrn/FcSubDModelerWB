@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **New: lasso selection.** The *Lasso* toggle in the bottom bar (next to Ghost) makes a drag draw a free curve instead
+  of a box; everything inside is selected, in every mode (points, edges, polygons, objects). Add / remove keys work as
+  in box select. The choice is remembered.
+- **New: Options > Selection > Add key.** The key held to add to the selection (click, box, lasso, rail points) can be
+  Shift (LightWave) or Ctrl (FreeCAD); the other key removes. *Auto* (default) uses Ctrl with FreeCAD's Touchpad
+  navigation style, where Shift pans the view, and Shift otherwise (#22).
+- **Changed: 1 / 2 / 3 in Object mode go to FreeCAD** (Front / Top / Right standard views); in Edit mode they still
+  switch to point / edge / polygon mode (#21).
+- Fixed: empty value fields in the Options panel (Measure, Bevel Inset / Shift, New box) on Qt 6.10+ with a stylesheet
+  theme, e.g. FreeCAD 1.1.x on Arch (#20).
+- Fixed: the Parametric group tooltip still described the old datum plane handle (#20).
+
 ## 0.7.0 (2026-11-20)
 
 - **New: tool handles (Extrude, Bevel, Edge bevel, Twist).** When one of these is finished, handles appear on the result: Extrude gets an

@@ -7,8 +7,8 @@
 # object (every 20 s and on close); select it and open the modeler again to keep editing.
 #
 # Shortcuts (in the 3D view):
-#   1 / 2 / 3: point / edge / polygon mode     Ctrl+G / Ctrl+H: point / polygon mode (LightWave)
-#   Click: select   Shift+click: add/remove   Drag: box select   A: select all   L: select loop   X: ghost
+#   1 / 2 / 3 (Edit mode): point / edge / polygon mode     Ctrl+G / Ctrl+H: point / polygon mode (LightWave)
+#   Click: select   Shift+click: add/remove (Options > Selection: Ctrl)   Drag: box / lasso select   A: select all   L: select loop   X: ghost
 #   E: extrude (edge mode: open edges; wheel = segments; X / Y / Z key or panel = axis lock, none = normal)   B: bevel / Smooth Shift (edge mode: edge bevel, wheel = segments)   I: inset
 #   K: loop cut + slide   J: LightWave knife (draw a line, live plane cut)   Shift+V: mirror across a drawn line
 #   C: crease   Del: delete
@@ -4627,6 +4627,45 @@ def _ctrl_held():
     return bool(QtWidgets.QApplication.keyboardModifiers() & QtCore.Qt.ControlModifier)
 
 
+def _add_key():
+    """Secime ekleme tusu: "shift" (LightWave) ya da "ctrl" (FreeCAD). Options > Selection > Add key; "auto" (varsayilan):
+    FreeCAD'in Touchpad gezinme stilinde Ctrl (orada Shift gorunumu kaydirir, issue #22), otekilerde Shift."""
+    v = _param().GetString("AddKey", "auto")
+    if v in ("shift", "ctrl"):
+        return v
+    try:
+        nav = App.ParamGet("User parameter:BaseApp/Preferences/View").GetString("NavigationStyle", "")
+    except Exception:
+        nav = ""
+    return "ctrl" if "Touchpad" in nav else "shift"
+
+
+def _sel_mods(shift, ctrl):
+    """(ekle, cikar): ekleme tusu Shift ise Shift ekler / Ctrl cikarir; Ctrl ise tersi."""
+    return (ctrl, shift) if _add_key() == "ctrl" else (shift, ctrl)
+
+
+def _add_held():
+    """Secime ekleme tusu su an basili mi."""
+    mods = QtWidgets.QApplication.keyboardModifiers()
+    return bool(mods & (QtCore.Qt.ControlModifier if _add_key() == "ctrl" else QtCore.Qt.ShiftModifier))
+
+
+def _lasso_inside(S, P):
+    """S noktalari (N x 2+) P cokgeninin (M x 2+, kapali sayilir) icinde mi: cift-tek kurali, numpy ile."""
+    S = np.atleast_2d(np.asarray(S, float))[:, :2]
+    P = np.asarray(P, float)[:, :2]
+    if len(S) == 0 or len(P) < 3:
+        return np.zeros(len(S), bool)
+    x, y = S[:, 0:1], S[:, 1:2]
+    x1, y1 = P[None, :, 0], P[None, :, 1]
+    x2, y2 = np.roll(P[:, 0], -1)[None, :], np.roll(P[:, 1], -1)[None, :]
+    cross = (y1 > y) != (y2 > y)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        xi = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+    return ((cross & (x < xi)).sum(1) % 2) == 1
+
+
 def _snap(x, step):
     return round(x / step) * step if step > 0 else x
 
@@ -4996,12 +5035,12 @@ class MoveGizmo(object):
         self.hover = key
 
 
-HELP = ("1 / 2 / 3: point / edge / polygon mode\n"
+HELP = ("1 / 2 / 3 (Edit mode): point / edge / polygon mode\n"
         "Y: X symmetry on/off\n"
         "R: rotate gizmo  |  H: stretch / size gizmo\n"
         "C: crease selected edges\n"
-        "Click: select  |  Shift+click: add\n"
-        "Drag: box select (Shift add, Ctrl remove)\n"
+        "Click: select  |  Shift+click: add (Options: Ctrl)\n"
+        "Drag: box / lasso select (add key adds, the other removes)\n"
         "L: loop from the selection (or under the cursor)  |  X: ghost\n"
         "E: extrude  |  K: knife (loop cut)  |  J: knife (line / plane)  |  Shift+V: mirror (line)\n"
         "Knife / loop stay on (yellow) until K / J / Esc / right click\n"
@@ -5041,6 +5080,7 @@ class SubDSession:
         self.sel_order_key = None   # sel_order'in gecerli oldugu (nokta, yuz) sayisi: numaralar degisince silinir
         self.sym = False     # X=0 duzlemine gore simetri
         self.ghost = False   # hayalet modu: arkadakiler gorunur / secilebilir
+        self.lasso = _param().GetString("SelShape", "box") == "lasso"   # surukleme: kutu ya da kement secimi
         self.snap = False    # serbest tasimada Part / PartDesign kose ve kenarlarina yakalama
         self.zebra = False   # zebra seritleri (yuzey surekliligi analizi)
         self.matcap = _param().GetString("Matcap", "")     # yuzey gorunumu (MATCAPS adi; bos = kapali)
@@ -5577,15 +5617,24 @@ class SubDSession:
         self.set_object_selection(objs)
         self.refresh()
 
-    def object_box_select(self, p0, p1, add=False, sub=False):
-        lo, hi = np.minimum(p0, p1), np.maximum(p0, p1)
+    @staticmethod
+    def _inside_fn(p0, p1, poly):
+        """Ekran noktalari (N x 2+) secim alaninda mi: kutu (p0, p1) ya da kement (poly)."""
+        if poly is not None:
+            P = np.asarray(poly, float)[:, :2]
+            return lambda S: _lasso_inside(S, P)
+        lo, hi = np.minimum(p0, p1)[:2], np.maximum(p0, p1)[:2]
+        return lambda S: np.all((np.asarray(S)[:, :2] >= lo) & (np.asarray(S)[:, :2] <= hi), axis=1)
+
+    def object_box_select(self, p0, p1, add=False, sub=False, poly=None):
+        inside = self._inside_fn(p0, p1, poly)
         found = []
         for o in self.subd_objects():
             bb = o.Mesh.BoundBox
             if not bb.isValid():
                 continue
             x, y = tuple(self.view.getPointOnViewport(bb.Center))[:2]
-            if lo[0] <= x <= hi[0] and lo[1] <= y <= hi[1]:
+            if inside(np.array([[x, y]]))[0]:
                 found.append(o)
         objs = self.selected_objects()
         if sub:
@@ -5888,6 +5937,7 @@ class SubDSession:
         lay.addWidget(self._solid_group())
         lay.addWidget(self._gizmo_group())
         lay.addWidget(self._panel_group())
+        lay.addWidget(self._selection_group())
         keys = QtWidgets.QLabel(T(HELP))
         keys.setStyleSheet("color:#9a9a9a;")
         lay.addWidget(keys)
@@ -6242,6 +6292,23 @@ class SubDSession:
         self.panel_side_box.setCurrentIndex(1 if _param().GetString("PanelSide", "left") == "right" else 0)
         self.panel_side_box.currentIndexChanged.connect(self.set_panel_side)
         row.addWidget(self.panel_side_box)
+        row.addStretch()
+        return g
+
+    def _selection_group(self):
+        """Secime ekleme tusu: Shift (LightWave) ya da Ctrl (FreeCAD); Auto: Touchpad gezinme stilinde Ctrl."""
+        g = QtWidgets.QGroupBox(T("Selection"))
+        row = QtWidgets.QHBoxLayout(g)
+        row.addWidget(QtWidgets.QLabel(T("Add key")))
+        self.add_key_box = QtWidgets.QComboBox()
+        for text, val in ((T("Auto (Ctrl with Touchpad navigation)"), "auto"), ("Shift", "shift"), ("Ctrl", "ctrl")):
+            self.add_key_box.addItem(text, val)
+        self.add_key_box.setToolTip(T("Key held to add to the selection (click, box, lasso); the other key removes"))
+        cur = _param().GetString("AddKey", "auto")
+        self.add_key_box.setCurrentIndex({"auto": 0, "shift": 1, "ctrl": 2}.get(cur, 0))
+        self.add_key_box.currentIndexChanged.connect(
+            lambda i: _param().SetString("AddKey", self.add_key_box.itemData(i)))
+        row.addWidget(self.add_key_box)
         row.addStretch()
         return g
 
@@ -8036,6 +8103,12 @@ class SubDSession:
         self.rail = None
         self.refresh()
 
+    def toggle_lasso(self):
+        """Surukleyerek secim: kutu <-> kement (serbest egri; icinde kalanlar secilir). Ayar kaydedilir."""
+        self.lasso = not self.lasso
+        _param().SetString("SelShape", "lasso" if self.lasso else "box")
+        self.refresh()
+
     def toggle_ghost(self):
         """Hayalet modu: yuzeyler yari saydam, arkadaki kenar ve noktalar gorunur ve secilebilir."""
         self.ghost = not self.ghost
@@ -9391,16 +9464,16 @@ class SubDSession:
             out[k] = not hit.any()
         return out
 
-    def box_select(self, p0, p1, add=False, sub=False):
-        """Ekranda cizilen kutunun icindekileri secer. Hayalet modu kapaliysa yalniz gorunenler."""
+    def box_select(self, p0, p1, add=False, sub=False, poly=None):
+        """Ekranda cizilen kutunun (ya da poly verildiyse kement egrisinin) icindekileri secer. Hayalet modu
+        kapaliysa yalniz gorunenler."""
         if self.mode == "object":
-            self.object_box_select(p0, p1, add, sub)
+            self.object_box_select(p0, p1, add, sub, poly)
             return
         V, F = self.cage.V, self.cage.F
         if not len(V):
             return
-        lo, hi = np.minimum(p0, p1), np.maximum(p0, p1)
-        inside = lambda S: np.all((S >= lo) & (S <= hi), axis=1)
+        inside = self._inside_fn(p0, p1, poly)
         vd = self.view_dir()
         lift = -vd * 1e-3 * max(np.ptp(V, 0).max(), 1.0)   # yuzeydeki noktayi kameraya biraz yaklastir
         if self.mode == "point":
@@ -12056,7 +12129,7 @@ class SubDSession:
             self.refresh()
             return
         N, M, _, _ = rail_nodes(self.cage, r)
-        shift = bool(QtWidgets.QApplication.keyboardModifiers() & QtCore.Qt.ShiftModifier)
+        shift = _add_held()                                # ekleme tusu (Shift ya da Ctrl, Options > Selection)
         pick = self._rail_pick(r, N) if shift else []
         self.rail["span"] = None
         d = np.linalg.norm(self.project(N) - np.array(pos[:2], float), axis=1)
@@ -13355,12 +13428,13 @@ class SubDSession:
         if (self.mode == "object" and self.object_pick(pos) is None
                 and self.view.getObjectInfo((int(pos[0]), int(pos[1])))):
             return     # SubD olmayan sekil (Part / PartDesign): FreeCAD kendisi secsin (yuzey -> From face)
-        # bos alana basildi: birakinca tiklama, surukleyince kutu secimi (Shift ekler, Ctrl cikarir)
+        # bos alana basildi: birakinca tiklama, surukleyince kutu / kement secimi. Ekleme tusu (Options > Selection)
+        # Shift ise Shift ekler, Ctrl cikarir; Ctrl ise tersi (FreeCAD gibi). shift = ekle, ctrl = cikar.
         cb.setHandled()
         mods = QtWidgets.QApplication.keyboardModifiers()
-        self.box = dict(p0=pos, moved=False,
-                        shift=bool(ev.wasShiftDown() or mods & QtCore.Qt.ShiftModifier),
-                        ctrl=bool(ev.wasCtrlDown() or _ctrl_held()))
+        add, sub = _sel_mods(bool(ev.wasShiftDown() or mods & QtCore.Qt.ShiftModifier),
+                             bool(ev.wasCtrlDown() or _ctrl_held()))
+        self.box = dict(p0=pos, moved=False, shift=add, ctrl=sub, lasso=self.lasso, path=[tuple(pos[:2])])
 
     def _on_motion(self, cb):
         pos = cb.getEvent().getPosition().getValue()
@@ -13403,6 +13477,11 @@ class SubDSession:
                 if b.get("kind") == "line":
                     b["pos"] = pos                         # canli kesim: hareketler birlestirilir
                     self._schedule(lambda: self.line_live(b, b["pos"]))
+                elif b.get("lasso"):
+                    q = b["path"][-1]
+                    if abs(pos[0] - q[0]) + abs(pos[1] - q[1]) >= 3:   # 3 pikselden sik nokta eklenmez
+                        b["path"].append(tuple(pos[:2]))
+                        self._schedule(lambda: self._lasso_show(b["path"]))
                 else:
                     _later(lambda: self._rubber_show(b["p0"], pos))
         else:
@@ -13426,7 +13505,11 @@ class SubDSession:
             else:
                 _later(lambda: self.line_finish(b))
             return
-        if b["moved"]:
+        if b["moved"] and b.get("lasso"):
+            path = b["path"] + [tuple(pos[:2])]
+            _later(lambda: (self._lasso_show(None),
+                            len(path) >= 3 and self.box_select(None, None, b["shift"], b["ctrl"], poly=path)))
+        elif b["moved"]:
             _later(lambda: (self._rubber_hide(), self.box_select(b["p0"], pos, b["shift"], b["ctrl"])))
         else:
             _later(lambda: self.click(b["p0"], b["shift"]))
@@ -13446,6 +13529,16 @@ class SubDSession:
     def _rubber_hide(self):
         if self.rubber is not None:
             self.rubber.hide()
+
+    def _lasso_show(self, path):
+        """Kement egrisini ciz (None: gizle). path: Coin konumlari."""
+        if path is None:
+            if self.line_overlay is not None:
+                self.line_overlay.set_lasso(None)
+            return
+        if len(path) > 600:                                # cok uzun egri: cizimi seyrelt
+            path = path[::len(path) // 600 + 1] + [path[-1]]
+        self._line_widget().set_lasso(QtGui.QPolygonF([QtCore.QPointF(self._line_q(p)) for p in path]))
 
     def _grab_step(self):
         self._pending = False
@@ -13497,8 +13590,6 @@ class SubDSession:
                 self.set_mode({"g": "point", "h": "face"}.get(k, "face"))
             elif k in ("tab", "o"):                   # O (ya da Tab): secili nesnenin kafesine gir
                 self.edit_object()
-            elif k in ("1", "2", "3"):
-                self.set_mode({"1": "point", "2": "edge", "3": "face"}[k])
             elif k == "d":
                 self.object_duplicate()
             elif k in ("delete", "backspace"):
@@ -14227,6 +14318,8 @@ class _KeyFilter(QtCore.QObject):
             k = "Z"                                        # Shift+Z: Merge polygons
         if k is None or (ctrl and k not in _CTRL_KEYS) or (not ctrl and k in _CTRL_ONLY and not (extr and k == "z")):
             return False
+        if k in ("1", "2", "3") and self.session.mode == "object":
+            return False                                   # Object modunda FreeCAD'in Front / Top / Right gorunumleri (#21)
         if t == QtCore.QEvent.ShortcutOverride:
             ev.accept()  # tusu FreeCAD kisayollarindan once biz alalim
             return True
@@ -14431,6 +14524,7 @@ TOOL_TIPS = {
     "Symmetry": "X symmetry: tools also act on the mirrored side",
     "Subpatch": "Show the smooth SubD surface or only the cage",
     "Ghost": "See through the model and select hidden elements",
+    "Lasso": "Drag selection draws a free lasso instead of a box (add / remove keys as in box select)",
     "Snap": "Free moves snap to the vertices and edges of visible Part / PartDesign shapes",
     "Options": "Show or hide the Options panel",
 }
@@ -14474,7 +14568,7 @@ class _LineOverlay(QtWidgets.QWidget):
     def __init__(self, parent):
         super().__init__(parent)
         self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
-        self.a = self.b = self.mark = self.kind = self.ring = None
+        self.a = self.b = self.mark = self.kind = self.ring = self.lasso = None
         self.ring_r = 0.0
         self.resize(parent.size())
         self.show()
@@ -14493,16 +14587,25 @@ class _LineOverlay(QtWidgets.QWidget):
         self.ring, self.ring_r = pt, r
         self._changed()
 
+    def set_lasso(self, poly):
+        """Kement egrisi (QPolygonF, mantiksal piksel) ya da None."""
+        self.lasso = poly
+        self._changed()
+
     def _changed(self):
         self.resize(self.parent().size())
         self.lower()                                       # panellerin ve alt cubugun altinda kalsin
         self.update()
 
     def paintEvent(self, ev):
-        if self.a is None and self.mark is None and self.ring is None:
+        if self.a is None and self.mark is None and self.ring is None and self.lasso is None:
             return
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
+        if self.lasso is not None:                         # kement: kesikli egri, kapanis cizgisi ve hafif dolgu
+            p.setPen(QtGui.QPen(QtGui.QColor(34, 211, 238), 1.5, QtCore.Qt.DashLine))
+            p.setBrush(QtGui.QColor(34, 211, 238, 28))
+            p.drawPolygon(self.lasso)
         if self.ring is not None:
             p.setPen(QtGui.QPen(QtGui.QColor(245, 158, 11), 1.5, QtCore.Qt.DashLine))
             p.setBrush(QtCore.Qt.NoBrush)
@@ -15638,6 +15741,7 @@ class _Overlay(object):
         tog("Symmetry", "Y", s.toggle_sym, lambda: s.sym)
         tog("Subpatch", "Tab", s.toggle_smooth, lambda: s.smooth)
         tog("Ghost", "X", s.toggle_ghost, lambda: s.ghost)
+        tog("Lasso", "", s.toggle_lasso, lambda: s.lasso)
         tog("Snap", "Q", s.toggle_snap, lambda: s.snap)
         mc = _lw_button(T("Matcap"), "▴")
         mc.setCheckable(True)
