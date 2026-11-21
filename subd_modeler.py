@@ -4627,6 +4627,52 @@ def _ctrl_held():
     return bool(QtWidgets.QApplication.keyboardModifiers() & QtCore.Qt.ControlModifier)
 
 
+_VP_FIX = {}    # (W, H) -> olcek: getPointOnViewport duzeltmesi
+
+
+def viewport_scale(view):
+    """view.getPointOnViewport dikey gorunumde (genislik < yukseklik) noktalari gorunum merkezine gore H / W kat
+    buyutuyor (FreeCAD 26.3 / 1.1; getPoint dogru). Olcek getPoint ile gidis-donusle olculur ve gorunum boyutu
+    basina saklanir: FreeCAD duzeltirse 1 cikar, cift duzeltme olmaz. Donus: k (ekran = merkez + (ham - merkez) * k)."""
+    try:
+        W, H = view.getSize()
+    except Exception:
+        return 1.0
+    try:
+        cam = view.getCameraType()
+    except Exception:
+        cam = ""
+    key = (int(W), int(H), cam)
+    k = _VP_FIX.get(key)
+    if k is None:
+        k = 1.0
+        try:
+            qx, qy = int(W * 0.2), int(H * 0.2)            # merkezden uzak bir ekran noktasi
+            P = view.getPoint(qx, qy)
+            rx, ry = tuple(view.getPointOnViewport(P))[:2]
+            cx, cy = W / 2.0, H / 2.0
+            num = (qx - cx) ** 2 + (qy - cy) ** 2
+            den = (rx - cx) * (qx - cx) + (ry - cy) * (qy - cy)
+            if den > 1e-9:
+                k = num / den
+            if abs(k - 1.0) < 0.01:
+                k = 1.0
+        except Exception:
+            k = 1.0
+        _VP_FIX[key] = k
+    return k
+
+
+def viewport_point(view, vec):
+    """3B dunya noktasinin ekran konumu (Coin olay duzeni: sol alt kokenli piksel), dikey gorunum duzeltmeli."""
+    x, y = tuple(view.getPointOnViewport(vec))[:2]
+    k = viewport_scale(view)
+    if k != 1.0:
+        W, H = view.getSize()
+        x, y = W / 2.0 + (x - W / 2.0) * k, H / 2.0 + (y - H / 2.0) * k
+    return x, y
+
+
 def _add_key():
     """Secime ekleme tusu: "shift" (LightWave) ya da "ctrl" (FreeCAD). Options > Selection > Add key; "auto" (varsayilan):
     FreeCAD'in Touchpad gezinme stilinde Ctrl (orada Shift gorunumu kaydirir, issue #22), otekilerde Shift."""
@@ -5703,7 +5749,7 @@ class SubDSession:
                 pts = [bb.Center]
             else:                                          # kement: sinir kutusunun 8 kosesi (+ merkez)
                 pts = [bb.getPoint(i) for i in range(8)] + [bb.Center]
-            ins = inside(np.array([tuple(self.view.getPointOnViewport(v))[:2] for v in pts], float))
+            ins = inside(np.array([viewport_point(self.view, v) for v in pts], float))
             if (ins.any() if cross else ins[:8 if poly is not None else 1].all()):
                 found.append(o)
         objs = self.selected_objects()
@@ -6689,7 +6735,12 @@ class SubDSession:
     def project(self, P):
         """Kafes (yerel) noktalarini ekran (viewport) koordinatlarina cevirir: olaylardaki Position ile ayni duzen."""
         W = self.l2w(np.asarray(P, float).reshape(-1, 3))
-        return np.array([tuple(self.view.getPointOnViewport(App.Vector(*p)))[:2] for p in W], float)
+        S = np.array([tuple(self.view.getPointOnViewport(App.Vector(*p)))[:2] for p in W], float).reshape(-1, 2)
+        k = viewport_scale(self.view)                      # dikey gorunumde FreeCAD'in olcek hatasi (viewport_scale)
+        if k != 1.0 and len(S):
+            c = np.array(self.view.getSize(), float) / 2.0
+            S = c + (S - c) * k
+        return S
 
     def depth(self, P):
         return np.asarray(P).dot(self.view_dir())

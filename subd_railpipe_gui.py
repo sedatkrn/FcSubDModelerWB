@@ -17,6 +17,15 @@ from PySide import QtCore, QtWidgets
 import subd_railpipe as rp
 from subd_i18n import T
 
+
+def _vp(view, vec):
+    """Ekran konumu; dikey gorunumde FreeCAD'in getPointOnViewport olcek hatasi duzeltilir (subd_modeler.viewport_point)."""
+    try:
+        from subd_modeler import viewport_point
+        return viewport_point(view, vec)
+    except Exception:
+        return tuple(view.getPointOnViewport(vec))[:2]
+
 V = App.Vector
 _editor = None
 
@@ -228,7 +237,7 @@ class Editor(object):
     def pick(self, pos, N, radius=12.0):
         best = None
         for j, p in enumerate(N):
-            s = self.view.getPointOnViewport(self.world(p))
+            s = _vp(self.view, self.world(p))
             d = ((s[0] - pos[0]) ** 2 + (s[1] - pos[1]) ** 2) ** 0.5
             if d < radius and (best is None or d < best[0]):
                 best = (d, j)
@@ -238,7 +247,7 @@ class Editor(object):
         """Imlecin altindaki egri parcasi: (parca sirasi, en yakin noktanin parametresi) ya da None."""
         if not getattr(self, "curve", None):
             return None
-        S = [self.view.getPointOnViewport(w) for u, w in self.curve]
+        S = [_vp(self.view, w) for u, w in self.curve]
         best = None
         for k in range(len(S) - 1):
             ax, ay = S[k][0], S[k][1]
