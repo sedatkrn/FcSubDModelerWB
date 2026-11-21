@@ -9,6 +9,8 @@
 - **New: Options > Selection > Add key.** The key held to add to the selection (click, box, lasso, rail points) can be
   Shift (LightWave) or Ctrl (FreeCAD); the other key removes. *Auto* (default) uses Ctrl with FreeCAD's Touchpad
   navigation style, where Shift pans the view, and Shift otherwise (#22).
+- **Changed: Extrude / Bevel / Inset / Twist buttons stay blue while their handles are on screen**; clicking the
+  button again leaves the tool (the result stays, the handles go away). E / B / I still start a new operation.
 - **Changed: 1 / 2 / 3 in Object mode go to FreeCAD** (Front / Top / Right standard views); in Edit mode they still
   switch to point / edge / polygon mode (#21).
 - Fixed: in a 3D view taller than wide (e.g. with side panels open) FreeCAD's `getPointOnViewport` scales screen

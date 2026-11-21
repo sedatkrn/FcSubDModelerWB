@@ -8452,6 +8452,25 @@ class SubDSession:
         self.gizmo.set_mode(mode if self.gizmo.mode != mode else "move")
         self.refresh()
 
+    def handle_kind(self):
+        """Tutamaklari ekranda acik islem: "extrude" / "bevel" / "inset" / "ebevel" / "twist" ya da None. Arac
+        dugmesi bu surece mavi (acik) gorunur; tekrar tiklamak islemden cikar (handles_done)."""
+        if not self._hdrawn:
+            return None
+        op = self.hdrag["op"] if self.hdrag is not None else self.last_op
+        if op is None:
+            return None
+        if op["kind"] == "bevel" and op["args"].get("inset_only"):
+            return "inset"
+        return op["kind"]
+
+    def handles_done(self):
+        """Islemden cik: sonuc kalir, tutamaklar kalkar (yeniden acilmaz; yeni islem yeni tutamak getirir)."""
+        if self.hdrag is not None:
+            return
+        self._hoff = self.last_op
+        self.refresh()
+
     def set_gizmo(self, mode):
         self._hoff = self.last_op                          # Move / Rotate / Size: son islemin tutamaclari kalkar
         self.drop_tool()
@@ -15791,7 +15810,11 @@ class _Overlay(object):
         btn("Rotate", "R", lambda: s.set_gizmo("rotate"), toggle=lambda: s.gizmo.mode == "rotate")
         btn("Stretch / Size", "H", lambda: s.set_gizmo("scale"), toggle=lambda: s.gizmo.mode == "scale")
         btn("Magnet", "", lambda: s.toggle_tool("magnet"), mode="edit", tool="magnet")
-        btn("Twist", _key_label("twist"), s.twist, sel=True, mode="edit")    # tus atanabilir (set_user_key)
+        # Extrude / Bevel / Inset / Twist: tutamaklari acikken dugme mavi; tekrar tiklamak islemden cikar (handles_done)
+        hk = lambda *kinds: (lambda: s.handle_kind() in kinds)
+        hb = lambda kinds, fn: (lambda: s.handles_done() if s.handle_kind() in kinds else fn())
+        btn("Twist", _key_label("twist"), hb(("twist",), s.twist), toggle=hk("twist"), sel=True,
+            mode="edit")                                   # tus atanabilir (set_user_key)
         head("Shape", tab="modify")
         btn("Circle", "", s.circle, sel=True, mode="edit")
         btn("Crease", "C", s.crease_selected, sel=True, mode="edit")
@@ -15803,10 +15826,11 @@ class _Overlay(object):
         btn("Mirror (line)", "⇧V", lambda: s.toggle_tool("mline"), mode="edit", tool="mline")
         # --- Multiply ---
         head("Extend", tab="multiply")
-        btn("Extrude", "E", lambda: s.extrude(lazy=True), sel=True, mode="edit")
-        btn("Bevel", "B", lambda: s.edge_bevel(lazy=True) if s.mode == "edge" else s.bevel(lazy=True),
+        btn("Extrude", "E", hb(("extrude",), lambda: s.extrude(lazy=True)), toggle=hk("extrude"), sel=True, mode="edit")
+        btn("Bevel", "B", hb(("bevel", "ebevel"), lambda: s.edge_bevel(lazy=True) if s.mode == "edge"
+                             else s.bevel(lazy=True)), toggle=hk("bevel", "ebevel"), sel=True, mode="edit")
+        btn("Inset", "I", hb(("inset",), lambda: s.bevel(inset_only=True, lazy=True)), toggle=hk("inset"),
             sel=True, mode="edit")
-        btn("Inset", "I", lambda: s.bevel(inset_only=True, lazy=True), sel=True, mode="edit")
         btn("Shell", "", s.shell)                     # Object: secili nesne; Edit: secili cokgenler (yoksa hepsi)
         head("Duplicate", tab="multiply")
         btn("Array", _key_label("array"), s.array, sel=True, mode="edit")   # Radial / Rectangular panelden secilir
