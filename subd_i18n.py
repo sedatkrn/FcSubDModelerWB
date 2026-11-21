@@ -535,8 +535,8 @@ TR = {
     "Extrude  %s mm   %d segments": "Extrude  %s mm   %d segment",
     "Angle %s  %.2f°": "Açı %s  %.2f°",
     "Lasso": "Kement",
-    "Drag selection draws a free lasso instead of a box (add / remove keys as in box select)":
-        "Sürükleyerek seçim kutu yerine serbest bir kement çizer (ekle / çıkar tuşları kutu seçimindeki gibi)",
+    "Drag selection draws a free lasso instead of a box. Clockwise (solid line): only what is fully inside; counter-clockwise (dashed line): everything it touches. Add / remove keys as in box select":
+        "Sürükleyerek seçim kutu yerine serbest bir kement çizer. Saat yönünde (düz çizgi): yalnız tamamen içinde kalanlar; saat yönünün tersine (kesikli çizgi): dokunduğu her şey. Ekle / çıkar tuşları kutu seçimindeki gibi",
     "Selection": "Seçim",
     "Add key": "Ekleme tuşu",
     "Auto (Ctrl with Touchpad navigation)": "Otomatik (Touchpad gezinmesinde Ctrl)",

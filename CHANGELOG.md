@@ -3,8 +3,9 @@
 ## Unreleased
 
 - **New: lasso selection.** The *Lasso* toggle in the bottom bar (next to Ghost) makes a drag draw a free curve instead
-  of a box; everything inside is selected, in every mode (points, edges, polygons, objects). Add / remove keys work as
-  in box select. The choice is remembered.
+  of a box, in every mode (points, edges, polygons, objects). Drawn **clockwise** (solid line) it selects only what is
+  fully inside; drawn **counter-clockwise** (dashed line) it selects everything it touches (a corner inside, an edge
+  crossing the line, or the lasso inside a polygon). Add / remove keys work as in box select. The choice is remembered.
 - **New: Options > Selection > Add key.** The key held to add to the selection (click, box, lasso, rail points) can be
   Shift (LightWave) or Ctrl (FreeCAD); the other key removes. *Auto* (default) uses Ctrl with FreeCAD's Touchpad
   navigation style, where Shift pans the view, and Shift otherwise (#22).

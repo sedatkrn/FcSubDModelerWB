@@ -4666,6 +4666,43 @@ def _lasso_inside(S, P):
     return ((cross & (x < xi)).sum(1) % 2) == 1
 
 
+def _lasso_ccw(P):
+    """Kement saat yonunun tersine mi cizildi: Coin konumlari (y yukari), isaretli alan > 0. Tersine = dokunan
+    her sey secilir (kesikli cizgi); saat yonu = yalniz tamamen icinde kalanlar (duz cizgi)."""
+    P = np.asarray(P, float)[:, :2]
+    if len(P) < 3:
+        return False
+    x, y = P[:, 0], P[:, 1]
+    return float(np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y)) > 0
+
+
+def _segs_cross_poly(A, B, P):
+    """AB ekran parcalarindan (N) hangileri kapali P cokgeninin bir kenarini kesiyor (N bool)."""
+    A = np.atleast_2d(np.asarray(A, float))[:, :2]
+    B = np.atleast_2d(np.asarray(B, float))[:, :2]
+    P = np.asarray(P, float)[:, :2]
+    out = np.zeros(len(A), bool)
+    if not len(A) or len(P) < 3:
+        return out
+    c, d = P[None], np.roll(P, -1, 0)[None]
+
+    def orient(p, q, r):
+        return (q[..., 0] - p[..., 0]) * (r[..., 1] - p[..., 1]) - (q[..., 1] - p[..., 1]) * (r[..., 0] - p[..., 0])
+
+    for k in range(0, len(A), 2000):                        # bellek: parca parca
+        a, b = A[k:k + 2000, None], B[k:k + 2000, None]
+        out[k:k + 2000] = ((orient(a, b, c) * orient(a, b, d) < 0) & (orient(c, d, a) * orient(c, d, b) < 0)).any(1)
+    return out
+
+
+def _lasso_points(path, n=400):
+    """Hesap icin seyreltilmis kement (en cok n nokta)."""
+    path = list(path)
+    if len(path) > n:
+        path = path[::len(path) // n + 1]
+    return np.asarray(path, float)[:, :2]
+
+
 def _snap(x, step):
     return round(x / step) * step if step > 0 else x
 
@@ -5617,6 +5654,32 @@ class SubDSession:
         self.set_object_selection(objs)
         self.refresh()
 
+    def _lasso_faces(self, poly, cross):
+        """Kementle secilen yuzler: saat yonu = butun koseleri icinde; tersine = bir kosesi icinde, bir kenari
+        kementi kesiyor ya da kement yuzun icinde kaliyor."""
+        V, F = self.cage.V, self.cage.F
+        S = np.asarray(self.project(V), float)[:, :2]
+        vin = _lasso_inside(S, poly)
+        if not cross:
+            return np.array([i for i, f in enumerate(F) if vin[list(f)].all()], int)
+        hit = np.array([vin[list(f)].any() for f in F], bool)
+        rest = [i for i in range(len(F)) if not hit[i]]
+        if rest:
+            seg_f, A, B = [], [], []
+            for i in rest:
+                f = list(F[i])
+                for a, b in zip(f, f[1:] + f[:1]):
+                    seg_f.append(i)
+                    A.append(a)
+                    B.append(b)
+            c = _segs_cross_poly(S[A], S[B], poly)
+            hit[np.array(seg_f)[c]] = True
+            q = poly[:1]                                   # kement tek bir yuzun icinde kaldiysa
+            for i in rest:
+                if not hit[i] and _lasso_inside(q, S[list(F[i])])[0]:
+                    hit[i] = True
+        return np.nonzero(hit)[0]
+
     @staticmethod
     def _inside_fn(p0, p1, poly):
         """Ekran noktalari (N x 2+) secim alaninda mi: kutu (p0, p1) ya da kement (poly)."""
@@ -5627,14 +5690,21 @@ class SubDSession:
         return lambda S: np.all((np.asarray(S)[:, :2] >= lo) & (np.asarray(S)[:, :2] <= hi), axis=1)
 
     def object_box_select(self, p0, p1, add=False, sub=False, poly=None):
+        if poly is not None:
+            poly = _lasso_points(poly)
         inside = self._inside_fn(p0, p1, poly)
+        cross = poly is not None and _lasso_ccw(poly)
         found = []
         for o in self.subd_objects():
             bb = o.Mesh.BoundBox
             if not bb.isValid():
                 continue
-            x, y = tuple(self.view.getPointOnViewport(bb.Center))[:2]
-            if inside(np.array([[x, y]]))[0]:
+            if poly is None:                               # kutu: merkezi icinde
+                pts = [bb.Center]
+            else:                                          # kement: sinir kutusunun 8 kosesi (+ merkez)
+                pts = [bb.getPoint(i) for i in range(8)] + [bb.Center]
+            ins = inside(np.array([tuple(self.view.getPointOnViewport(v))[:2] for v in pts], float))
+            if (ins.any() if cross else ins[:8 if poly is not None else 1].all()):
                 found.append(o)
         objs = self.selected_objects()
         if sub:
@@ -9473,7 +9543,10 @@ class SubDSession:
         V, F = self.cage.V, self.cage.F
         if not len(V):
             return
+        if poly is not None:
+            poly = _lasso_points(poly)
         inside = self._inside_fn(p0, p1, poly)
+        cross = poly is not None and _lasso_ccw(poly)     # kement saat yonu tersine: dokunanlar da secilir
         vd = self.view_dir()
         lift = -vd * 1e-3 * max(np.ptp(V, 0).max(), 1.0)   # yuzeydeki noktayi kameraya biraz yaklastir
         if self.mode == "point":
@@ -9485,13 +9558,24 @@ class SubDSession:
             edges = list(self.cage.edges())
             E = np.array([sorted(e) for e in edges])
             S = self.project(V)
-            idx = np.nonzero(inside(S[E[:, 0]]) & inside(S[E[:, 1]]))[0]
+            in0, in1 = inside(S[E[:, 0]]), inside(S[E[:, 1]])
+            if cross:                                      # bir ucu icinde ya da kement cizgisini kesiyor
+                hit = in0 | in1
+                rest = np.nonzero(~hit)[0]
+                if len(rest):
+                    hit[rest] = _segs_cross_poly(S[E[rest, 0]], S[E[rest, 1]], poly)
+                idx = np.nonzero(hit)[0]
+            else:
+                idx = np.nonzero(in0 & in1)[0]
             if not self.ghost and len(idx):
                 idx = idx[self.visible((V[E[idx, 0]] + V[E[idx, 1]]) / 2 + lift)]
             found, target = {edges[i] for i in idx}, self.sel_e
         else:
             C = np.array([V[f].mean(0) for f in F])
-            idx = np.nonzero(inside(self.project(C)))[0]
+            if poly is None:                               # kutu: merkezi icinde olan yuzler
+                idx = np.nonzero(inside(self.project(C)))[0]
+            else:
+                idx = self._lasso_faces(poly, cross)
             if not self.ghost and len(idx):
                 # yalniz onu tamamen kapali olanlar elenir; yuzun yonune bakilmaz: ondeki yuzler silinince
                 # delikten gorunen arka yuzlerin ic tarafi da secilebilmeli. Yuz, merkezi ya da koselerine
@@ -13544,7 +13628,8 @@ class SubDSession:
             return
         if len(path) > 600:                                # cok uzun egri: cizimi seyrelt
             path = path[::len(path) // 600 + 1] + [path[-1]]
-        self._line_widget().set_lasso(QtGui.QPolygonF([QtCore.QPointF(self._line_q(p)) for p in path]))
+        self._line_widget().set_lasso(QtGui.QPolygonF([QtCore.QPointF(self._line_q(p)) for p in path]),
+                                      _lasso_ccw(path))
 
     def _grab_step(self):
         self._pending = False
@@ -14530,7 +14615,8 @@ TOOL_TIPS = {
     "Symmetry": "X symmetry: tools also act on the mirrored side",
     "Subpatch": "Show the smooth SubD surface or only the cage",
     "Ghost": "See through the model and select hidden elements",
-    "Lasso": "Drag selection draws a free lasso instead of a box (add / remove keys as in box select)",
+    "Lasso": "Drag selection draws a free lasso instead of a box. Clockwise (solid line): only what is fully inside; "
+             "counter-clockwise (dashed line): everything it touches. Add / remove keys as in box select",
     "Snap": "Free moves snap to the vertices and edges of visible Part / PartDesign shapes",
     "Options": "Show or hide the Options panel",
 }
@@ -14593,9 +14679,9 @@ class _LineOverlay(QtWidgets.QWidget):
         self.ring, self.ring_r = pt, r
         self._changed()
 
-    def set_lasso(self, poly):
-        """Kement egrisi (QPolygonF, mantiksal piksel) ya da None."""
-        self.lasso = poly
+    def set_lasso(self, poly, dashed=False):
+        """Kement egrisi (QPolygonF, mantiksal piksel) ya da None. dashed: saat yonu tersine (dokunanlar secilir)."""
+        self.lasso, self.lasso_dashed = poly, dashed
         self._changed()
 
     def _changed(self):
@@ -14608,8 +14694,9 @@ class _LineOverlay(QtWidgets.QWidget):
             return
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
-        if self.lasso is not None:                         # kement: kesikli egri, kapanis cizgisi ve hafif dolgu
-            p.setPen(QtGui.QPen(QtGui.QColor(34, 211, 238), 1.5, QtCore.Qt.DashLine))
+        if self.lasso is not None:                         # kement: duz (icindekiler) / kesikli (dokunanlar), hafif dolgu
+            p.setPen(QtGui.QPen(QtGui.QColor(34, 211, 238), 1.5,
+                                QtCore.Qt.DashLine if getattr(self, "lasso_dashed", False) else QtCore.Qt.SolidLine))
             p.setBrush(QtGui.QColor(34, 211, 238, 28))
             p.drawPolygon(self.lasso)
         if self.ring is not None:
