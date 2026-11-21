@@ -13481,7 +13481,7 @@ class SubDSession:
                     q = b["path"][-1]
                     if abs(pos[0] - q[0]) + abs(pos[1] - q[1]) >= 3:   # 3 pikselden sik nokta eklenmez
                         b["path"].append(tuple(pos[:2]))
-                        self._schedule(lambda: self._lasso_show(b["path"]))
+                        self._schedule(lambda: self._lasso_live(b))
                 else:
                     _later(lambda: self._rubber_show(b["p0"], pos))
         else:
@@ -13529,6 +13529,12 @@ class SubDSession:
     def _rubber_hide(self):
         if self.rubber is not None:
             self.rubber.hide()
+
+    def _lasso_live(self, b):
+        """Surukleme sirasinda kemendi yeniden ciz (_schedule ile birlesik: bayrak burada sifirlanir)."""
+        self._pending = False
+        if self.box is b:                                  # birakildiysa (kement gizlendi) yeniden cizme
+            self._lasso_show(b["path"])
 
     def _lasso_show(self, path):
         """Kement egrisini ciz (None: gizle). path: Coin konumlari."""
