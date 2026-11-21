@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 (2026-11-21)
 
 - **New: lasso selection.** The *Lasso* toggle in the bottom bar (next to Ghost) makes a drag draw a free curve instead
   of a box, in every mode (points, edges, polygons, objects). Drawn **clockwise** (solid line) it selects only what is
