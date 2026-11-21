@@ -5910,7 +5910,10 @@ class SubDSession:
         b.setDecimals(decimals)
         b.setSuffix(suffix)
         b.setKeyboardTracking(False)
-        b.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        # NoButtons kullanilmaz: Qt 6.10+ ve stil dosyali temada (FreeCAD 1.1 / 27.x) metin alani 1 piksele daralir,
+        # deger gorunmez (issue #10, Options panelindeki Center / Size alanlari). Oklar stil kuraliyla gizlenir.
+        b.setStyleSheet("QDoubleSpinBox::up-button, QDoubleSpinBox::down-button "
+                        "{ width: 0px; height: 0px; border: none; margin: 0px; padding: 0px; }")
         b.setValue(value)
         return b
 
