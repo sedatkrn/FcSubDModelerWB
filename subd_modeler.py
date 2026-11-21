@@ -4663,6 +4663,40 @@ def viewport_scale(view):
     return k
 
 
+_WPP_FIX = {}   # (W, H, kamera) -> getWorldToScreenScale duzeltme carpani
+
+
+def wpp_factor(view):
+    """Coin getWorldToScreenScale(p, 1 / H) gorus hacminin genisligine gore olcer: dikey gorunumde piksel basina mm'yi
+    kucuk veriyor (26.3'te (W / H)^2 kat), gizmolar kuculuyordu. Gercek deger getPoint ile iki piksel arasindan
+    olculur; carpan = gercek / Coin, gorunum boyutu basina saklanir. Yatay gorunum degismez (1): gizmo boyutlari
+    oradaki gorunuse gore ayarlandi."""
+    try:
+        W, H = view.getSize()
+        key = (int(W), int(H), view.getCameraType())
+    except Exception:
+        return 1.0
+    if W >= H:
+        return 1.0
+    f = _WPP_FIX.get(key)
+    if f is None:
+        f = 1.0
+        try:
+            cx, cy = int(W / 2), int(H / 2)
+            a, b = view.getPoint(cx, cy), view.getPoint(cx + 100, cy)
+            true = (b - a).Length / 100.0
+            vv = view.getCameraNode().getViewVolume(float(W) / H)
+            raw = vv.getWorldToScreenScale(coin.SbVec3f(a.x, a.y, a.z), 1.0 / float(H))
+            if raw > 1e-12 and true > 1e-12:
+                f = true / raw
+            if abs(f - 1.0) < 0.01:
+                f = 1.0
+        except Exception:
+            f = 1.0
+        _WPP_FIX[key] = f
+    return f
+
+
 def viewport_point(view, vec):
     """3B dunya noktasinin ekran konumu (Coin olay duzeni: sol alt kokenli piksel), dikey gorunum duzeltmeli."""
     x, y = tuple(view.getPointOnViewport(vec))[:2]
@@ -4753,9 +4787,31 @@ def _snap(x, step):
     return round(x / step) * step if step > 0 else x
 
 
+class _VVFix(object):
+    """Coin gorus hacmi + dikey gorunum duzeltmesi: projectToScreen merkez etrafinda k (viewport_scale) ile olceklenir,
+    getWorldToScreenScale (piksel -> mm) f (wpp_factor) ile; oteki yontemler (getMatrix ...) aynen gecer, k'yi
+    cagiran uygular."""
+
+    def __init__(self, vv, k, f=1.0):
+        self.vv, self.k, self.f = vv, k, f
+
+    def projectToScreen(self, p):
+        r = self.vv.projectToScreen(p)
+        if self.k == 1.0:
+            return r
+        x, y, z = r.getValue()
+        return coin.SbVec3f(0.5 + (x - 0.5) * self.k, 0.5 + (y - 0.5) * self.k, z)
+
+    def getWorldToScreenScale(self, p, frac):
+        return self.vv.getWorldToScreenScale(p, frac) * self.f
+
+    def __getattr__(self, name):
+        return getattr(self.vv, name)
+
+
 def _vv(v):
     W, H = v.getSize()
-    return v.getCameraNode().getViewVolume(float(W) / H), W, H
+    return _VVFix(v.getCameraNode().getViewVolume(float(W) / H), viewport_scale(v), wpp_factor(v)), W, H
 
 
 class _Handle(object):
@@ -10680,7 +10736,8 @@ class SubDSession:
         M = np.array(vv.getMatrix().getValue()).reshape(4, 4)
         h = np.c_[P, np.ones(len(P))] @ M
         h = h[:, :3] / h[:, 3:4]
-        return np.c_[(h[:, 0] + 1) / 2 * W, (h[:, 1] + 1) / 2 * H]
+        k = vv.k                                           # dikey gorunum duzeltmesi (viewport_scale)
+        return np.c_[(h[:, 0] * k + 1) / 2 * W, (h[:, 1] * k + 1) / 2 * H]
 
     def _dim_world(self, a):
         if a[0] in ("v", "e", "f") and self.mode == "object":

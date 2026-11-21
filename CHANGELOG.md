@@ -14,7 +14,10 @@
 - Fixed: in a 3D view taller than wide (e.g. with side panels open) FreeCAD's `getPointOnViewport` scales screen
   positions by height / width around the centre, so box / lasso select, point / edge picking and rail handles missed
   elements away from the centre. The modeler now measures the factor once per view size (round trip through
-  `getPoint`, which is correct) and corrects every projection; no change where FreeCAD is already right.
+  `getPoint`, which is correct) and corrects every projection; no change where FreeCAD is already right. The same
+  correction covers the Coin view volume used by the gizmos and tool handles (Move / Rotate / Size gizmo, Rail
+  Pipe, Extrude / Bevel / Twist handles, Distance / PD labels): in a portrait view their arrows can be grabbed again
+  and they keep their size instead of shrinking.
 - Fixed: empty value fields in the Options panel (Measure, Bevel Inset / Shift, New box) on Qt 6.10+ with a stylesheet
   theme, e.g. FreeCAD 1.1.x on Arch (#20).
 - Fixed: the Parametric group tooltip still described the old datum plane handle (#20).
